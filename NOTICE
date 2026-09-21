@@ -1,0 +1,8 @@
+meridian-snaptrade
+Copyright 2026 Societal Lab Inc.
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+SnapTrade is a trademark of its owner. This project is not affiliated with or
+endorsed by SnapTrade; it connects to SnapTrade's API using credentials the
+deployment's administrator supplies.
