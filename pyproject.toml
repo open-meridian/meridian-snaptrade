@@ -1,0 +1,96 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snaptrade"
+version = "0.1.0"
+description = "Holdings, cash and sync state from brokerages through SnapTrade, for an Open Meridian deployment"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+# The SDK and nothing else of Meridian's, pinned exactly: the sidecar this runs
+# beside speaks one version of the contract, and a range would let a rebuild
+# pick up another.
+#
+# Pinned by git commit rather than by release while the account-side
+# operations (spec/the-account-side-fits-every-venue) are unreleased: the
+# plugin moves to each SDK commit that brings one, and back to
+# `open-meridian==<version>` once they ship. The README says how.
+#
+# SnapTrade's own SDK is the one third-party dependency, pinned exactly too,
+# and only src/snaptrade/venue.py imports it.
+dependencies = [
+  "open-meridian @ git+https://github.com/open-meridian/meridian-python.git@59e52837d5ebfcc148e389f041b15436326a05f6",
+  "snaptrade-python-sdk==13.0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "mypy>=1.11",
+  "ruff>=0.6",
+]
+
+[project.scripts]
+snaptrade = "snaptrade.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# The page's stylesheet, kept apart from its markup so it can move onto the
+# shared plugin kit (spec/plugin-pages-share-one-kit) on its own.
+[tool.setuptools.package-data]
+snaptrade = ["static/*.css"]
+
+# What this plugin says about itself, which `meridian plugin upload` sends and
+# a deployment admin approves before it runs (W8). Declarations, not grants.
+[tool.meridian]
+# Roles from the deployment's fixed list -- ccm, compliance, custody, dgm, ems,
+# match, oms, operations, portfolio, reporting, servicing, settlement, signal
+# -- and its grants are theirs. `custody`: it reports sync status and records
+# holdings statements, W2's steps.
+roles = ["custody"]
+# Its own names for its parts, which people are granted at read or write.
+# None yet: nobody but a deployment administrator uses its page.
+tags = []
+# Whether it serves a page through its sidecar.
+interface = true
+
+[tool.ruff]
+line-length = 96
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["snaptrade"]
+# The tests' shared stand-ins, imported by name from tests/.
+known-local-folder = ["conftest"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src", "tests"]
+
+# SnapTrade's SDK is generated and only partly typed; venue.py is the one
+# module that touches it, and treats what it returns as data to check.
+[[tool.mypy.overrides]]
+module = ["snaptrade_client", "snaptrade_client.*"]
+follow_imports = "skip"
+ignore_missing_imports = true
+
+# The SDK's gRPC stubs have no types (meridian-python's own configuration
+# says the same).
+[[tool.mypy.overrides]]
+module = [
+    "meridian.v1.sidecar_pb2_grpc",
+    "meridian.v1.envelope_pb2_grpc",
+    "meridian.plugin.v1.operations_pb2_grpc",
+]
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

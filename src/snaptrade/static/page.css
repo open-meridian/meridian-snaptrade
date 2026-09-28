@@ -1,0 +1,212 @@
+/* The SnapTrade plugin's admin portal.
+ *
+ * Colour, radius and type are Open Meridian's design tokens
+ * (meridian-design/brand/tokens.json), as custom properties named as the
+ * token is named, the way the platform's meridian.css maps them; the values
+ * are copied from tokens.json on 2026-09-28. Nothing below names a colour.
+ *
+ * Kept apart from the markup (page.py) because both move onto the shared
+ * plugin kit (spec/plugin-pages-share-one-kit): when the dashboard serves
+ * the kit, the :root blocks here are deleted and the kit's are linked, and
+ * the component rules below give way to the kit's own.
+ */
+
+:root {
+  --ink: #0e1330;
+  --ink-soft: #4a5277;
+  --ink-faint: #676e93;
+  --page: #f5f6fb;
+  --card: #ffffff;
+  --line: #e3e6f0;
+  --line-soft: #eef0f6;
+  --hover: #eef0fa;
+  --accent: #4353f0;
+  --accent-wash: #eceeff;
+  --accent-ink: #ffffff;
+  --danger: #cb2d3f;
+  --danger-wash: #fdecee;
+  --good: #127c5c;
+  --good-wash: #e3f6ef;
+  --warn-ink: #8a5a10;
+  --warn-wash: #fdf3e0;
+  --violet: #6b4fd8;
+  --violet-wash: #f0ecff;
+  --radius-sm: 8px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 99px;
+  --shadow: 0 1px 2px rgba(14, 19, 48, 0.04), 0 8px 24px rgba(14, 19, 48, 0.06);
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --mono: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+
+/* Dark follows the person's system until the kit passes the dashboard's
+ * theme in; data-theme lets it do so either way. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #e9ecff;
+    --ink-soft: #a9b1d9;
+    --ink-faint: #7a82af;
+    --page: #0a0f2c;
+    --card: #10173d;
+    --line: #222c5a;
+    --line-soft: #1a2350;
+    --hover: #18214d;
+    --accent: #8f9bff;
+    --accent-wash: #1c2562;
+    --accent-ink: #0a0f2c;
+    --danger: #ff8a95;
+    --danger-wash: #3a1a26;
+    --good: #5fdcb0;
+    --good-wash: #12352c;
+    --warn-ink: #f2c46b;
+    --warn-wash: #33291a;
+    --violet: #c2b3ff;
+    --violet-wash: #2a2352;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+
+:root[data-theme="dark"] {
+  --ink: #e9ecff;
+  --ink-soft: #a9b1d9;
+  --ink-faint: #7a82af;
+  --page: #0a0f2c;
+  --card: #10173d;
+  --line: #222c5a;
+  --line-soft: #1a2350;
+  --hover: #18214d;
+  --accent: #8f9bff;
+  --accent-wash: #1c2562;
+  --accent-ink: #0a0f2c;
+  --danger: #ff8a95;
+  --danger-wash: #3a1a26;
+  --good: #5fdcb0;
+  --good-wash: #12352c;
+  --warn-ink: #f2c46b;
+  --warn-wash: #33291a;
+  --violet: #c2b3ff;
+  --violet-wash: #2a2352;
+  --shadow: none;
+  color-scheme: dark;
+}
+
+/* ── Ground and type ─────────────────────────────────────────────────────── */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 14.5px/1.55 var(--sans);
+}
+
+.page { max-width: 72rem; margin: 0 auto; padding: 2rem 2.5rem; }
+.page > * + * { margin-top: 1.25rem; }
+
+h1 { font-size: 1.6rem; letter-spacing: -0.025em; margin: 0; font-weight: 700; }
+h2 { font-size: 1.02rem; letter-spacing: -0.01em; margin: 0; font-weight: 650; }
+h3 { font-size: 0.95rem; margin: 0; font-weight: 650; }
+p { margin: 0.4rem 0; }
+a { color: var(--accent); }
+code { font: 0.85em var(--mono); color: var(--ink-soft); overflow-wrap: anywhere; }
+time { white-space: nowrap; }
+
+.faint { color: var(--ink-faint); }
+.hint { color: var(--ink-faint); font-size: 0.84rem; line-height: 1.5; margin-top: 0.15rem; }
+.bad-ink { color: var(--danger); }
+
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+
+.row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.spacer { flex: 1 1 auto; }
+
+ul.plain { list-style: none; margin: 0.2rem 0 0; padding: 0; }
+ul.plain li + li { margin-top: 0.2rem; }
+
+/* ── Panel ───────────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  box-shadow: var(--shadow);
+}
+.panel > * + * { margin-top: 0.75rem; }
+.panel.narrow { max-width: 36rem; }
+
+.connection { border-top: 1px solid var(--line-soft); padding-top: 1rem; }
+.connection > * + * { margin-top: 0.6rem; }
+
+/* ── Badge ───────────────────────────────────────────────────────────────── */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.1rem 0.55rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--line-soft);
+  color: var(--ink-soft);
+}
+.badge.good { background: var(--good-wash); color: var(--good); }
+.badge.warn { background: var(--warn-wash); color: var(--warn-ink); }
+.badge.bad { background: var(--danger-wash); color: var(--danger); }
+.badge.info { background: var(--violet-wash); color: var(--violet); }
+
+/* ── Notice ──────────────────────────────────────────────────────────────── */
+
+.notice { border-radius: var(--radius); padding: 0.7rem 1rem; font-size: 0.93rem; }
+.notice.info { background: var(--accent-wash); color: var(--ink); border: 1px solid var(--line); }
+.notice.bad { background: var(--danger-wash); color: var(--danger); border: 1px solid var(--danger); }
+.notice.quiet { background: var(--card); color: var(--ink-soft); border: 1px solid var(--line); }
+.notice summary { cursor: pointer; }
+
+/* ── Button ──────────────────────────────────────────────────────────────── */
+
+form.inline { display: inline; margin: 0; }
+
+.button {
+  font: 600 0.85rem var(--sans);
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.button:hover { background: var(--hover); }
+.button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.button.primary:hover { filter: brightness(1.08); }
+
+/* ── Table ───────────────────────────────────────────────────────────────── */
+
+.table-wrap { overflow-x: auto; }
+/* Wide enough that an ID is never broken letter by letter; a narrow screen
+ * scrolls the table instead. */
+table { border-collapse: collapse; width: 100%; min-width: 48rem; }
+th {
+  text-align: left;
+  font: 600 0.68rem var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+td { padding: 0.7rem 1rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+tr:last-child td { border-bottom: 0; }
+
+@media (max-width: 40rem) {
+  .page { padding: 1rem; }
+  th, td { padding: 0.5rem 0.6rem; }
+}

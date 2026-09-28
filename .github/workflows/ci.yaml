@@ -1,0 +1,32 @@
+# CI is confirmation, not the first place a failure is found. The pre-push hook
+# runs `make ci-local` locally, so a red run here means the hook was bypassed
+# or the runner differs from a developer's machine -- both worth knowing.
+#
+# The job is named for the make target it runs. It runs ci-remote rather than
+# ci-local, and the difference is the plugin's image: building it pulls the
+# SDK's base image and is what `meridian plugin upload` does, which is checked
+# by ci-local before every push. The stylesheet's check against the design
+# tokens also skips here, since meridian-design is private and a public
+# repository holding a credential that reads it is a worse trade.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci-remote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: make ci-remote
+        run: make ci-remote

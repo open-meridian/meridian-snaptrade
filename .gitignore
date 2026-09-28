@@ -1,0 +1,23 @@
+# Python's leavings.
+__pycache__/
+*.pyc
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# CLAUDE.md and .claude/ are committed with the plugin, so whoever works on it
+# next gets the same instructions and the develop-live skill. What is one
+# person's own is not: their notes, their settings, and what `meridian plugin
+# dev` printed for them, which the skill keeps in .meridian/.
+CLAUDE.local.md
+.claude/settings.local.json
+.meridian/
+
+# What `make test` and `make preview` leave behind.
+.test.log
+preview.html

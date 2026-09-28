@@ -1,0 +1,23 @@
+# The plugin's tests, lint and types, in a container, because the host has no
+# toolchain to rely on (meridian-python does the same). Git is here for the
+# SDK's pin by commit.
+ARG PYTHON_VERSION=3.12
+FROM python:${PYTHON_VERSION}-slim AS base
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git \
+ && rm -rf /var/lib/apt/lists/*
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /w
+COPY pyproject.toml ./
+COPY src src
+RUN --mount=type=cache,target=/root/.cache/pip pip install -e ".[dev]"
+COPY tests tests
+
+# Run by `make test` with `docker run`, so the design repository's tokens can
+# be mounted for the stylesheet's check where they exist.
+FROM base AS test
+
+FROM base AS lint
+RUN python -m ruff check src tests \
+ && python -m ruff format --check src tests \
+ && python -m mypy
