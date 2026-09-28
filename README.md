@@ -1,29 +1,32 @@
 # meridian-snaptrade
 
-A Meridian plugin that reads holdings from a brokerage through SnapTrade and
-records them in a deployment's street store. It holds the `custody` role and
-follows workflow W2, holdings ingestion.
+An [Open Meridian](https://open-meridian.com) plugin that reads holdings from a
+brokerage through SnapTrade and records them in a deployment's street store. It
+holds the `custody` role and follows workflow W2, holdings ingestion.
 
-**Not yet implemented.** It is waiting on typed sidecar operations
-(meridian-design `sdk-contract/typed-sidecar-operations`, per decision 008), so
-that it can be built on the Python SDK alone rather than importing the wire
-schema to construct messages itself.
+**Not yet implemented.** The Python SDK now carries the typed operations it
+needs (`record_holdings_statement`, `record_holding`, `report_sync_status`);
+the plugin itself is still to be written.
 
 ## What it depends on
 
-The [Meridian Python SDK](https://github.com/open-meridian/meridian-python), and
-nothing else from Meridian. A plugin reaches only its own sidecar, and the SDK
-is the whole of that interface.
+The [Python SDK](https://github.com/open-meridian/meridian-python), and nothing
+else from Open Meridian. A plugin reaches only its own sidecar, and the SDK is
+the whole of that interface. It will start, as every plugin does, from
+`meridian plugin new`.
 
 ## What it needs to run
 
-A SnapTrade API key, supplied by the deployment's administrator as a Kubernetes
-Secret named in the plugin's chart entry. The key stays in the customer's
-cluster: it is never placed in chart values and never sent to the Meridian
-platform.
+A SnapTrade API key, declared as a secret setting of the plugin and set by the
+deployment's administrator in the dashboard. The key stays in the firm's own
+environment: it is never placed in the plugin's code or image, and never sent to
+the platform.
+
+It is brought into a deployment like any other plugin: uploaded to the
+deployment's catalogue and launched once an administrator approves the role it
+asks for, with `meridian plugin upload` and `meridian plugin launch`.
 
 ## Licence
 
-Apache-2.0, like the SDK it is built on. This is the reference plugin other
-vendors will copy, and it should model the promise that a vendor keeps their
-plugin.
+Apache-2.0, like the SDK it is built on. It is a plugin other vendors will
+copy, and it should model the promise that a vendor keeps their plugin.
