@@ -33,7 +33,7 @@ The instance is called `snaptrade` below. Use whatever the person
 wants it called, and the same name in every command.
 
 **The first time an instance is launched, the person approves what it asks
-for.** Show them the `roles` and `tags` in `pyproject.toml`'s `[tool.meridian]`
+for.** Show them the `roles` in `pyproject.toml`'s `[tool.meridian]`
 and ask. Only once they say yes, pass `--yes`; never pass it to get past a
 question they have not answered. An instance that is live already asks
 nothing.
@@ -96,7 +96,7 @@ browser and gives the same page every time.
 ## What a save cannot change
 
 - **What it is allowed to do.** A `refused` event is its grants working, not a
-  bug to code around. Adding a role or tag to `pyproject.toml` changes nothing
+  bug to code around. Adding a role to `pyproject.toml` changes nothing
   live: it takes a new version, and a person approves it.
 - **Its dependencies.** The live code runs on the image the instance was
   launched from. A new package in `pyproject.toml` needs a new version.
@@ -110,7 +110,7 @@ When the person is satisfied:
 
 1. Run the plugin's own tests, if it has any, and fix what fails.
 2. Raise `version` in `pyproject.toml`. A version is never replaced.
-3. Show the person the roles and tags again, and get their yes.
+3. Show the person the roles again, and get their yes.
 4. Run `meridian plugin dev --release --instance snaptrade --yes`.
 
 That uploads this directory as that version and runs it in place of the live

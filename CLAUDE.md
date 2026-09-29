@@ -23,8 +23,11 @@ and subscribe to comes from the roles `pyproject.toml` declares under
 - To change it and see the change running on a cluster, follow the
   `develop-live` skill (`.claude/skills/develop-live/SKILL.md`): `meridian plugin
   dev` in the background, edit, wait for `ready` at your revision, then check.
-- A save changes what the plugin does, never what it is allowed to do. Roles,
-  tags and dependencies take a new version, which a person approves.
+- A save changes what the plugin does, never what it is allowed to do. Roles
+  and dependencies take a new version, which a person approves. A plugin
+  declares no `tags` (decisions/026): who may use it is the deployment's
+  access groups', at `read` or `write`, and `meridian plugin upload` refuses
+  a `pyproject.toml` that names them.
 - This file and `.claude/` are committed with the plugin, for whoever works on
   it next. `CLAUDE.local.md` and `.claude/settings.local.json` are one
   person's own, and git-ignored. `.dockerignore` keeps all of them out of the

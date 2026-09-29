@@ -41,9 +41,6 @@ where = ["src"]
 # -- and its grants are theirs. `custody`: it reports sync status and records
 # holdings statements, W2's steps.
 roles = ["custody"]
-# Its own names for its parts, which people are granted at read or write.
-# None yet: nobody but a deployment administrator uses its page.
-tags = []
 # Whether it serves a page through its sidecar.
 interface = true
 
