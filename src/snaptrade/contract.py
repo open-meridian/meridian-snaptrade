@@ -63,6 +63,7 @@ log = logging.getLogger("snaptrade")
 SIDE = "side"
 SETTLE_DATE_QUANTITY = "settle_date_quantity"
 CURRENCY_ASSUMED = "currency_assumed"
+ALSO_COUNTED_IN_CASH = "also_counted_in_cash"
 MARKET_VALUE = "market_value"
 BUYING_POWER = "buying_power"
 SYNC_STATE = "state"
@@ -93,6 +94,7 @@ class Contract:
     statement_figures: bool = False
     sync_state: bool = False
     external_accounts: bool = False
+    also_counted_in_cash: bool = False
 
     @classmethod
     def of(cls, plugin: object) -> Contract:
@@ -108,6 +110,7 @@ class Contract:
             statement_figures=BUYING_POWER in opening,
             sync_state=SYNC_STATE in sync and HOLDINGS_AS_OF in sync,
             external_accounts=callable(getattr(plugin, REPORT_EXTERNAL_ACCOUNTS, None)),
+            also_counted_in_cash=ALSO_COUNTED_IN_CASH in holding,
         )
 
     def waiting(self) -> tuple[str, ...]:
@@ -120,6 +123,7 @@ class Contract:
             "buying power on the statement": self.statement_figures,
             "the sync state and its freshness": self.sync_state,
             "reporting the accounts a connection reaches": self.external_accounts,
+            "marking a fund counted in cash": self.also_counted_in_cash,
         }
         return tuple(part for part, carried in parts.items() if not carried)
 
@@ -173,17 +177,17 @@ class Recorder:
         if not self._contract.external_accounts:
             return False
         report: Any = getattr(self._plugin, REPORT_EXTERNAL_ACCOUNTS)
+        # The sidecar stamps the source and the time (W2.8); the venue's own
+        # word for the account's kind is carried verbatim.
         await report(
-            source=SOURCE,
             accounts=[
-                {
-                    "external_account_id": account.external_account_id,
-                    "name": account.name,
-                    "account_type": account.account_type,
-                }
+                meridian.ExternalAccount(
+                    external_account_id=account.external_account_id,
+                    name=account.name,
+                    venue_account_type=account.account_type,
+                )
                 for account in accounts
             ],
-            observed_at_ns=observed_at_ns,
         )
         return True
 
@@ -260,6 +264,10 @@ class Recorder:
             row[SETTLE_DATE_QUANTITY] = holding.settle_date_quantity
         if self._contract.currency_assumed:
             row[CURRENCY_ASSUMED] = holding.currency_assumed
+        if self._contract.also_counted_in_cash:
+            # A money-market fund the venue also counts in its cash figure:
+            # recorded as a holding, and marked so nothing counts it twice.
+            row[ALSO_COUNTED_IN_CASH] = holding.cash_equivalent
         return row
 
     async def record(

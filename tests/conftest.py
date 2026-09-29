@@ -32,6 +32,7 @@ _OPERATIONS = SimpleNamespace(
     RecordHolding="RecordHolding",
     ResolveIdentifier="ResolveIdentifier",
     ReportMissingInstrument="ReportMissingInstrument",
+    ReportExternalAccounts="ReportExternalAccounts",
 )
 
 
@@ -48,7 +49,7 @@ def ambiguous() -> ops.ResolveIdentifierResult:
 
 
 class Sidecar(Operations):
-    """Today's SDK operations, answered here."""
+    """The pinned SDK's operations, answered here."""
 
     def __init__(
         self,
@@ -150,6 +151,7 @@ class FutureSidecar:
         side: str | None = None,
         settle_date_quantity: Decimal | None = None,
         currency_assumed: bool = False,
+        also_counted_in_cash: bool = False,
     ) -> ops.RecordHoldingResult:
         self.calls.append(("record_holding", dict(locals_without_self(locals()))))
         return ops.RecordHoldingResult(holding_id="H", resolved=bool(instrument_id))
@@ -170,7 +172,7 @@ class FutureSidecar:
         return ops.Published(message_id="M")
 
     async def report_external_accounts(
-        self, *, source: str = "", accounts: Sequence[Any] = (), observed_at_ns: int = 0
+        self, *, accounts: Sequence[ops.ExternalAccount] = ()
     ) -> ops.Published:
         self.calls.append(("report_external_accounts", dict(locals_without_self(locals()))))
         return ops.Published(message_id="M")

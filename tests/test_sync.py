@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 import pytest
+from meridian.plugin.v1 import operations_pb2 as ops
 
 from snaptrade.contract import Contract
 from snaptrade.settings import (
@@ -77,8 +78,12 @@ async def test_synthetic_mode_records_every_account_it_can() -> None:
     assert all(outcome.recorded == outcome.rows for outcome in status.outcomes.values())
     ((healthy, detail),) = sidecar.reports
     assert healthy and detail == "read 3 accounts through 3 connections (synthetic)"
-    states = sorted(s.status_detail.split(":")[0] for s in sidecar.sent("ReportSyncStatus"))
-    assert states == ["current", "delayed_by_design", "disabled"]
+    states = sorted(ops.SyncState.Name(s.state) for s in sidecar.sent("ReportSyncStatus"))
+    assert states == [
+        "SYNC_STATE_CURRENT",
+        "SYNC_STATE_DELAYED_BY_DESIGN",
+        "SYNC_STATE_DISABLED",
+    ]
 
 
 class Unreachable:

@@ -11,7 +11,7 @@ DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.3.0
+BASE        ?= ghcr.io/open-meridian/plugin-python:0.4.0
 DESIGN      ?= ../meridian-design
 TOKENS      := $(abspath $(DESIGN))/brand/tokens.json
 

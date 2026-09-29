@@ -77,15 +77,21 @@ DISABLED = Freshness(
 # ── Which parts the SDK carries ──────────────────────────────────────────────
 
 
-def test_todays_sdk_carries_none_of_the_account_side_contract(sidecar: Sidecar) -> None:
+def test_the_pinned_sdk_carries_the_whole_account_side_contract(sidecar: Sidecar) -> None:
     contract = Contract.of(sidecar)
+    assert contract == Contract(True, True, True, True, True, True, True, True)
+    assert contract.waiting() == ()
+
+
+def test_an_sdk_without_the_account_side_leaves_every_part_waiting() -> None:
+    contract = Contract.of(object())
     assert contract == Contract()
-    assert len(contract.waiting()) == 7
+    assert len(contract.waiting()) == 8
 
 
 def test_each_part_switches_on_when_the_sdk_has_it() -> None:
     contract = Contract.of(FutureSidecar())
-    assert contract == Contract(True, True, True, True, True, True, True)
+    assert contract == Contract(True, True, True, True, True, True, True, True)
     assert contract.waiting() == ()
 
 
@@ -266,7 +272,9 @@ async def test_with_the_contract_the_accounts_a_connection_reaches_are_reported(
     assert await Recorder(future.plugin(), Contract.of(future)).report_accounts([ACCOUNT], 7)
     (sent,) = future.sent("report_external_accounts")
     assert sent["accounts"] == [
-        {"external_account_id": "ALPACA:INST-1", "name": "Margin", "account_type": "margin"}
+        meridian.ExternalAccount(
+            external_account_id="ALPACA:INST-1", name="Margin", venue_account_type="margin"
+        )
     ]
 
 
@@ -311,6 +319,7 @@ KNOWN_PARAMETERS = {
         "side",
         "settle_date_quantity",
         "currency_assumed",
+        "also_counted_in_cash",
     },
     "resolve_identifier": {"identifiers", "as_of_ns", "exchange_mic", "currency"},
     "report_missing_instrument": {
@@ -321,7 +330,7 @@ KNOWN_PARAMETERS = {
         "reason",
         "observed_at_ns",
     },
-    "report_external_accounts": {"source", "accounts", "observed_at_ns"},
+    "report_external_accounts": {"accounts"},
 }
 
 

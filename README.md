@@ -173,16 +173,9 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned **by git commit** while the account-side operations are
-unreleased:
-
-    "open-meridian @ git+https://github.com/open-meridian/meridian-python.git@<commit>"
-
-To move to an SDK commit that brings a part of the contract, change the commit
-in `pyproject.toml` and run `make ci-local`. When the operations ship in a
-release, pin `open-meridian==<version>`, set `ARG BASE` in the `Dockerfile` to
-`plugin-python:<version>`, and return the `Dockerfile` to the template's single
-stage (its two stages exist only to build the git pin where git is).
+The SDK is pinned exactly, `open-meridian==0.4.0`, and the `Dockerfile` builds
+on the base image of the same version, `plugin-python:0.4.0`. To move to a new
+SDK release, change both together and run `make ci-local`.
 
 ## Working on it
 
