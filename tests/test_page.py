@@ -20,21 +20,27 @@ import meridian
 import pytest
 from meridian.v1 import sidecar_pb2
 
+from snaptrade import synthetic
 from snaptrade.linking import Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
     AccountView,
     ConnectionView,
     ExternalAccount,
     Freshness,
+    Serving,
     SyncState,
 )
 from snaptrade.page import (
     ACCOUNTS,
     ADMIN_PAGES,
     CONNECTIONS,
+    DELAYED,
     KIT,
+    REAL_TIME,
+    REFRESH_REFUSED,
     STATEMENTS,
     CsrfTokens,
+    e,
     render_accounts,
     render_admins_only,
     render_connections,
@@ -46,6 +52,7 @@ from snaptrade.page import (
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
 from snaptrade.synthetic import SyntheticVenue
+from snaptrade.venue import VenueError
 
 from conftest import Sidecar, caller_header, clock
 
@@ -316,7 +323,8 @@ def test_the_connections_actions_answer_with_the_pages_token(
     token = token_of(ADMIN)
     status, _, body = ask(server, "POST", "/admin/connect", ADMIN, f"csrf={token}")
     assert status == 200 and "Synthetic mode has no Connection Portal" in body
-    known = synced.status.connections[0].connection_id
+    # The one SnapTrade serves on a delay: a refresh applies to it.
+    known = synthetic.IBKR
     path = f"{CONNECTIONS}/{known}/refresh"
     status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token}")
     assert status == 200 and "nothing was asked of SnapTrade" in body
@@ -324,6 +332,105 @@ def test_the_connections_actions_answer_with_the_pages_token(
     assert tokens_on(body) == {token}
     unknown = f"{CONNECTIONS}/not-one-of-ours/refresh"
     assert ask(server, "POST", unknown, ADMIN, f"csrf={token}")[0] == 404
+
+
+def refresh_button(connection_id: str) -> str:
+    return f'action="{CONNECTIONS}/{connection_id}/refresh"'
+
+
+def test_refresh_is_offered_only_where_snaptrade_serves_on_a_delay(server: int) -> None:
+    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    # Interactive Brokers is served on a delay: Refresh, and that it may be charged.
+    assert refresh_button(synthetic.IBKR) in body
+    assert DELAYED in body and "may charge for each refresh" in body
+    # Alpaca and Schwab are served in real time: a plain line, and no Refresh.
+    assert refresh_button(synthetic.ALPACA) not in body
+    assert refresh_button(synthetic.SCHWAB) not in body
+    assert body.count(REAL_TIME) == 2
+    # Reconnecting is offered to each.
+    for key in (synthetic.ALPACA, synthetic.IBKR, synthetic.SCHWAB):
+        assert f'action="{CONNECTIONS}/{key}/reconnect"' in body
+
+
+@pytest.mark.parametrize(
+    ("serving", "offered", "said"),
+    [
+        (Serving.REAL_TIME, False, REAL_TIME),
+        (Serving.DELAYED, True, DELAYED),
+        # SnapTrade did not say: Refresh stays, and a refusal is said plainly.
+        (Serving.UNKNOWN, True, None),
+    ],
+)
+def test_the_refresh_button_follows_how_snaptrade_serves_the_connection(
+    serving: Serving, offered: bool, said: str | None
+) -> None:
+    connection = ConnectionView(
+        "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, serving=serving
+    )
+    shown = render_connections(Status(mode="snaptrade", connections=(connection,)), "t")
+    assert (refresh_button("c1") in shown) is offered
+    assert 'action="/admin/connections/c1/reconnect"' in shown
+    for line in (REAL_TIME, DELAYED):
+        assert (line in shown) is (line == said)
+
+
+def test_a_real_time_connection_is_not_refreshed_by_a_form_from_an_older_page(
+    server: int, recording: Recording, woken: asyncio.Event
+) -> None:
+    path = f"{CONNECTIONS}/{synthetic.ALPACA}/refresh"
+    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    assert status == 200 and REAL_TIME in body
+    assert recording.asked == [] and not woken.is_set()
+
+
+class Refused(Exception):
+    """What SnapTrade's SDK raises, as far as VenueError reads it."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__("the SDK's text, which can carry the user secret")
+        self.status = status
+
+
+class Refusing(Recording):
+    """SnapTrade answering a refresh with an HTTP status."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__()
+        self.status = status
+
+    async def refresh(self, connection_id: str) -> str:
+        self.asked.append(f"refresh {connection_id}")
+        raise VenueError("refreshing a connection", Refused(self.status))
+
+
+def settle(loop: asyncio.AbstractEventLoop) -> None:
+    """Let the loop run what the page's thread handed it."""
+    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=5)
+
+
+def test_snaptrade_refusing_a_refresh_is_said_plainly(
+    server: int, synced: Syncer, loop: asyncio.AbstractEventLoop, woken: asyncio.Event
+) -> None:
+    synced.venue = refusing = Refusing(403)
+    path = f"{CONNECTIONS}/{synthetic.IBKR}/refresh"
+    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    assert status == 200 and refusing.asked == [f"refresh {synthetic.IBKR}"]
+    assert f'<div class="notice info" role="status">{e(REFRESH_REFUSED)}</div>' in body
+    assert "Refused" not in body and "HTTP 403" not in body and "secret" not in body
+    # Nothing was refreshed, so nothing is read again for it.
+    settle(loop)
+    assert not woken.is_set()
+
+
+def test_another_refresh_failure_is_shown_as_before(server: int, synced: Syncer) -> None:
+    synced.venue = Refusing(500)
+    path = f"{CONNECTIONS}/{synthetic.IBKR}/refresh"
+    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    assert status == 200
+    assert "refreshing a connection failed: Refused (HTTP 500)" in body
+    assert 'class="notice bad" role="alert"' in body
+    assert e(REFRESH_REFUSED) not in body
+    assert "secret" not in body
 
 
 def test_reading_now_answers_with_the_tab_it_was_asked_from(

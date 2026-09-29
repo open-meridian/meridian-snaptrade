@@ -30,6 +30,11 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 - **Sync state and freshness** from the connection and the account's sync
   status: disabled, delayed by design (Interactive Brokers through SnapTrade),
   stale, or current, with holdings and history freshness apart.
+- **How SnapTrade serves a connection,** from `data_freshness_mode.snaptrade`:
+  `realtime` (it reads the brokerage on every call, so there is nothing to
+  refresh, and on a Real-time plan SnapTrade refuses a refresh), `delayed` (it
+  serves cached data, and a refresh, charged per call, reads it again), or not
+  said.
 """
 
 from __future__ import annotations
@@ -73,7 +78,8 @@ class SyncState(Enum):
 REMEDY: dict[SyncState, str] = {
     SyncState.CURRENT: "Nothing to do.",
     SyncState.STALE: (
-        "Usually SnapTrade's to recover. If it lasts, refresh the connection from this page."
+        "Usually SnapTrade's to recover. If it lasts, refresh the connection on the "
+        "Connections tab where it offers Refresh, or reconnect it."
     ),
     SyncState.NEEDS_SIGN_IN: "Somebody signs in to the brokerage again through SnapTrade.",
     SyncState.DISABLED: (
@@ -84,6 +90,18 @@ REMEDY: dict[SyncState, str] = {
         "Nothing to do: this brokerage reaches SnapTrade a business day late."
     ),
 }
+
+
+class Serving(Enum):
+    """How SnapTrade serves a connection's data: what decides whether a manual
+    refresh means anything (SnapTrade's `data_freshness_mode.snaptrade`)."""
+
+    # SnapTrade reads the brokerage on every call: nothing to refresh.
+    REAL_TIME = "real_time"
+    # SnapTrade serves cached data; a refresh, charged per call, reads it again.
+    DELAYED = "delayed"
+    # SnapTrade did not say.
+    UNKNOWN = "unknown"
 
 
 class Side(Enum):
@@ -197,6 +215,7 @@ class ConnectionView:
     detail: str
     disabled_at: datetime | None
     accounts: tuple[AccountView, ...] = field(default=())
+    serving: Serving = Serving.UNKNOWN
 
 
 # ── Numbers ──────────────────────────────────────────────────────────────────
@@ -311,6 +330,17 @@ def late_by_design(connection: Json) -> bool:
     if isinstance(mode, dict) and "institution" in mode:
         return mode.get("institution") == "delayed"
     return brokerage_slug(connection).startswith(_LATE_BY_DESIGN_SLUGS)
+
+
+def serving(connection: Json) -> Serving:
+    """How SnapTrade serves a connection: `data_freshness_mode.snaptrade`,
+    `realtime` or `delayed`, and unknown when it says neither."""
+    said = _dict(connection.get("data_freshness_mode")).get("snaptrade")
+    if said == "realtime":
+        return Serving.REAL_TIME
+    if said == "delayed":
+        return Serving.DELAYED
+    return Serving.UNKNOWN
 
 
 def freshness(
@@ -579,4 +609,5 @@ def _connection_view(connection: Json, accounts: tuple[AccountView, ...]) -> Con
         detail=detail,
         disabled_at=_moment(connection.get("disabled_date")),
         accounts=accounts,
+        serving=serving(connection),
     )

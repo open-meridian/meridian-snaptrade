@@ -18,7 +18,9 @@ user pages", step 1): admin pages are setup, user pages are daily work.
   connecting one through SnapTrade's Connection Portal, each connection's
   health and each account's sync state with what to do, linking each account
   to one of the deployment's (W6.4, point 8 of kernel/a-plugins-admin-view),
-  and reconnecting or refreshing a connection. They are served to a caller
+  and reconnecting a connection, or refreshing one SnapTrade serves on a
+  delay (a real-time one has nothing to refresh, and on SnapTrade's Real-time
+  plans it refuses to). They are served to a caller
   whose verified `deployment_admin` claim is true, and to nobody else;
   `/admin` sends a caller to Connections. The SnapTrade keys are entered in
   the dashboard's settings form, never here.
@@ -71,7 +73,7 @@ from urllib.parse import parse_qs
 import meridian
 
 from .linking import Link, Links, LinkView, Offered, refusal
-from .normalise import REMEDY, AccountView, ConnectionView, Holding, SyncState
+from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
 from .settings import label
 from .sync import Status, Syncer
 from .venue import VenueError
@@ -150,6 +152,22 @@ _STATE_TONE = {
 }
 # The states that ask a person to do something.
 _ATTENTION = (SyncState.STALE, SyncState.NEEDS_SIGN_IN, SyncState.DISABLED)
+# What a connection says about refreshing it, by how SnapTrade serves it. A
+# real-time one is offered no Refresh: SnapTrade reads the brokerage on every
+# call, and on its Real-time plans (Personal, Pay as you go) it refuses one.
+REAL_TIME = (
+    "Real-time: SnapTrade fetches fresh data from the brokerage on every read, "
+    "so there is nothing to refresh."
+)
+DELAYED = (
+    "Delayed: SnapTrade serves this connection from its cache. Refresh asks it to "
+    "read the brokerage again, and SnapTrade may charge for each refresh."
+)
+# What SnapTrade's refusal of a refresh (HTTP 403) is shown as.
+REFRESH_REFUSED = (
+    "SnapTrade doesn't allow a manual refresh for this connection on this plan; "
+    "it reads fresh data on every sync."
+)
 _LINK_LABEL = {Link.LINKED: "Linked", Link.UNLINKED: "Not linked", Link.UNKNOWN: "Not known"}
 _LINK_TONE = {Link.LINKED: "good", Link.UNLINKED: "warn", Link.UNKNOWN: ""}
 
@@ -677,6 +695,16 @@ def _connection(connection: ConnectionView, token: str) -> str:
     said = " ".join(filter(None, (connection.detail, remedy)))
     # Reconnecting is what a disabled connection asks for, so it leads there.
     reconnect = "primary" if connection.state is SyncState.DISABLED else ""
+    # Refresh is offered unless SnapTrade says it serves the connection in real
+    # time; where it does not say, a refusal is shown plainly (REFRESH_REFUSED).
+    refreshing = {Serving.REAL_TIME: REAL_TIME, Serving.DELAYED: DELAYED}.get(
+        connection.serving, ""
+    )
+    refresh = (
+        ""
+        if connection.serving is Serving.REAL_TIME
+        else _button(f"{CONNECTIONS}/{key}/refresh", "Refresh", token)
+    )
     return (
         '<div class="list-row"><div class="grow">'
         f'<div class="row"><span class="title">'
@@ -684,8 +712,9 @@ def _connection(connection: ConnectionView, token: str) -> str:
         "</div>"
         f'<div class="meta">{e(" · ".join(filter(None, meta)))}</div>'
         + (f'<span class="hint">{e(said)}</span>' if said else "")
+        + (f'<span class="hint">{e(refreshing)}</span>' if refreshing else "")
         + "</div>"
-        f"{_button(f'{CONNECTIONS}/{key}/refresh', 'Refresh', token)}"
+        f"{refresh}"
         f"{_button(f'{CONNECTIONS}/{key}/reconnect', 'Reconnect', token, reconnect)}"
         "</div>"
     )
@@ -1078,7 +1107,7 @@ def serve(
                 self._link(caller, parts[2:], form)
                 return
             venue = syncer.venue
-            known = {c.connection_id for c in syncer.status.connections}
+            serving = {c.connection_id: c.serving for c in syncer.status.connections}
             notice, portal, answer = None, None, CONNECTIONS
             try:
                 if parts == ["admin", "read"]:
@@ -1093,12 +1122,25 @@ def serve(
                 elif (
                     len(parts) == 4
                     and parts[:2] == ["admin", "connections"]
-                    and parts[2] in known
+                    and parts[2] in serving
                     and parts[3] in ("refresh", "reconnect")
                 ):
-                    if parts[3] == "refresh":
-                        notice = Notice(on_loop(venue.refresh(parts[2])))
-                        loop.call_soon_threadsafe(wake.set)
+                    if parts[3] == "refresh" and serving[parts[2]] is Serving.REAL_TIME:
+                        # Offered no Refresh; a form from an older page is
+                        # answered without asking SnapTrade.
+                        notice = Notice(REAL_TIME)
+                    elif parts[3] == "refresh":
+                        try:
+                            notice = Notice(on_loop(venue.refresh(parts[2])))
+                        except VenueError as failed:
+                            # SnapTrade's refusal (Real-time plans refuse a
+                            # refresh), said plainly; any other failure is
+                            # shown as every other is, below.
+                            if failed.status != 403:
+                                raise
+                            notice = Notice(REFRESH_REFUSED)
+                        else:
+                            loop.call_soon_threadsafe(wake.set)
                     else:
                         portal = on_loop(venue.connection_portal(reconnect=parts[2]))
                 else:

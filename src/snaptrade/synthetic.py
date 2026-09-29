@@ -9,12 +9,14 @@ resolves (ZZTOP, the fixtures' unresolvable), so a placeholder shows too.
 
 Three connections, chosen so each normalising rule has something to act on:
 
-- Alpaca, current: long and short stock, an option, a money-market fund also
-  counted in cash, crypto to nine decimals, and cash in two currencies.
-- Interactive Brokers, a business day late by design: a euro listing, a
+- Alpaca, current and served in real time: long and short stock, an option,
+  a money-market fund also counted in cash, crypto to nine decimals, and cash
+  in two currencies.
+- Interactive Brokers, a business day late by design and the one SnapTrade
+  serves on a delay, so the one a refresh applies to: a euro listing, a
   position whose currency SnapTrade does not state, and negative dollar cash.
-- Schwab, disabled five days ago and serving what it last read, with an
-  account SnapTrade gives no institution_account_id for.
+- Schwab, served in real time but disabled five days ago and serving what it
+  last read, with an account SnapTrade gives no institution_account_id for.
 
 The tests hold every response here to SnapTrade's own models.
 """
@@ -83,7 +85,7 @@ _CONNECTIONS = Template("""[
     "disabled": true,
     "disabled_date": "$five_days_ago",
     "meta": {},
-    "data_freshness_mode": {"institution": "realtime", "snaptrade": "delayed"}
+    "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"}
   }
 ]""")
 

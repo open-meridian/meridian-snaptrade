@@ -82,7 +82,11 @@ class Venue(Protocol):
         ...
 
     async def refresh(self, connection_id: str) -> str:
-        """Ask SnapTrade to read a connection's brokerage again; its confirmation."""
+        """Ask SnapTrade to read a connection's brokerage again; its confirmation.
+
+        Only a connection SnapTrade serves on a delay benefits, and each call
+        may be charged. On a Real-time plan SnapTrade refuses one for a
+        real-time connection: a VenueError whose `status` is 403."""
         ...
 
 

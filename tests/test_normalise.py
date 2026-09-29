@@ -11,6 +11,7 @@ import pytest
 
 from snaptrade.normalise import (
     Identifier,
+    Serving,
     Side,
     SyncState,
     cash_holding,
@@ -18,6 +19,7 @@ from snaptrade.normalise import (
     freshness,
     ns,
     position_holding,
+    serving,
     statement,
     statement_id,
     to_decimal,
@@ -444,6 +446,39 @@ def test_an_account_whose_connection_was_not_listed_is_still_shown() -> None:
     (seen,) = views(snapshot([account()], []), STALE_AFTER)
     assert seen.connection_id == "00000000-0000-4000-8000-0000000000c1"
     assert len(seen.accounts) == 1
+    # Nothing says how SnapTrade serves it.
+    assert seen.serving is Serving.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        ({"institution": "realtime", "snaptrade": "realtime"}, Serving.REAL_TIME),
+        ({"institution": "delayed", "snaptrade": "delayed"}, Serving.DELAYED),
+        # The two are independent: SnapTrade may cache a real-time brokerage.
+        ({"institution": "realtime", "snaptrade": "delayed"}, Serving.DELAYED),
+        ({"institution": "delayed", "snaptrade": "realtime"}, Serving.REAL_TIME),
+        ({"institution": "realtime"}, Serving.UNKNOWN),
+        ({"institution": "realtime", "snaptrade": "REALTIME"}, Serving.UNKNOWN),
+        ({"institution": "realtime", "snaptrade": None}, Serving.UNKNOWN),
+        (None, Serving.UNKNOWN),
+        ("realtime", Serving.UNKNOWN),
+    ],
+)
+def test_how_snaptrade_serves_a_connection_is_its_data_freshness_mode(
+    mode: Any, expected: Serving
+) -> None:
+    assert serving(connection(data_freshness_mode=mode)) is expected
+
+
+def test_a_connection_carries_how_snaptrade_serves_it() -> None:
+    delayed = connection(data_freshness_mode={"institution": "delayed", "snaptrade": "delayed"})
+    (seen,) = views(snapshot([account()], [delayed]), STALE_AFTER)
+    assert seen.serving is Serving.DELAYED
+    absent = connection()
+    del absent["data_freshness_mode"]
+    (seen,) = views(snapshot([account()], [absent]), STALE_AFTER)
+    assert seen.serving is Serving.UNKNOWN
 
 
 def test_read_time_is_in_utc_nanoseconds_exactly() -> None:

@@ -13,7 +13,7 @@ from snaptrade_client.model.all_account_positions_response import (
 from snaptrade_client.model.balance import Balance
 from snaptrade_client.model.brokerage_authorization import BrokerageAuthorization
 
-from snaptrade.normalise import Side, SyncState, views
+from snaptrade.normalise import Serving, Side, SyncState, views
 from snaptrade.synthetic import ALPACA_MARGIN, IBKR_INDIVIDUAL, SCHWAB_BROKERAGE, SyntheticVenue
 from snaptrade.venue import read
 
@@ -44,6 +44,12 @@ async def test_each_rule_has_something_to_act_on() -> None:
         "Alpaca": SyncState.CURRENT,
         "Interactive Brokers": SyncState.DELAYED_BY_DESIGN,
         "Schwab": SyncState.DISABLED,
+    }
+    # Real time for most; the IBKR one on a delay, the one a refresh applies to.
+    assert {c.institution: c.serving for c in connections} == {
+        "Alpaca": Serving.REAL_TIME,
+        "Interactive Brokers": Serving.DELAYED,
+        "Schwab": Serving.REAL_TIME,
     }
     by_name = {view.account.name: view for c in connections for view in c.accounts}
 

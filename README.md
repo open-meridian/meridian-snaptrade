@@ -52,6 +52,7 @@ meridian-design.
 | balance `buying_power` per currency | the statement's buying power, as reported, never derived |
 | `cash_equivalent: true` (money-market funds) | kept as a position and marked; SnapTrade counts it in cash too |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
+| connection `data_freshness_mode.snaptrade` (`realtime` or `delayed`) | how SnapTrade serves the connection: whether the Connections tab offers Refresh (below); unknown when absent |
 | (the read) | a statement per account, its ID `snaptrade:<account>:<read time in ns>`, as of `data_freshness.as_of` |
 
 Sync state, first that applies:
@@ -62,7 +63,7 @@ Sync state, first that applies:
 | holdings `initial_sync_completed: false` | `stale` | wait; nothing is recorded until the first sync is done |
 | holdings `holdings_unavailable: true` | `stale` | nothing is recorded: an empty list does not mean an empty account |
 | connection `data_freshness_mode.institution: delayed` (Interactive Brokers) | `delayed_by_design` | nothing; `stale` if more than four days old |
-| last successful holdings sync older than `stale_after_hours` | `stale` | usually SnapTrade's to recover; refresh if it lasts |
+| last successful holdings sync older than `stale_after_hours` | `stale` | usually SnapTrade's to recover; if it lasts, refresh where Refresh is offered, or reconnect |
 | otherwise | `current` | nothing |
 
 Holdings freshness is the last successful holdings sync; history freshness is
@@ -122,7 +123,10 @@ Every value is invented. Three connections, chosen so each rule has something
 to act on: Alpaca (current; long and short stock, an option, a money-market
 fund, crypto to nine decimals, cash in two currencies), Interactive Brokers
 (delayed by design; a euro listing, a position with no stated currency,
-negative cash), and Schwab (disabled, with no stable account ID).
+negative cash), and Schwab (disabled, with no stable account ID). SnapTrade
+serves Alpaca and Schwab in real time and Interactive Brokers on a delay, so
+only Interactive Brokers is offered Refresh; refreshing it in synthetic mode
+asks nothing of SnapTrade.
 
 ## Its pages
 
@@ -178,6 +182,24 @@ at both levels"):
 - **Account links** (`/admin/accounts`): each account the connections reach
   with its link to one of the deployment's accounts, and each one's sync
   state, what to do, its freshness and its last statement.
+
+Refresh asks SnapTrade to read a connection's brokerage again
+(`refresh_brokerage_authorization`). It is offered only where it means
+something, by the connection's `data_freshness_mode.snaptrade`:
+
+- `delayed`: SnapTrade serves the connection from its cache. Refresh is
+  offered, with a hint that SnapTrade may charge for each refresh.
+- `realtime`: SnapTrade reads the brokerage on every call, and on its
+  Real-time plans (Personal, Pay as you go) it refuses a refresh with HTTP
+  403. No Refresh; the connection says "Real-time: SnapTrade fetches fresh
+  data from the brokerage on every read, so there is nothing to refresh." A
+  refresh posted from an older page is answered with that line, and SnapTrade
+  is not asked.
+- absent: Refresh is offered. Should SnapTrade refuse it (HTTP 403), the
+  page says plainly that SnapTrade doesn't allow a manual refresh for this
+  connection on this plan, and that it reads fresh data on every sync. Any
+  other failure is shown as every failed call is: what was asked, the
+  exception's type and the HTTP status, never its text.
 
 0.2.0's Holdings tab is gone: what the last read found is on Statements.
 Each admin page has "Read now". Each is served to a caller whose verified
@@ -260,7 +282,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.3.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.3.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on (the
 `develop-live` skill under `.claude/` walks that loop).
 
