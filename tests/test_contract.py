@@ -95,11 +95,15 @@ def test_each_part_switches_on_when_the_sdk_has_it() -> None:
     assert contract.waiting() == ()
 
 
-def test_the_admin_page_waits_for_the_caller_to_say_who_administers() -> None:
+def test_the_admin_page_is_for_whoever_the_caller_says_is_a_deployment_admin() -> None:
+    # The pinned SDK's caller has no deployment_admin: nobody is served.
     caller = meridian.Caller(subject="s", display_name="d", access=(), header="h")
     assert not is_administrator(caller)
-    assert is_administrator(SimpleNamespace(administrator=True))  # type: ignore[arg-type]
-    assert not is_administrator(SimpleNamespace(administrator="yes"))  # type: ignore[arg-type]
+    assert is_administrator(SimpleNamespace(deployment_admin=True))  # type: ignore[arg-type]
+    # Only True counts, and only under the claim's name.
+    assert not is_administrator(SimpleNamespace(deployment_admin=False))  # type: ignore[arg-type]
+    assert not is_administrator(SimpleNamespace(deployment_admin="yes"))  # type: ignore[arg-type]
+    assert not is_administrator(SimpleNamespace(administrator=True))  # type: ignore[arg-type]
 
 
 # ── Through today's SDK ──────────────────────────────────────────────────────

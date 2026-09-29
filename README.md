@@ -109,12 +109,15 @@ Ruled 2026-09-28: an admin portal only; people see accounts and holdings
 through a reporting plugin, not through custody. `/admin` shows the SnapTrade
 users under the key, each brokerage connection with its health, each account
 with its sync state, what to do, its freshness and its last statement, and
-offers connecting a brokerage through SnapTrade's Connection Portal (a link
-that opens outside the dashboard's frame), reconnecting and refreshing a
-connection, and reading now. `/` sends an administrator there and tells anyone
-else the plugin has no page for them. No credential is entered or shown here:
-keys are the dashboard's settings form, and linking accounts and granting
-access are the dashboard's too.
+the holdings the last read found, and offers connecting a brokerage through
+SnapTrade's Connection Portal (a link that opens outside the dashboard's
+frame), reconnecting and refreshing a connection, and reading now. It is
+served to deployment administrators only, as the verified caller's
+`deployment_admin` claim says (below, under waiting for the contract). `/`
+sends an administrator there and tells anyone else the plugin has no page for
+them. No credential is entered or shown here: keys are the dashboard's
+settings form, and linking accounts and granting access are the dashboard's
+too.
 
 Every action is a POST whose form carries a CSRF token, checked before
 anything is done; one without it, or with another's, is refused. The plugin
@@ -124,10 +127,21 @@ browser. The token is an HMAC of the verified caller's subject under a random
 secret the plugin makes at start and keeps only in memory, so a restart only
 means reloading the page.
 
-Markup (`page.py`) and style (`static/page.css`, Open Meridian's design tokens
-as custom properties, light and dark) are kept apart, to move onto the shared
-plugin kit (spec/plugin-pages-share-one-kit). `make preview` writes the page on
-synthetic data to `preview.html`.
+The pages are built on Open Meridian's plugin UI kit
+([meridian-ui](https://github.com/open-meridian/meridian-ui);
+spec/plugin-pages-share-one-kit), which the dashboard serves at
+`/.meridian/ui/<version>/` on the plugin's own host: `page.py` links its
+stylesheet and script, uses its classes and its `om-grid` for the accounts and
+the holdings, and has no style, colour or theme of its own. The dashboard's
+frame draws the plugin's name, the way back and the person, and hands the kit
+the person's colour scheme and light or dark. Where the kit is not served the
+page still works, unstyled: each table is in the HTML until the kit's grid
+replaces it, and every action is a plain form. Quantities are exact decimal
+strings, as SnapTrade reported them.
+
+`make preview` writes the admin page on synthetic data to `preview.html`. It
+links the kit at `/.meridian/ui/0.1.0/`, so serve it beside the kit to see it
+styled; opened on its own it is the page without the kit.
 
 ## Waiting for the contract
 
@@ -156,8 +170,10 @@ installed SDK's operations carry it, detected by parameter name:
   `platform.custody.{instance}.event.external-accounts`). Until then the
   dashboard learns an account when its rows are refused unlinked (W4.8).
 - **Who administers the deployment**, on the verified caller
-  (kernel/a-plugins-admin-view). Until then the admin page is served to
-  nobody.
+  (kernel/a-plugins-admin-view): the claim `CallerClaims.deployment_admin`
+  (meridian-schema), which the SDK reads as `Caller.deployment_admin` from the
+  release after 0.4.0. Until the pinned SDK reads it the admin page is served
+  to nobody; only `True` serves it.
 - **The asset class on an ambiguous miss** (sdk-contract/asset-class-is-an-enum).
   Sent empty until the names are ruled.
 
@@ -180,7 +196,7 @@ SDK release, change both together and run `make ci-local`.
 ## Working on it
 
     make ci-local        # lint (ruff, mypy strict), tests, and the plugin's image
-    make preview         # the admin page on synthetic data, as preview.html
+    make preview         # the admin page on synthetic data, as preview.html, linking the kit
     make install-hooks   # once per clone, so git push runs ci-local first
 
 Everything runs in containers. Put it in a deployment, once a session is open

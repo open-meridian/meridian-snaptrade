@@ -191,10 +191,16 @@ def locals_without_self(values: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in values.items() if key != "self"}
 
 
-def caller_header(subject: str = "person-1", name: str = "A Person") -> str:
+def caller_header(
+    subject: str = "person-1", name: str = "A Person", deployment_admin: bool = False
+) -> str:
     """A Meridian-Caller header as a sidecar forwards one."""
-    claims = sidecar_pb2.CallerClaims(subject=subject, display_name=name)
-    assertion = sidecar_pb2.CallerAssertion(claims=claims.SerializeToString())
+    claims = sidecar_pb2.CallerClaims(subject=subject, display_name=name).SerializeToString()
+    if deployment_admin:
+        # CallerClaims.deployment_admin (field 8, a bool) as the wire carries
+        # it, whether or not the pinned SDK's generated code knows the field.
+        claims += bytes([8 << 3, 1])
+    assertion = sidecar_pb2.CallerAssertion(claims=claims)
     return base64.urlsafe_b64encode(assertion.SerializeToString()).decode().rstrip("=")
 
 

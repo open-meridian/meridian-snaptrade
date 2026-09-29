@@ -1,24 +1,30 @@
-"""The admin portal: served to administrators only, the root sending them to
-it and telling anybody else there is no page for them, and never a secret."""
+"""The admin portal: served to deployment administrators only, the root
+sending them to it and telling anybody else there is no page for them, built on
+the kit and usable without it, and never a secret."""
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import http.client
 import json
-import os
 import re
 import threading
 from collections.abc import Iterator
-from pathlib import Path
 
 import meridian
 import pytest
 
 from snaptrade import page
 from snaptrade.contract import Contract
-from snaptrade.normalise import ConnectionView, SyncState
-from snaptrade.page import CsrfTokens, render_admin, render_no_page, serve, stylesheet
+from snaptrade.normalise import (
+    AccountView,
+    ConnectionView,
+    ExternalAccount,
+    Freshness,
+    SyncState,
+)
+from snaptrade.page import KIT, CsrfTokens, render_admin, render_no_page, serve
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
 from snaptrade.synthetic import SyntheticVenue
@@ -107,6 +113,18 @@ def test_an_administrator_is_sent_to_the_admin_portal(server: int) -> None:
     ):
         assert shown in body
     assert "no stable ID" in body
+
+
+def test_the_deployment_admin_claim_serves_the_admin_page_once_the_sdk_reads_it(
+    server: int,
+) -> None:
+    # The claim as the sidecar forwards it. The pinned SDK does not read it
+    # yet, and then the page is served to nobody; the SDK that does serves it.
+    reads = "deployment_admin" in {field.name for field in dataclasses.fields(meridian.Caller)}
+    status, location, _ = ask(server, "GET", "/", caller_header(deployment_admin=True))
+    assert (status, location) == ((303, "/admin") if reads else (200, ""))
+    status, _, _ = ask(server, "GET", "/admin", caller_header(deployment_admin=True))
+    assert status == (200 if reads else 403)
 
 
 class Recording(SyntheticVenue):
@@ -211,11 +229,6 @@ def test_a_token_is_the_same_for_one_person_and_differs_between_people() -> None
     assert "secret" not in repr(TOKENS)
 
 
-def test_the_stylesheet_is_served_apart_from_the_markup(server: int) -> None:
-    status, _, css = ask(server, "GET", page.STYLESHEET)
-    assert status == 200 and "--accent" in css
-
-
 def test_what_snaptrade_says_is_escaped() -> None:
     hostile = ConnectionView(
         "c1", "<script>alert(1)</script>", "Broker & Co", "read", SyncState.CURRENT, "", None
@@ -239,33 +252,75 @@ def test_waiting_for_settings_names_them_without_values() -> None:
 
 
 def test_the_no_page_answer_holds_no_account() -> None:
-    assert "<table" not in render_no_page()
+    shown = render_no_page()
+    assert "<table" not in shown and "om-grid" not in shown
+    assert f'href="{KIT}meridian.css"' in shown
 
 
-def test_the_stylesheet_uses_tokens_and_names_no_colour_outside_them() -> None:
-    css = stylesheet()
-    rules = re.sub(r":root[^{]*\{[^}]*\}", "", css)
-    rules = re.sub(r"@media \(prefers-color-scheme: dark\) \{\s*\}", "", rules)
-    assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(", rules)
+def synthetic_page() -> str:
+    """The admin page on the synthetic read, as an administrator gets it."""
+    sidecar = Sidecar()
+    syncer = Syncer(sidecar.plugin(), Contract.of(sidecar), now=clock())
+    syncer.configure(config_from({SYNTHETIC: True}))
+    return render_admin(asyncio.run(syncer.run_once()), "t")
 
 
-# The design repository's tokens: mounted by `make test`, or beside this
-# repository in a workspace. Private, so a public CI run skips this.
-DESIGN = Path(
-    os.environ.get("MERIDIAN_BRAND_TOKENS")
-    or Path(__file__).resolve().parents[2] / "meridian-design" / "brand" / "tokens.json"
-)
+def test_the_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> None:
+    for shown in (synthetic_page(), render_no_page()):
+        assert f'<link rel="stylesheet" href="{KIT}meridian.css">' in shown
+        assert f'<script src="{KIT}meridian.js"></script>' in shown
+        # One stylesheet, the kit's; no style, colour or chrome of the page's.
+        assert shown.count('rel="stylesheet"') == 1
+        assert "<style" not in shown and "style=" not in shown
+        assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", shown)
+        for chrome in ("<nav", "<img", "<svg", "<footer", "data-om-mode", "theme"):
+            assert chrome not in shown
+        assert '<main class="page">' in shown
 
 
-@pytest.mark.skipif(not DESIGN.exists(), reason="meridian-design is not beside this repo")
-def test_the_stylesheets_colours_are_the_design_tokens() -> None:
-    tokens = {
-        token["name"]: token["value"]
-        for token in json.loads(DESIGN.read_text())["color"]["tokens"]
-    }
-    css = stylesheet()
-    light = css.split("@media")[0]
-    dark = css.split(':root[data-theme="dark"]')[1]
-    for block, theme in ((light, "light"), (dark, "dark")):
-        for name, value in re.findall(r"--([a-z-]+):\s*(#[0-9a-f]{6})", block):
-            assert tokens[name][theme] == value, (theme, name)
+def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, object]]]:
+    data = re.search(
+        rf'<script type="application/json" id="{grid_id}-data">(.*?)</script>', shown
+    )
+    assert data is not None
+    parsed: dict[str, list[dict[str, object]]] = json.loads(data.group(1))
+    return parsed
+
+
+def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
+    shown = synthetic_page()
+    for grid_id, row_key in (("accounts", "id"), ("holdings", "key")):
+        element = re.search(
+            rf'<om-grid id="{grid_id}" row-key="{row_key}"[^>]*>(.*?)</om-grid>', shown
+        )
+        assert element is not None and "<table>" in element.group(1)
+        data = grid(shown, grid_id)
+        # As many rows in the table a browser shows as the grid is given.
+        assert element.group(1).count("<tr>") == len(data["rows"]) + 1
+        assert len({row[row_key] for row in data["rows"]}) == len(data["rows"])
+    # Set only once the kit has defined the grid.
+    assert 'customElements.whenDefined("om-grid")' in shown
+
+
+def test_quantities_are_exact_decimal_strings_as_read() -> None:
+    shown = synthetic_page()
+    rows = grid(shown, "holdings")["rows"]
+    quantities = {row["instrument"]: row["quantity"] for row in rows}
+    assert all(isinstance(quantity, str) for quantity in quantities.values())
+    # Crypto to nine decimals, a short, and cash as SnapTrade gave it.
+    assert "0.012345678" in quantities.values() and "-40" in quantities.values()
+    assert "200.00" in quantities.values()
+    assert '<td class="num">0.012345678</td>' in shown
+
+
+def test_the_grids_data_cannot_close_its_script() -> None:
+    hostile = "</script><script>alert(1)</script>"
+    account = ExternalAccount("broker:1", True, hostile, "", "Broker", "c1", "s1")
+    fresh = Freshness(SyncState.CURRENT, None, None, "")
+    view = AccountView(account, fresh, None, "withheld")
+    connection = ConnectionView(
+        "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, (view,)
+    )
+    shown = render_admin(Status(mode="snaptrade", connections=(connection,)), "t")
+    assert "<script>alert" not in shown
+    assert grid(shown, "accounts")["rows"][0]["account"] == hostile

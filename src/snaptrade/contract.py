@@ -22,8 +22,9 @@ Each part, what switches it on, and what happens until then:
   `connection_healthy`, and the state at the head of the detail text.
 - External accounts: `report_external_accounts`. Until then the dashboard
   learns of an account when its rows are refused unlinked (W4.8).
-- Administrator: `meridian.Caller.administrator`. Until then nobody is served
-  the admin page.
+- Deployment administrator: `meridian.Caller.deployment_admin`, the caller's
+  claim `CallerClaims.deployment_admin` (meridian-schema, field 8). Until the
+  SDK reads it nobody is served the admin page.
 
 The parameter names are those the contract's in-progress protos give
 (meridian-core holdings.proto, uncommitted on 2026-09-28): `side`,
@@ -70,7 +71,7 @@ SYNC_STATE = "state"
 HOLDINGS_AS_OF = "holdings_as_of_ns"
 HISTORY_AS_OF = "history_as_of_ns"
 REPORT_EXTERNAL_ACCOUNTS = "report_external_accounts"
-ADMINISTRATOR = "administrator"
+DEPLOYMENT_ADMIN = "deployment_admin"
 
 
 def _parameters(plugin: object, operation: str) -> dict[str, inspect.Parameter]:
@@ -131,13 +132,15 @@ class Contract:
 def is_administrator(caller: meridian.Caller) -> bool:
     """Whether the verified caller is a deployment administrator.
 
-    WAITING FOR THE CONTRACT: the caller's claims say who a person is and
-    what they hold on this plugin, and not yet whether they administer the
-    deployment (kernel/a-plugins-admin-view). Until they do, this is False
-    for everybody, so the admin page is served to nobody rather than to
-    somebody it should not be.
+    Read from the caller's `deployment_admin` claim, which the dashboard sets
+    and the sidecar verifies (kernel/a-plugins-admin-view; meridian-schema's
+    CallerClaims.deployment_admin), and the SDK reads as
+    `Caller.deployment_admin` from the release after 0.4.0. Only True
+    counts: an SDK without the field, or anything else in it, is False, so
+    the admin page is served to nobody rather than to somebody it should
+    not be.
     """
-    return getattr(caller, ADMINISTRATOR, None) is True
+    return getattr(caller, DEPLOYMENT_ADMIN, None) is True
 
 
 @dataclass

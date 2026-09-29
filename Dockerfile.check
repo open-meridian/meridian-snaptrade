@@ -13,8 +13,7 @@ COPY src src
 RUN --mount=type=cache,target=/root/.cache/pip pip install -e ".[dev]"
 COPY tests tests
 
-# Run by `make test` with `docker run`, so the design repository's tokens can
-# be mounted for the stylesheet's check where they exist.
+# Run by `make test` and `make preview` with `docker run`.
 FROM base AS test
 
 FROM base AS lint

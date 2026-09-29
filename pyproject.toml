@@ -33,11 +33,6 @@ snaptrade = "snaptrade.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# The page's stylesheet, kept apart from its markup so it can move onto the
-# shared plugin kit (spec/plugin-pages-share-one-kit) on its own.
-[tool.setuptools.package-data]
-snaptrade = ["static/*.css"]
-
 # What this plugin says about itself, which `meridian plugin upload` sends and
 # a deployment admin approves before it runs (W8). Declarations, not grants.
 [tool.meridian]

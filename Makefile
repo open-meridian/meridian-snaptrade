@@ -12,8 +12,6 @@ PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
 BASE        ?= ghcr.io/open-meridian/plugin-python:0.4.0
-DESIGN      ?= ../meridian-design
-TOKENS      := $(abspath $(DESIGN))/brand/tokens.json
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, and the plugin's image (the pre-push gate)"
@@ -21,7 +19,7 @@ help:
 	@echo "  make test           the tests, in a container"
 	@echo "  make lint           ruff and mypy, strict"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
-	@echo "  make preview        write preview.html: the admin page on synthetic data"
+	@echo "  make preview        write preview.html: the admin page on synthetic data, linking the kit"
 	@echo "  make fmt            apply the formatter"
 	@echo "  make install-hooks  point git at hooks/ so push fires ci-local"
 
@@ -43,15 +41,11 @@ lint:
 		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target lint --progress=plain ." >&2; exit 1; }
 	@echo "lint OK: ruff and mypy (strict) clean"
 
-# The stylesheet is checked against the design tokens where the design
-# repository is beside this one; it is private, so CI skips that one test.
 test:
 	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
 		|| { echo "test FAILED to build; see it with:" >&2; \
 		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
-	@if [ -f "$(TOKENS)" ]; then mount="-v $(TOKENS):/tokens.json:ro -e MERIDIAN_BRAND_TOKENS=/tokens.json"; \
-	 else mount=""; echo "test: no tokens at $(TOKENS); the stylesheet's token check is skipped"; fi; \
-	 docker run --rm $$mount $(CHECK) python -m pytest -q -rs >.test.log 2>&1 \
+	@docker run --rm $(CHECK) python -m pytest -q -rs >.test.log 2>&1 \
 		|| { echo "test FAILED. The last 40 lines, and the whole of it in .test.log:" >&2; \
 		     tail -40 .test.log >&2; exit 1; }
 	@echo "test OK: $$(tail -1 .test.log)"
@@ -67,7 +61,7 @@ image:
 	@[ "$$(docker inspect -f '{{.Config.User}}' $(IMAGE))" = "65532" ] \
 		|| { echo "image FAILED: it does not run as 65532" >&2; exit 1; }
 	@docker run --rm --entrypoint python $(IMAGE) -c \
-		"import meridian, snaptrade.__main__, snaptrade.page, snaptrade_client; snaptrade.page.stylesheet()" \
+		"import meridian, snaptrade.__main__, snaptrade.page, snaptrade_client" \
 		|| { echo "image FAILED: it does not import the SDK, SnapTrade's SDK and itself" >&2; exit 1; }
 	@[ -z "$$(docker run --rm --entrypoint sh $(IMAGE) -c 'ls -A /plugin')" ] \
 		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }

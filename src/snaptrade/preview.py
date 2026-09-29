@@ -1,8 +1,12 @@
-"""The admin portal as synthetic mode would show it, printed as one HTML file
-with its stylesheet inline: for looking at the page, and at the kit's
-migration, without a deployment.
+"""The admin portal as synthetic mode would show it, printed as one HTML file:
+for looking at the page without a deployment.
 
     python -m snaptrade.preview > preview.html
+
+It links the kit where the dashboard serves it, /.meridian/ui/<version>/, so
+serve it beside the kit to see it styled (meridian-ui's `make serve` serves
+the kit under that path); opened on its own it is the page without the kit,
+unstyled, which must work too.
 
 Nothing is recorded: there is no sidecar here, so the page shows the read and
 no statement outcomes.
@@ -14,7 +18,7 @@ import asyncio
 
 from .contract import Contract
 from .normalise import views
-from .page import STYLESHEET, render_admin, stylesheet
+from .page import render_admin
 from .settings import Config
 from .sync import Status
 from .synthetic import USER_ID, SyntheticVenue
@@ -35,9 +39,7 @@ async def _status() -> Status:
 
 
 def main() -> None:
-    page = render_admin(asyncio.run(_status()), token="preview")
-    link = f'<link rel="stylesheet" href="{STYLESHEET}">'
-    print(page.replace(link, f"<style>{stylesheet()}</style>"))
+    print(render_admin(asyncio.run(_status()), token="preview"))
 
 
 if __name__ == "__main__":

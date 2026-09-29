@@ -6,8 +6,9 @@ and subscribe to comes from the roles `pyproject.toml` declares under
 `[tool.meridian]`, once a deployment admin approves them.
 
 - `src/snaptrade/__main__.py` connects to the sidecar, declares the settings
-  (`settings.py`) and serves the admin page (`page.py`, styled by
-  `static/page.css`). `venue.py` is SnapTrade behind a small interface and the
+  (`settings.py`) and serves the admin page (`page.py`, built on the plugin
+  UI kit the dashboard serves: its classes and components, never a colour,
+  spacing or font of its own, and usable without the kit). `venue.py` is SnapTrade behind a small interface and the
   only module importing its SDK; `synthetic.py` stands in for it.
   `normalise.py` turns SnapTrade's shapes into the platform's convention;
   `contract.py` sends them through the SDK and holds everything waiting for
