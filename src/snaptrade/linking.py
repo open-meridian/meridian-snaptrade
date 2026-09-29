@@ -1,5 +1,5 @@
 """Linking each external account to one of the deployment's accounts (W6.4),
-on the Accounts tab, for the deployment admin viewing it.
+on the Account links tab, for the deployment admin viewing it.
 
 Ruled by the product owner on 2026-09-28 (kernel/a-plugins-admin-view, point
 8): each plugin manages its own external accounts' links, on its admin page,
@@ -56,6 +56,16 @@ class DeploymentAccount:
     account_id: str
     name: str
     open: bool = True
+    # Where it is held and what it is, as the deployment describes it (W6.3),
+    # to tell accounts of one name apart. Either may be empty.
+    custodian: str = ""
+    account_type: str = ""
+
+    def label(self) -> str:
+        """Its name, with its custodian and type beside it where it has them."""
+        name = self.name or self.account_id
+        described = ", ".join(filter(None, (self.custodian, self.account_type)))
+        return f"{name} ({described})" if described else name
 
 
 @dataclass(frozen=True)
@@ -105,21 +115,32 @@ class Links:
                     account.account_id,
                     account.name,
                     account.state != ops.ACCOUNT_STATE_CLOSED,
+                    account.custodian,
+                    account.account_type,
                 )
                 for account in read.accounts
             )
         )
 
     async def link(
-        self, acting_for: str, external_account_id: str, account_id: str = "", name: str = ""
+        self,
+        acting_for: str,
+        external_account_id: str,
+        account_id: str = "",
+        name: str = "",
+        custodian: str = "",
+        account_type: str = "",
     ) -> str:
-        """Link to `account_id`, or to a new account called `name`, or with
+        """Link to `account_id`, or to a new account called `name`, held at
+        `custodian` and of `account_type` as the admin left them, or with
         neither, remove the link. Returns the account linked to, or "". A
         refusal is raised as the SDK raises it."""
         linked = await self._plugin.link_external_account(
             external_account_id=external_account_id,
             account_id=account_id,
             new_account_name=name,
+            new_account_custodian=custodian if name else "",
+            new_account_type=account_type if name else "",
             acting_for=acting_for,
         )
         with self._lock:

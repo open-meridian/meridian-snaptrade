@@ -6,15 +6,22 @@ and subscribe to comes from the roles `pyproject.toml` declares under
 `[tool.meridian]`, once a deployment admin approves them.
 
 - `src/snaptrade/__main__.py` connects to the sidecar, declares the settings
-  (`settings.py`) and serves the admin pages, Connections, Accounts and
-  Holdings, which the dashboard shows as tabs (`page.py`, built on the plugin
-  UI kit the dashboard serves: its classes and components, never a colour,
-  spacing or font of its own, and usable without the kit). `venue.py` is
-  SnapTrade behind a small interface and the only module importing its SDK;
-  `synthetic.py` stands in for it. `normalise.py` turns SnapTrade's shapes
+  (`settings.py`) and serves the pages (`page.py`, built on the plugin UI kit
+  the dashboard serves: its classes and components, never a colour, spacing
+  or font of its own, and usable without the kit). Statements, at `/`, is the
+  user side: each account a person may read (`caller.may_read`), every
+  account for a deployment admin, and "nothing here for you" for anybody
+  else. The admin pages, which the dashboard shows as tabs, are setup only:
+  Connections and Account links. Daily work goes on the user side, setup on
+  the admin pages (intent/a-custody-plugin-serves-its-statement-receivers).
+  `venue.py` is SnapTrade behind a small interface and the only module
+  importing its SDK; `synthetic.py` stands in for it. `normalise.py` turns SnapTrade's shapes
   into the platform's convention; `contract.py` sends them through the SDK;
   `sync.py` carries one read through; `linking.py` links an account to one of
-  the deployment's, acting for the admin on the Accounts tab.
+  the deployment's, acting for the admin on the Account links tab. The
+  contract gives it no read of its links, so Statements shows a reader only
+  accounts whose link it made since it started; never guess the rest, and
+  never store them.
 - SnapTrade's vocabulary stops at `normalise.py`, and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.

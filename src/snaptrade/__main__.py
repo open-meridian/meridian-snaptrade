@@ -2,11 +2,12 @@
 Meridian deployment, through SnapTrade (plans/proving-the-plugin-system, step 1).
 
 It connects to the sidecar it is launched beside, declares its settings and
-its admin pages, and then, on every poll and every settings change, reads
-SnapTrade (or, in synthetic mode, its built-in responses), normalises what it
-read to the platform's convention (normalise.py), and records it through the
-SDK's typed operations (contract.py): each account's sync status, and a
-holdings statement per account. It holds nothing between reads; a restart
+its admin pages, serves those and Statements, its user side, and then, on
+every poll and every settings change, reads SnapTrade (or, in synthetic mode,
+its built-in responses), normalises what it read to the platform's convention
+(normalise.py), and records it through the SDK's typed operations
+(contract.py): each account's sync status, and a holdings statement per
+account. It holds nothing between reads; a restart
 reads again.
 
 Everything goes through the sidecar. The SnapTrade credentials arrive as the
@@ -80,7 +81,7 @@ async def run() -> None:
         syncer = Syncer(plugin)
         configured, wake = asyncio.Event(), asyncio.Event()
         page = serve(syncer, Links(plugin), loop, port, wake)
-        log.info("serving its admin pages on 127.0.0.1:%d", port)
+        log.info("serving Statements and its admin pages on 127.0.0.1:%d", port)
         tasks = [
             asyncio.create_task(watch_settings(plugin, syncer, configured, wake)),
             asyncio.create_task(poll(syncer, configured, wake)),

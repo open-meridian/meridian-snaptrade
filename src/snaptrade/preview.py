@@ -1,18 +1,20 @@
-"""The admin pages as synthetic mode would show them, each printed as one HTML
-file: for looking at the pages without a deployment.
+"""The pages as synthetic mode would show them, each printed as one HTML file:
+for looking at the pages without a deployment.
 
     python -m snaptrade.preview accounts > preview/accounts.html
 
-The tab is connections (the default), accounts or holdings. Each links the kit
+The page is connections (the default), accounts or statements. Each links the kit
 where the dashboard serves it, /.meridian/ui/<version>/, so serve it beside
 the kit to see it styled (meridian-ui's `make serve` serves the kit under that
 path); opened on its own it is the page without the kit, unstyled, which must
 work too.
 
-There is no sidecar here, so nothing is recorded. The Accounts tab shows one
-account of each kind of link, as if the last read had recorded the first, had
-the second's rows refused for want of a link, and had not recorded the third
-yet; and the deployment's accounts it offers are invented, like the rest.
+There is no sidecar here, so nothing is recorded. The Account links tab shows
+one account of each kind of link, as if the last read had recorded the first,
+had the second's rows refused for want of a link, and had not recorded the
+third yet; and the deployment's accounts it offers are invented, like the
+rest. Statements is as a reader sees it who may read the two accounts linked
+from the Account links tab, and not the third.
 """
 
 from __future__ import annotations
@@ -21,10 +23,12 @@ import asyncio
 import sys
 from dataclasses import replace
 
+import meridian
+
 from .contract import Outcome
 from .linking import DeploymentAccount, LinkView, Offered, link_of
 from .normalise import views
-from .page import render_accounts, render_connections, render_holdings
+from .page import render_accounts, render_connections, render_statements, visible
 from .settings import Config
 from .sync import Status
 from .synthetic import USER_ID, SyntheticVenue
@@ -32,8 +36,10 @@ from .venue import read, utc_now
 
 OFFERED = Offered(
     (
-        DeploymentAccount("ACC-1001", "Household brokerage"),
-        DeploymentAccount("ACC-1002", "Alpaca margin"),
+        DeploymentAccount("ACC-1001", "Household brokerage", custodian="Schwab"),
+        DeploymentAccount(
+            "ACC-1002", "Alpaca margin", custodian="Alpaca", account_type="margin"
+        ),
         DeploymentAccount("ACC-1003", "Old retirement", open=False),
     )
 )
@@ -79,18 +85,42 @@ def _linked(status: Status) -> tuple[Status, dict[str, LinkView]]:
     return replace(status, outcomes=outcomes), links
 
 
+def _read(status: Status) -> str:
+    """Statements for a reader who may read ACC-1001 and ACC-1002, to which
+    the first two accounts were linked from the Account links tab, and whose
+    rows the last read recorded."""
+    first, second, *rest = status.accounts
+    outcomes = {
+        view.account.external_account_id: Outcome(
+            rows=len(view.statement.holdings), recorded=len(view.statement.holdings)
+        )
+        for view in (first, second)
+        if view.statement is not None
+    }
+    links = {
+        first.account.external_account_id: link_of("ACC-1001", None),
+        second.account.external_account_id: link_of("ACC-1002", None),
+        **{view.account.external_account_id: link_of(None, None) for view in rest},
+    }
+    reader = meridian.Caller(
+        "reader", "A Reader", "preview", read=frozenset({"ACC-1001", "ACC-1002"})
+    )
+    read = replace(status, outcomes=outcomes)
+    return render_statements(read, visible(read, links, reader), everyone=False)
+
+
 def main() -> None:
-    tab = sys.argv[1] if len(sys.argv) > 1 else "connections"
+    page = sys.argv[1] if len(sys.argv) > 1 else "connections"
     status = asyncio.run(_status())
-    if tab == "accounts":
+    if page == "accounts":
         linked, links = _linked(status)
         print(render_accounts(linked, "preview", links, OFFERED))
-    elif tab == "holdings":
-        print(render_holdings(status, "preview"))
-    elif tab == "connections":
+    elif page == "statements":
+        print(_read(status))
+    elif page == "connections":
         print(render_connections(status, "preview"))
     else:
-        sys.exit(f"no tab {tab!r}: connections, accounts or holdings")
+        sys.exit(f"no page {page!r}: connections, accounts or statements")
 
 
 if __name__ == "__main__":

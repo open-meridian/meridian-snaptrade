@@ -6,7 +6,7 @@ cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role.
 
-It is built on the SDK it pins, `open-meridian==0.5.0`, which carries the
+It is built on the SDK it pins, `open-meridian==0.6.1`, which carries the
 whole account-side contract (spec/the-account-side-fits-every-venue): a
 holding's side, a market value left unset, a currency marked as assumed, a fund
 marked as counted in cash too, buying power on the statement, the sync state
@@ -56,7 +56,7 @@ meridian-design.
 
 Sync state, first that applies:
 
-| SnapTrade | State | What to do (shown on the admin page) |
+| SnapTrade | State | What to do (shown on the admin pages) |
 |---|---|---|
 | connection `disabled` | `disabled` | reconnect through SnapTrade's Connection Portal; it serves its last data meanwhile |
 | holdings `initial_sync_completed: false` | `stale` | wait; nothing is recorded until the first sync is done |
@@ -124,39 +124,81 @@ fund, crypto to nine decimals, cash in two currencies), Interactive Brokers
 (delayed by design; a euro listing, a position with no stated currency,
 negative cash), and Schwab (disabled, with no stable account ID).
 
-## The admin pages
+## Its pages
 
-Ruled 2026-09-28: an admin portal only; people see accounts and holdings
-through a reporting plugin, not through custody. Three admin pages, declared at
-registration (`Interface(admin_pages=...)`), which the dashboard's admin view
-of the instance shows as tabs after its own Overview, Settings and Access,
-each framing its path (ruled 2026-09-29, "tabs at both levels"):
+Ruled 2026-09-29 (meridian-design's
+intent/a-custody-plugin-serves-its-statement-receivers, "Admin pages and user
+pages", step 1): admin pages are setup, user pages are daily work. This is
+step 1, with no contract change: SnapTrade's own page, at `/`, is its user
+side, and the admin view keeps Connections and Account links. Step 2 has
+plugins declare user pages as they declare admin pages, and decisions/027
+makes the admin pages a plugin admin's; neither is built here.
+
+### Statements, the user side
+
+**Statements** (`/`) shows, for each account, its sync state (with its
+holdings and history freshness), its last statement (as of when, and what
+recording it came to) and its rows, as the last read found them, each in an
+`om-grid`. Who sees what (decisions/026, read from the verified
+`Meridian-Caller` header):
+
+- **A person who may read** (`caller.read`, checked with `caller.may_read`)
+  sees each account linked to one of the deployment's accounts they may read,
+  and no other.
+- **A deployment admin** sees every account SnapTrade reaches.
+- **Somebody with nothing to read** is told plainly that there is nothing
+  here for them, and nothing is read for them.
+
+It has no action and no form. Its sections become tabs inside the page once
+there is more than one (Unresolved positions, Discrepancies and Upload are
+planned); today there is one, so it draws none. In synthetic mode it says
+every figure is invented.
+
+What cuts it to a reader is which of the deployment's accounts each external
+account is linked to, and the contract gives a plugin no read of its links
+(meridian-design's sdk-contract/a-plugin-reads-its-own-links). So a reader
+sees an account whose link this plugin can name: one linked on the Account
+links tab since the plugin started. Any other account, including every one
+linked before a restart, is shown to deployment admins only, never guessed
+at, until that read exists. Nothing is stored to remember a link: plugins are
+ephemeral.
+
+### The admin pages
+
+Two admin pages, declared at registration (`Interface(admin_pages=...)`),
+which the dashboard's admin view of the instance shows as tabs after its own
+Overview, Settings and Access, each framing its path (ruled 2026-09-29, "tabs
+at both levels"):
 
 - **Connections** (`/admin/connections`): figures for the last read, each
   brokerage connection with its health, what to do about it, and refreshing
   or reconnecting it, connecting a brokerage through SnapTrade's Connection
   Portal (a link that opens outside the dashboard's frame), and the SnapTrade
   users under the key.
-- **Accounts** (`/admin/accounts`): each account the connections reach with
-  its link to one of the deployment's accounts, and each one's sync state,
-  what to do, its freshness and its last statement.
-- **Holdings** (`/admin/holdings`): the holdings the last read found.
+- **Account links** (`/admin/accounts`): each account the connections reach
+  with its link to one of the deployment's accounts, and each one's sync
+  state, what to do, its freshness and its last statement.
 
-Each has "Read now". Each is served to a caller whose verified
-`deployment_admin` claim is true, and anybody else is told the plugin has no
-page for them. `/admin` and, for an administrator, `/` send the caller to
-Connections. No credential is entered or shown here: keys are the dashboard's
-settings form, and granting access is the dashboard's too.
+0.2.0's Holdings tab is gone: what the last read found is on Statements.
+Each admin page has "Read now". Each is served to a caller whose verified
+`deployment_admin` claim is true, and anybody else is told it is for the
+deployment's administrators, with the way to Statements. `/admin` sends the
+caller to Connections. No credential is entered or shown here: keys are the
+dashboard's settings form, and granting access is the dashboard's too.
 
 ### Linking accounts
 
 Each plugin links its own external accounts (kernel/a-plugins-admin-view,
 point 8), and the link is its right to the account: a statement for an account
-nothing links is refused. On the Accounts tab an account not linked offers
+nothing links is refused. On the Account links tab an account not linked offers
 **Link to an existing account**, a picker of the deployment's open accounts
-read with `read_accounts_for_linking`, or **Create a new account**, named from
-the SnapTrade account and editable, which the conductor creates and links in
-one step; a linked one offers **Unlink**. Each is sent with
+read with `read_accounts_for_linking`, each shown with its custodian and type
+beside its name where the deployment has them, or **Create a new account**,
+named from the SnapTrade account, its custodian pre-filled from the
+connection's brokerage and its type from the account type SnapTrade reports,
+all three editable, which the conductor creates and links in one step (an
+owner and a note are given on the dashboard's Accounts tab); a linked one
+offers **Unlink**. Each is sent with
 `link_external_account`, acting for the admin viewing the page (their
 `Meridian-Caller` header as `acting_for`), and the sidecar refuses it for
 anybody else; a refusal is shown as the sidecar worded it.
@@ -182,18 +224,20 @@ The pages are built on Open Meridian's plugin UI kit
 spec/plugin-pages-share-one-kit), which the dashboard serves at
 `/.meridian/ui/<version>/` on the plugin's own host: `page.py` links its
 stylesheet and script, uses its classes and its `om-grid` for the accounts and
-the holdings, and has no style, colour or theme of its own. The dashboard
+each statement's rows, and has no style, colour or theme of its own. The dashboard
 draws the tabs, the plugin's name, the way back and the person, and hands the
 kit the person's colour scheme and light or dark. Where the kit is not served
 the pages still work, unstyled: each table is in the HTML until the kit's grid
 replaces it, and every action is a plain form. Quantities are exact decimal
 strings, as SnapTrade reported them. The kit has no account-mapping component
-yet, so the Accounts tab draws one from its classes (a list row per account,
+yet, so the Account links tab draws one from its classes (a list row per account,
 a badge for its link, and two plain forms).
 
-`make preview` writes each page on synthetic data to `preview/`. They link the
-kit at `/.meridian/ui/0.1.0/`, so serve them beside the kit to see them
-styled; opened on their own they are the pages without the kit.
+`make preview` writes each page on synthetic data to `preview/`: Connections,
+Account links, and Statements as a reader sees it who may read two of the
+three accounts. They link the kit at `/.meridian/ui/0.1.0/`, so serve them
+beside the kit to see them styled; opened on their own they are the pages
+without the kit.
 
 ## Depends on
 
@@ -202,8 +246,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.5.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.5.0`.
+The SDK is pinned exactly, `open-meridian==0.6.1`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.6.1`.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -211,12 +255,12 @@ the new SDK has that this plugin does not know, naming it.
 ## Working on it
 
     make ci-local        # lint (ruff, mypy strict), tests, and the plugin's image
-    make preview         # each admin page on synthetic data, in preview/, linking the kit
+    make preview         # each page on synthetic data, in preview/, linking the kit
     make install-hooks   # once per clone, so git push runs ci-local first
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.2.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.3.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on (the
 `develop-live` skill under `.claude/` walks that loop).
 

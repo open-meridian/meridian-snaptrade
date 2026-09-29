@@ -10,7 +10,7 @@ received.
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -36,7 +36,16 @@ _OPERATIONS = SimpleNamespace(
 
 # The deployment's accounts, as ReadAccountsForLinking answers by default.
 DEPLOYMENT_ACCOUNTS = (
-    ops.AccountRecord(account_id="ACC-1", name="Household", state=ops.ACCOUNT_STATE_OPEN),
+    ops.AccountRecord(
+        account_id="ACC-1",
+        name="Household",
+        state=ops.ACCOUNT_STATE_OPEN,
+        custodian="Schwab",
+        account_type="Brokerage",
+        owner="Fund I",
+        note="The family's.",
+    ),
+    ops.AccountRecord(account_id="ACC-3", name="Spare", state=ops.ACCOUNT_STATE_OPEN),
     ops.AccountRecord(account_id="ACC-2", name="Retired", state=ops.ACCOUNT_STATE_CLOSED),
 )
 
@@ -112,11 +121,18 @@ class Sidecar(Operations):
 
 
 def caller_header(
-    subject: str = "person-1", name: str = "A Person", deployment_admin: bool = False
+    subject: str = "person-1",
+    name: str = "A Person",
+    deployment_admin: bool = False,
+    read: Iterable[str] = (),
 ) -> str:
-    """A Meridian-Caller header as a sidecar forwards one."""
+    """A Meridian-Caller header as a sidecar forwards one: `read`, the
+    deployment's accounts the person may read through this plugin."""
     claims = sidecar_pb2.CallerClaims(
-        subject=subject, display_name=name, deployment_admin=deployment_admin
+        subject=subject,
+        display_name=name,
+        deployment_admin=deployment_admin,
+        read_account_ids=list(read),
     ).SerializeToString()
     assertion = sidecar_pb2.CallerAssertion(claims=claims)
     return base64.urlsafe_b64encode(assertion.SerializeToString()).decode().rstrip("=")

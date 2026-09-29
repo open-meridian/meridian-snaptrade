@@ -313,6 +313,13 @@ KNOWN_PARAMETERS = {
         "external_account_id",
         "account_id",
         "new_account_name",
+        # Pre-filled from the venue on the Accounts tab (W6.4).
+        "new_account_custodian",
+        "new_account_type",
+        # Known, and not sent: the admin gives an owner and a note on the
+        # dashboard (W6.3), not here.
+        "new_account_owner",
+        "new_account_note",
         "acting_for",
     },
     "read_accounts_for_linking": {"acting_for"},

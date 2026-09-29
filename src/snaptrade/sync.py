@@ -26,7 +26,7 @@ log = logging.getLogger("snaptrade")
 
 @dataclass(frozen=True)
 class Status:
-    """The last read, as the admin page shows it."""
+    """The last read, as the pages show it."""
 
     # "synthetic", "snaptrade", or "waiting" for settings.
     mode: str = "waiting"

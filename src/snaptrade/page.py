@@ -1,24 +1,34 @@
-"""The plugin's admin pages, and nothing for anybody else.
+"""The plugin's pages: Statements, its user side, and two admin pages.
 
-Ruled by the product owner on 2026-09-28 (spec/plugin-pages-share-one-kit,
-Q5, and the amendment the same day): this plugin has an admin portal and no
-user portal. It covers what only SnapTrade knows, and linking the accounts it
-reaches: its users under the key, the brokerage connections, connecting one
-through SnapTrade's Connection Portal, each connection's health and each
-account's sync state with what to do, linking each account to one of the
-deployment's (W6.4, point 8 of kernel/a-plugins-admin-view), what the last
-read found, and reconnecting or refreshing a connection. The SnapTrade keys
-are entered in the dashboard's settings form, never here. People see
-accounts and holdings through a reporting plugin, not through custody.
+Ruled by the product owner on 2026-09-29
+(intent/a-custody-plugin-serves-its-statement-receivers, "Admin pages and
+user pages", step 1): admin pages are setup, user pages are daily work.
 
-Three admin pages, declared at registration (`ADMIN_PAGES`), which the
-dashboard's admin view of the instance shows as tabs after its own, each
-framing its path (the product owner, 2026-09-29, "tabs at both levels"):
-Connections, Accounts and Holdings. The dashboard draws the tabs; a page
-draws only its content. `/admin` sends a caller to Connections, and `/`
-sends a deployment admin there and tells anybody else there is no page for
-them. Each page is served to a caller whose verified `deployment_admin` claim
-is true, and to nobody else.
+- **Statements** (`/`), the user side: per account, its sync state, its last
+  statement and its rows, as the last read found them. It is shown to a
+  person who may read (decisions/026), cut to the accounts they may read
+  (`caller.may_read`), and to a deployment admin, who sees every account.
+  Somebody with nothing to read is told so plainly. Its sections become tabs
+  inside the page once there is more than one; today there is one.
+- **Connections** and **Account links**, the admin pages, declared at
+  registration (`ADMIN_PAGES`), which the dashboard's admin view of the
+  instance shows as tabs after its own, each framing its path ("tabs at both
+  levels", 2026-09-29). They cover what only SnapTrade knows and linking the
+  accounts it reaches: its users under the key, the brokerage connections,
+  connecting one through SnapTrade's Connection Portal, each connection's
+  health and each account's sync state with what to do, linking each account
+  to one of the deployment's (W6.4, point 8 of kernel/a-plugins-admin-view),
+  and reconnecting or refreshing a connection. They are served to a caller
+  whose verified `deployment_admin` claim is true, and to nobody else;
+  `/admin` sends a caller to Connections. The SnapTrade keys are entered in
+  the dashboard's settings form, never here.
+
+Which of the deployment's accounts an external account is linked to is what
+cuts Statements to a reader, and the contract gives this plugin no read of
+its links (sdk-contract/a-plugin-reads-its-own-links). So a reader sees an
+account whose link this plugin can name: one made on the Account links tab
+since it started. One it cannot name is shown to deployment admins only,
+never guessed at. Nothing is stored for it: plugins are ephemeral.
 
 Built on the kit (spec/plugin-pages-share-one-kit, requirement 5): the
 dashboard serves Open Meridian's UI kit at /.meridian/ui/<version>/ on this
@@ -36,7 +46,8 @@ so without it a page elsewhere could have an administrator's browser post
 here. The token is an HMAC of the verified caller's subject under a secret
 this process makes at start: nobody else can make it, it is the same across
 the per-request assertions the dashboard mints for one person, and a restart
-makes every page open before it stale, which is only a reload.
+makes every page open before it stale, which is only a reload. Statements has
+no action.
 
 The standard library's server, as the SDK's reference plugin uses.
 """
@@ -70,20 +81,21 @@ TITLE = "SnapTrade"
 # deployment's; pinning one keeps the pages as they were built.
 KIT = "/.meridian/ui/0.1.0/"
 CSRF_FIELD = "csrf"
-# A form here carries a token, an account and a name at most; anything longer
-# is not one of this page's.
-_MOST_BODY = 4096
-# The longest name a new account is given here.
+# A form here carries a token, an account, and a new account's name, custodian
+# and type at most; anything longer is not one of this page's.
+_MOST_BODY = 8192
+# The longest name a new account is given here, and the longest custodian or
+# type the deployment keeps for one (W6.3).
 _MOST_NAME = 200
 
+# The user side: what a person who may read is shown.
+STATEMENTS = "/"
 CONNECTIONS = "/admin/connections"
 ACCOUNTS = "/admin/accounts"
-HOLDINGS = "/admin/holdings"
-# The admin pages, in the order the dashboard shows them as tabs.
+# The admin pages, in the order the dashboard shows them as tabs: setup only.
 ADMIN_PAGES = (
     meridian.Page(CONNECTIONS, "Connections"),
-    meridian.Page(ACCOUNTS, "Accounts"),
-    meridian.Page(HOLDINGS, "Holdings"),
+    meridian.Page(ACCOUNTS, "Account links"),
 )
 
 _Answer = TypeVar("_Answer")
@@ -321,14 +333,14 @@ _ACCOUNT_COLUMNS = (
     Column("id", "Account ID", type="code", hint="id_note"),
 )
 
-_HOLDING_COLUMNS = (
+# A statement's rows, on Statements, one grid per account.
+_ROW_COLUMNS = (
     Column("instrument", "Instrument", type="code", hint="identifiers"),
     Column("quantity", "Quantity", type="decimal", group=True),
     Column("currency", "Currency"),
     Column("side", "Side"),
     Column("description", "Description", hint="notes"),
     Column("kind", "Kind"),
-    Column("account", "Account"),
 )
 
 
@@ -419,7 +431,6 @@ def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
             [view.account.external_account_id, holding.side.value]
             + [f"{i.scheme}:{i.source}:{i.value}" for i in holding.identifiers]
         ),
-        "account": view.account.name,
         "instrument": shown.value,
         "identifiers": " · ".join(others),
         "description": holding.description,
@@ -491,8 +502,7 @@ def _picker(external_id: str, offered: Offered, token: str) -> str:
     if not choices:
         return '<p class="hint">The deployment has no open accounts yet: create one.</p>'
     options = "".join(
-        f'<option value="{e(account.account_id)}">{e(account.name or account.account_id)}'
-        "</option>"
+        f'<option value="{e(account.account_id)}">{e(account.label())}</option>'
         for account in choices
     )
     return (
@@ -506,8 +516,10 @@ def _picker(external_id: str, offered: Offered, token: str) -> str:
     )
 
 
-def _create(view: AccountView, token: str) -> str:
-    """Create a new account, named from the external one, and link it."""
+def _create(connection: ConnectionView, view: AccountView, token: str) -> str:
+    """Create a new account, named from the external one, held at the
+    connection's brokerage and of the venue's account type, each editable,
+    and link it."""
     return (
         f'<form method="post" action="{ACCOUNTS}/create">'
         f"{_hidden(CSRF_FIELD, token)}"
@@ -515,6 +527,12 @@ def _create(view: AccountView, token: str) -> str:
         '<label class="field"><span>Create a new account</span>'
         f'<input type="text" name="new_account_name" value="{e(view.account.name)}" '
         f'required maxlength="{_MOST_NAME}"></label>'
+        '<label class="field"><span>Custodian</span>'
+        f'<input type="text" name="new_account_custodian" value="{e(connection.institution)}" '
+        f'maxlength="{_MOST_NAME}"></label>'
+        '<label class="field"><span>Type</span>'
+        f'<input type="text" name="new_account_type" value="{e(view.account.account_type)}" '
+        f'maxlength="{_MOST_NAME}"></label>'
         '<div class="field"><button class="primary">Create and link</button></div></form>'
     )
 
@@ -551,7 +569,7 @@ def _mapping_row(
         )
     forms = (
         f'<div class="grid-2">{_picker(external_id, offered, token)}'
-        f"{_create(view, token)}</div>"
+        f"{_create(connection, view, token)}</div>"
     )
     # Where it is not known, it may be linked: removing the link is offered
     # too, under the forms, so a phone's width is left to them.
@@ -729,7 +747,7 @@ def render_accounts(
     offered: Offered,
     notice: Notice | None = None,
 ) -> str:
-    """The Accounts tab: each account the connections reach, linked to one of
+    """The Account links tab: each account the connections reach, linked to one of
     the deployment's here, and its sync state. `links` is each account's link
     by its external ID; `offered`, the deployment's accounts read for the
     admin viewing the page."""
@@ -745,7 +763,7 @@ def render_accounts(
         else ""
     )
     return _document(
-        _head("Accounts", status, token, ACCOUNTS)
+        _head("Account links", status, token, ACCOUNTS)
         + _notices(status, notice, None)
         + refused
         + _mapping(status, links, offered, token)
@@ -759,43 +777,161 @@ def render_accounts(
     )
 
 
-def render_holdings(status: Status, token: str, notice: Notice | None = None) -> str:
-    """The Holdings tab: what the last read found in each account."""
-    holdings = [
-        _holding_row(view, holding)
-        for view in status.accounts
-        if view.statement is not None
-        for holding in view.statement.holdings
-    ]
+def render_admins_only() -> str:
+    """What anybody but a deployment administrator gets on an admin page."""
     return _document(
-        _head("Holdings read", status, token, HOLDINGS)
-        + _notices(status, notice, None)
-        + '<section class="panel">'
-        '<div class="panel-body"><h2>Holdings read</h2>'
-        '<p class="muted">What the last read found in each account, as recorded in the '
-        "deployment's street store. Quantities are exact, as SnapTrade reported them.</p>"
-        "</div>"
-        + _grid(
-            "holdings",
-            "Holdings read",
-            "Nothing read yet.",
-            "key",
-            _HOLDING_COLUMNS,
-            holdings,
-        )
-        + "</section>",
-        _GRIDS,
+        '<section class="panel padded narrow">'
+        "<h1>This page is for the deployment's administrators</h1>"
+        "<p>It sets up how SnapTrade is read. What SnapTrade reads for the accounts you "
+        f'may read is on <a href="{STATEMENTS}">Statements</a>.</p>'
+        "</section>"
     )
 
 
-def render_no_page() -> str:
-    """What anybody but a deployment administrator gets."""
+def render_nothing_here() -> str:
+    """What somebody with nothing to read gets on Statements."""
     return _document(
         '<section class="panel padded narrow">'
-        "<h1>This plugin has no page for you</h1>"
-        "<p>It brings brokerage accounts into this deployment through SnapTrade. You "
-        "see those accounts, and what they hold, in the reports you have access to.</p>"
+        "<h1>Nothing here for you</h1>"
+        "<p>This plugin brings brokerage accounts into this deployment through SnapTrade, "
+        "and you may read none of them. If you should, ask whoever administers this "
+        "deployment.</p>"
         "</section>"
+    )
+
+
+Shown = tuple[ConnectionView, AccountView]
+
+
+def visible(
+    status: Status, links: Mapping[str, LinkView], caller: meridian.Caller
+) -> list[Shown]:
+    """The accounts Statements shows this caller: every one to a deployment
+    administrator, and to anybody else each one whose link this plugin can
+    name, to an account they may read. One whose link it cannot name is not
+    guessed at."""
+    everyone = is_administrator(caller)
+    return [
+        (connection, view)
+        for connection in status.connections
+        for view in connection.accounts
+        if everyone or _readable(links.get(view.account.external_account_id), caller)
+    ]
+
+
+def _readable(link: LinkView | None, caller: meridian.Caller) -> bool:
+    return (
+        link is not None
+        and link.state is Link.LINKED
+        and bool(link.account_id)
+        and caller.may_read(link.account_id)
+    )
+
+
+def _statement_tiles(status: Status, shown: Sequence[Shown]) -> str:
+    attention = sum(1 for _, view in shown if view.freshness.state in _ATTENTION)
+    statements = [view.statement for _, view in shown if view.statement is not None]
+    rows = sum(len(statement.holdings) for statement in statements)
+    brokerages = {connection.institution or connection.connection_id for connection, _ in shown}
+    return (
+        '<div class="tiles">'
+        + _tile(
+            "Accounts",
+            str(len(shown)),
+            f"{attention} not up to date" if attention else "all up to date",
+            "warn-ink" if attention else "",
+        )
+        + _tile("Brokerages", str(len(brokerages)))
+        + _tile(
+            "Rows",
+            str(rows),
+            f"in {len(statements)} statement{'' if len(statements) == 1 else 's'}",
+        )
+        + _tile(
+            "Last read",
+            f"{status.read_at:%H:%M} UTC" if status.read_at else "Not yet",
+            f"{status.read_at:%Y-%m-%d}" if status.read_at else "",
+        )
+        + "</div>"
+    )
+
+
+def _statement(
+    index: int, connection: ConnectionView, view: AccountView, status: Status
+) -> str:
+    """One account on Statements: its sync state, its last statement and its rows."""
+    account, fresh, statement = view.account, view.freshness, view.statement
+    recorded, ink, note = _recorded(view, status)
+    said_recorded = f'<span class="{e(ink)}">{e(recorded)}</span>' if ink else e(recorded)
+    last = (
+        f"Last statement as of {e(statement.as_of_date)}: {said_recorded}"
+        if statement is not None
+        else f"No statement on the last read: {e(recorded.lower())}"
+    )
+    said = [fresh.detail] if fresh.detail else []
+    if note and statement is not None:
+        said.append(f"{note[0].upper()}{note[1:]}.")
+    rows = [_holding_row(view, holding) for holding in statement.holdings] if statement else []
+    empty = (view.withheld or "Nothing was read.") if statement is None else "No rows."
+    return (
+        f'<section class="panel" data-account="{e(account.external_account_id)}">'
+        '<div class="list-row"><div class="grow">'
+        f'<div class="row"><span class="title">{e(account.name)}</span> '
+        f"{_badge(fresh.state)}</div>"
+        f'<div class="meta">{e(_where(connection, view))}</div>'
+        f'<div class="meta">Holdings as of {_when(fresh.holdings_as_of)} · '
+        f"history as of {_when(fresh.history_as_of)}</div>"
+        f'<div class="meta">{last}</div>'
+        + "".join(f'<span class="hint">{e(line)}</span>' for line in said)
+        + "</div></div>"
+        + _grid(f"rows-{index}", f"{account.name}: rows", empty, "key", _ROW_COLUMNS, rows)
+        + "</section>"
+    )
+
+
+def render_statements(status: Status, shown: Sequence[Shown], everyone: bool) -> str:
+    """Statements, the user side: for each account in `shown`, its sync
+    state, its last statement and its rows, as the last read found them.
+    `everyone` says the viewer is a deployment administrator, shown every
+    account."""
+    whose = (
+        "every account SnapTrade reaches; as a deployment administrator you see them all"
+        if everyone
+        else "each account you may read"
+    )
+    mode = {
+        "synthetic": " Synthetic mode: every figure here is invented, not read from SnapTrade.",
+        "snaptrade": "",
+        "waiting": " SnapTrade is not being read yet.",
+    }[status.mode]
+    read = f" Last read {_when(status.read_at)}." if status.read_at else ""
+    failed = (
+        '<div class="notice warn" role="status">The last read of SnapTrade failed, so '
+        "nothing is shown from it.</div>"
+        if status.error
+        else ""
+    )
+    accounts = "".join(
+        _statement(index, connection, view, status)
+        for index, (connection, view) in enumerate(shown)
+    ) or (
+        '<section class="panel"><div class="empty-state"><strong>No statements yet</strong>'
+        + (
+            "<p>Accounts appear here once SnapTrade is read.</p>"
+            if everyone
+            else "<p>None of the accounts you may read has come through SnapTrade here yet. "
+            "An account appears once it is linked to yours.</p>"
+        )
+        + "</div></section>"
+    )
+    return _document(
+        '<header class="page-head"><div><h1>Statements</h1>'
+        f"<p>What the last read of SnapTrade found in {e(whose)}. Quantities are exact, "
+        f"as SnapTrade reported them.{e(mode)}{read}</p></div></header>"
+        + failed
+        + (_statement_tiles(status, shown) if shown else "")
+        + accounts,
+        _GRIDS if shown else "",
     )
 
 
@@ -848,9 +984,14 @@ def serve(
         status, token = syncer.status, csrf.token(caller)
         if path == ACCOUNTS:
             return render_accounts(status, token, links_of(status), offered_to(caller), notice)
-        if path == HOLDINGS:
-            return render_holdings(status, token, notice)
         return render_connections(status, token, notice, portal)
+
+    def statements(caller: meridian.Caller) -> str:
+        status = syncer.status
+        everyone = is_administrator(caller)
+        if not everyone and not caller.read:
+            return render_nothing_here()
+        return render_statements(status, visible(status, links_of(status), caller), everyone)
 
     class Page(http.server.BaseHTTPRequestHandler):
         def _caller(self) -> meridian.Caller | None:
@@ -869,7 +1010,7 @@ def serve(
             if caller is None:
                 return None
             if not is_administrator(caller):
-                self._send(403, render_no_page())
+                self._send(403, render_admins_only())
                 return None
             return caller
 
@@ -892,16 +1033,12 @@ def serve(
             path, _, query = self.path.partition("?")
             # The frame's theme rides the query on first load; it goes along.
             connections = CONNECTIONS + (f"?{query}" if query else "")
-            if path == "/":
+            if path == STATEMENTS:
                 caller = self._caller()
-                if caller is None:
-                    return
-                if is_administrator(caller):
-                    self._redirect(connections)
-                else:
-                    self._send(200, render_no_page())
+                if caller is not None:
+                    self._send(200, statements(caller))
                 return
-            if path in ("/admin", CONNECTIONS, ACCOUNTS, HOLDINGS):
+            if path in ("/admin", CONNECTIONS, ACCOUNTS):
                 caller = self._administrator()
                 if caller is None:
                     return
@@ -948,7 +1085,7 @@ def serve(
                     loop.call_soon_threadsafe(wake.set)
                     notice = Notice("Reading SnapTrade now. Reload in a moment.")
                     back = _field(form, "back")
-                    answer = back if back in (CONNECTIONS, ACCOUNTS, HOLDINGS) else CONNECTIONS
+                    answer = back if back in (CONNECTIONS, ACCOUNTS) else CONNECTIONS
                 elif venue is None:
                     notice = Notice("Nothing to ask SnapTrade until its settings are given.")
                 elif parts == ["admin", "connect"]:
@@ -987,13 +1124,20 @@ def serve(
             named = views[external_id].account.name or external_id
             account_id = _field(form, "account_id") if action == ["link"] else ""
             name = _field(form, "new_account_name")[:_MOST_NAME] if action == ["create"] else ""
+            # Where it is held and what it is, as the admin left the venue's
+            # words; longer than the deployment keeps is refused by it, by name.
+            custodian = _field(form, "new_account_custodian") if action == ["create"] else ""
+            account_type = _field(form, "new_account_type") if action == ["create"] else ""
             if action == ["link"] and not account_id:
                 notice = Notice("Choose the account to link it to.", "warn")
             elif action == ["create"] and not name:
                 notice = Notice("Name the new account.", "warn")
             else:
                 try:
-                    on_loop(links.link(caller.header, external_id, account_id, name))
+                    sent = links.link(
+                        caller.header, external_id, account_id, name, custodian, account_type
+                    )
+                    on_loop(sent)
                 except meridian.MeridianError as refused:
                     notice = Notice(f"The sidecar refused this: {refusal(refused)}", "bad")
                 except Exception as failed:

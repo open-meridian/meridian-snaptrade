@@ -1,7 +1,8 @@
-"""The admin pages: three tabs served to deployment administrators only, the
-root sending them to the first and telling anybody else there is no page for
-them, linking on the Accounts tab acting for the admin, built on the kit and
-usable without it, and never a secret."""
+"""The pages: Statements at the root, cut to the accounts each reader may read,
+every account for a deployment admin, and plainly nothing for somebody with
+nothing to read; two admin tabs served to deployment administrators only;
+linking on the Account links tab acting for the admin; built on the kit and
+usable without it; and never a secret."""
 
 from __future__ import annotations
 
@@ -31,14 +32,16 @@ from snaptrade.page import (
     ACCOUNTS,
     ADMIN_PAGES,
     CONNECTIONS,
-    HOLDINGS,
     KIT,
+    STATEMENTS,
     CsrfTokens,
     render_accounts,
+    render_admins_only,
     render_connections,
-    render_holdings,
-    render_no_page,
+    render_nothing_here,
+    render_statements,
     serve,
+    visible,
 )
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
@@ -47,11 +50,16 @@ from snaptrade.synthetic import SyntheticVenue
 from conftest import Sidecar, caller_header, clock
 
 TOKENS = CsrfTokens(b"a secret for tests only")
-TABS = (CONNECTIONS, ACCOUNTS, HOLDINGS)
+TABS = (CONNECTIONS, ACCOUNTS)
 ADMIN = caller_header(deployment_admin=True)
+# Somebody who may read nothing through this plugin.
 PERSON = caller_header("person-2", "Not An Admin")
+# Somebody who may read ACC-1 through it, and nothing else.
+READER = caller_header("person-3", "A Reader", read=("ACC-1",))
 # The synthetic read's accounts, as the last read reached them.
 ALPACA = "ALPACA:SYN-ALP-1001"
+IBKR = "INTERACTIVE-BROKERS-FLEX:SYN-IB-2002"
+NAMES = ("Alpaca Margin", "IBKR Individual", "Schwab Brokerage")
 
 
 @pytest.fixture
@@ -124,11 +132,11 @@ def assertion(header: str) -> sidecar_pb2.CallerAssertion:
 # ── Who is served ────────────────────────────────────────────────────────────
 
 
-def test_the_admin_pages_are_declared_as_three_tabs_in_order() -> None:
+def test_the_admin_pages_are_setup_only_connections_and_account_links() -> None:
+    # Holdings moved to Statements, the user side (2026-09-29, step 1).
     assert [(page.path, page.title) for page in ADMIN_PAGES] == [
         ("/admin/connections", "Connections"),
-        ("/admin/accounts", "Accounts"),
-        ("/admin/holdings", "Holdings"),
+        ("/admin/accounts", "Account links"),
     ]
     declared = meridian.Interface(port=8000, title="SnapTrade", admin_pages=ADMIN_PAGES)
     assert [page.path for page in declared._declared().admin_pages] == list(TABS)
@@ -139,21 +147,28 @@ def test_a_request_the_sidecar_did_not_vouch_for_is_refused(server: int) -> None
         assert ask(server, "GET", path)[0] == 401
 
 
-def test_anybody_but_an_administrator_is_told_there_is_no_page_for_them(
+def test_somebody_with_nothing_to_read_is_told_so_plainly(
     server: int, sidecar: Sidecar
 ) -> None:
-    status, _, body = ask(server, "GET", "/", PERSON)
-    assert status == 200 and "This plugin has no page for you" in body
-    for path in ("/admin", *TABS):
-        status, _, body = ask(server, "GET", path, PERSON)
-        assert status == 403 and "This plugin has no page for you" in body
-        assert "Alpaca" not in body and ALPACA not in body
+    status, _, body = ask(server, "GET", STATEMENTS, PERSON)
+    assert status == 200 and "Nothing here for you" in body
+    assert "om-grid" not in body and "<table" not in body
+    for name in NAMES:
+        assert name not in body
     # Nor are the deployment's accounts read for them.
     assert sidecar.sent("ReadAccountsForLinking") == []
 
 
-def test_an_administrator_is_sent_to_the_first_tab(server: int) -> None:
-    assert ask(server, "GET", "/", ADMIN)[:2] == (303, CONNECTIONS)
+def test_the_admin_pages_are_for_administrators_only(server: int, sidecar: Sidecar) -> None:
+    for caller in (PERSON, READER):
+        for path in ("/admin", *TABS):
+            status, _, body = ask(server, "GET", path, caller)
+            assert status == 403 and "for the deployment's administrators" in body
+            assert "Alpaca" not in body and ALPACA not in body
+    assert sidecar.sent("ReadAccountsForLinking") == []
+
+
+def test_an_administrator_is_sent_to_the_first_admin_tab(server: int) -> None:
     assert ask(server, "GET", "/admin", ADMIN)[:2] == (303, CONNECTIONS)
     # The frame's theme, on the query, goes along.
     status, location, _ = ask(server, "GET", "/admin?om-mode=dark", ADMIN)
@@ -186,10 +201,77 @@ def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
     assert read.acting_for == assertion(ADMIN)
 
 
-def test_the_holdings_tab(server: int) -> None:
-    status, _, body = ask(server, "GET", HOLDINGS, ADMIN)
-    assert status == 200 and 'om-grid id="holdings"' in body
-    assert "Connect a brokerage" not in body and "Link each account" not in body
+def test_holdings_are_no_longer_an_admin_page(server: int) -> None:
+    assert ask(server, "GET", "/admin/holdings", ADMIN)[0] == 404
+
+
+# ── Statements, the user side ────────────────────────────────────────────────
+
+
+def link_from_the_page(port: int, external_id: str, account_id: str) -> None:
+    fields = form(csrf=token_of(ADMIN), external_account_id=external_id, account_id=account_id)
+    assert ask(port, "POST", f"{ACCOUNTS}/link", ADMIN, fields)[0] == 200
+
+
+def statement_of(body: str, external_id: str) -> str:
+    """One account's section on Statements."""
+    start = body.index(f'<section class="panel" data-account="{external_id}">')
+    return body[start : body.index("</section>", start)]
+
+
+def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sidecar) -> None:
+    link_from_the_page(server, ALPACA, "ACC-1")
+    link_from_the_page(server, IBKR, "ACC-3")
+    status, _, body = ask(server, "GET", STATEMENTS, READER)
+    assert status == 200 and "<h1>Statements</h1>" in body
+    assert "each account you may read" in body
+    # ACC-1's account: its sync state, its last statement and its rows.
+    shown = statement_of(body, ALPACA)
+    assert "Alpaca Margin" in shown and '<span class="badge good">Current</span>' in shown
+    assert "Last statement as of 2026-09-28" in shown
+    assert 'om-grid id="rows-0"' in shown and "<code>AAPL</code>" in shown
+    # Not ACC-3's, which they may not read, nor one whose link is not known.
+    assert IBKR not in body and "IBKR Individual" not in body
+    assert "Schwab Brokerage" not in body
+    # Nothing to do here: no form, and nothing asked of the sidecar for them.
+    assert "<form" not in body and 'name="csrf"' not in body
+    reads = [params.acting_for for params in sidecar.sent("ReadAccountsForLinking")]
+    assert assertion(READER) not in reads
+
+
+def test_an_account_whose_link_is_not_known_is_not_shown_to_a_reader(server: int) -> None:
+    # Its rows were recorded, so it is linked; but to which account, this
+    # plugin cannot say (sdk-contract/a-plugin-reads-its-own-links).
+    status, _, body = ask(server, "GET", STATEMENTS, READER)
+    assert status == 200 and "No statements yet" in body
+    assert "An account appears once it is linked to yours." in body
+    for name in NAMES:
+        assert name not in body
+    assert "om-grid" not in body
+
+
+def test_an_account_unlinked_from_the_page_leaves_the_readers_view(server: int) -> None:
+    link_from_the_page(server, ALPACA, "ACC-1")
+    assert "Alpaca Margin" in ask(server, "GET", STATEMENTS, READER)[2]
+    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
+    assert ask(server, "POST", f"{ACCOUNTS}/unlink", ADMIN, fields)[0] == 200
+    assert "Alpaca Margin" not in ask(server, "GET", STATEMENTS, READER)[2]
+
+
+def test_a_deployment_admin_sees_every_account(server: int) -> None:
+    status, _, body = ask(server, "GET", STATEMENTS, ADMIN)
+    assert status == 200 and "as a deployment administrator you see them all" in body
+    for name in NAMES:
+        assert name in body
+    assert '<span class="badge bad">Disabled</span>' in body
+    assert '<span class="badge info">Delayed by design</span>' in body
+    # Synthetic data says so, to whoever reads it.
+    assert "Synthetic mode: every figure here is invented" in body
+
+
+def test_the_frames_theme_on_the_query_does_not_change_what_is_served(server: int) -> None:
+    status, _, body = ask(server, "GET", f"{STATEMENTS}?om-mode=dark", PERSON)
+    assert status == 200 and "Nothing here for you" in body
 
 
 # ── The connections' actions ─────────────────────────────────────────────────
@@ -248,8 +330,8 @@ def test_reading_now_answers_with_the_tab_it_was_asked_from(
     server: int, woken: asyncio.Event
 ) -> None:
     token = token_of(ADMIN)
-    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back=HOLDINGS))
-    assert "Reading SnapTrade now" in body and 'om-grid id="holdings"' in body
+    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back=ACCOUNTS))
+    assert "Reading SnapTrade now" in body and "Link each account" in body
     _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back="/elsewhere"))
     assert "Brokerage connections" in body
     assert woken.is_set()
@@ -309,12 +391,18 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
     row = row_of(body, ALPACA)
     assert '<span class="badge warn">Not linked</span>' in row
     assert "refused on the last read" in row
-    # The picker holds the deployment's open accounts, and nothing closed.
-    assert '<option value="ACC-1">Household</option>' in row and "Retired" not in row
+    # The picker holds the deployment's open accounts, and nothing closed,
+    # each with its custodian and type beside its name where it has them.
+    assert '<option value="ACC-1">Household (Schwab, Brokerage)</option>' in row
+    assert '<option value="ACC-3">Spare</option>' in row and "Retired" not in row
     assert 'action="/admin/accounts/link"' in row and 'name="account_id"' in row
     # A new account, named from the external one, editable.
     assert 'action="/admin/accounts/create"' in row
     assert 'name="new_account_name" value="Alpaca Margin"' in row
+    # Its custodian from the connection's brokerage, and its type from the
+    # venue's account type, both editable (W6.4).
+    assert 'name="new_account_custodian" value="Alpaca" maxlength="200"' in row
+    assert 'name="new_account_type" value="margin" maxlength="200"' in row
     assert "Unlink" not in row
     (read,) = refusing.sent("ReadAccountsForLinking")
     assert read.acting_for == assertion(ADMIN)
@@ -348,7 +436,52 @@ def test_creating_a_new_account_names_it_and_links_in_one_step(
     assert status == 200 and "Created Alpaca margin and linked Alpaca Margin to it." in body
     (sent,) = links_sent(sidecar)
     assert (sent.account_id, sent.new_account_name) == ("", "Alpaca margin")
+    assert (sent.new_account_custodian, sent.new_account_type) == ("", "")
     assert sent.acting_for == assertion(ADMIN)
+
+
+def test_a_new_account_is_sent_with_the_custodian_and_type_the_admin_left(
+    server: int, sidecar: Sidecar
+) -> None:
+    fields = form(
+        csrf=token_of(ADMIN),
+        external_account_id=ALPACA,
+        new_account_name="Alpaca margin",
+        new_account_custodian=" Alpaca Securities ",
+        new_account_type="Margin",
+    )
+    status, _, body = ask(server, "POST", f"{ACCOUNTS}/create", ADMIN, fields)
+    assert status == 200 and "Created Alpaca margin and linked Alpaca Margin to it." in body
+    (sent,) = links_sent(sidecar)
+    assert (
+        sent.new_account_name,
+        sent.new_account_custodian,
+        sent.new_account_type,
+        sent.new_account_owner,
+        sent.new_account_note,
+    ) == ("Alpaca margin", "Alpaca Securities", "Margin", "", "")
+
+
+def test_linking_to_an_existing_account_sends_no_custodian_or_type(
+    server: int, sidecar: Sidecar
+) -> None:
+    # They describe a new account; one that exists is described on the
+    # dashboard (W6.3), and the conductor ignores them on a link to it.
+    fields = form(
+        csrf=token_of(ADMIN),
+        external_account_id=ALPACA,
+        account_id="ACC-1",
+        new_account_custodian="Alpaca",
+        new_account_type="margin",
+    )
+    status, _, _ = ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)
+    assert status == 200
+    (sent,) = links_sent(sidecar)
+    assert (sent.account_id, sent.new_account_custodian, sent.new_account_type) == (
+        "ACC-1",
+        "",
+        "",
+    )
 
 
 def test_unlinking_sends_neither_account_nor_name(server: int, sidecar: Sidecar) -> None:
@@ -449,7 +582,7 @@ def test_linking_is_only_for_an_administrator(server: int, sidecar: Sidecar) -> 
             new_account_name="Mine",
         )
         status, _, body = ask(server, "POST", f"{ACCOUNTS}/{action}", PERSON, fields)
-        assert status == 403 and "This plugin has no page for you" in body
+        assert status == 403 and "for the deployment's administrators" in body
     assert nothing_linked_or_read(sidecar)
 
 
@@ -521,14 +654,18 @@ def test_the_portal_link_opens_outside_the_frame() -> None:
 
 
 def test_waiting_for_settings_names_them_by_label_without_values() -> None:
-    shown = render_holdings(Status(mode="waiting", missing=("snaptrade_consumer_key",)), "t")
+    status = Status(mode="waiting", missing=("snaptrade_consumer_key",))
+    shown = render_connections(status, "t")
     assert "Consumer key" in shown
+    # Statements does not name settings; it says SnapTrade is not read yet.
+    shown = render_statements(status, [], everyone=False)
+    assert "Consumer key" not in shown and "SnapTrade is not being read yet." in shown
 
 
-def test_the_no_page_answer_holds_no_account() -> None:
-    shown = render_no_page()
-    assert "<table" not in shown and "om-grid" not in shown
-    assert f'href="{KIT}meridian.css"' in shown
+def test_the_refusals_hold_no_account() -> None:
+    for shown in (render_nothing_here(), render_admins_only()):
+        assert "<table" not in shown and "om-grid" not in shown
+        assert f'href="{KIT}meridian.css"' in shown
 
 
 def synthetic_status() -> Status:
@@ -550,15 +687,16 @@ def links_for(status: Status) -> dict[str, LinkView]:
 def synthetic_pages() -> dict[str, str]:
     status = synthetic_status()
     offered = Offered()
+    everyone = visible(status, links_for(status), meridian.Caller.from_header(ADMIN))
     return {
         CONNECTIONS: render_connections(status, "t"),
         ACCOUNTS: render_accounts(status, "t", links_for(status), offered),
-        HOLDINGS: render_holdings(status, "t"),
+        STATEMENTS: render_statements(status, everyone, everyone=True),
     }
 
 
 def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> None:
-    for shown in (*synthetic_pages().values(), render_no_page()):
+    for shown in (*synthetic_pages().values(), render_nothing_here(), render_admins_only()):
         assert f'<link rel="stylesheet" href="{KIT}meridian.css">' in shown
         assert f'<script src="{KIT}meridian.js"></script>' in shown
         # One stylesheet, the kit's; no style, colour or chrome of the page's.
@@ -590,7 +728,11 @@ def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, object]]]:
 
 def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
     pages = synthetic_pages()
-    for path, grid_id, row_key in ((ACCOUNTS, "accounts", "id"), (HOLDINGS, "holdings", "key")):
+    for path, grid_id, row_key in (
+        (ACCOUNTS, "accounts", "id"),
+        (STATEMENTS, "rows-0", "key"),
+        (STATEMENTS, "rows-1", "key"),
+    ):
         shown = pages[path]
         element = re.search(
             rf'<om-grid id="{grid_id}" row-key="{row_key}"[^>]*>(.*?)</om-grid>', shown
@@ -611,8 +753,8 @@ def test_the_accounts_grid_says_each_link() -> None:
 
 
 def test_quantities_are_exact_decimal_strings_as_read() -> None:
-    shown = synthetic_pages()[HOLDINGS]
-    rows = grid(shown, "holdings")["rows"]
+    shown = synthetic_pages()[STATEMENTS]
+    rows = [row for index in range(2) for row in grid(shown, f"rows-{index}")["rows"]]
     quantities = {row["instrument"]: row["quantity"] for row in rows}
     assert all(isinstance(quantity, str) for quantity in quantities.values())
     # Crypto to nine decimals, a short, and cash as SnapTrade gave it.
@@ -641,8 +783,12 @@ def test_a_closed_account_is_not_offered() -> None:
     read = asyncio.run(offered.offered(ADMIN))
     assert [(a.account_id, a.open) for a in read.accounts] == [
         ("ACC-1", True),
+        ("ACC-3", True),
         ("ACC-2", False),
     ]
+    # Read with where each is held and what it is (W6.4).
+    household = read.accounts[0]
+    assert (household.custodian, household.account_type) == ("Schwab", "Brokerage")
     unlinked = {key: link_of("", None) for key in links_for(status)}
     shown = render_accounts(status, "t", unlinked, read)
     assert "Household" in shown and "Retired" not in shown
