@@ -10,4 +10,4 @@ CLAUDE.local.md
 .meridian
 # What `make test` and `make preview` leave behind.
 .test.log
-preview.html
+preview/

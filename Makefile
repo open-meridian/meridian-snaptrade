@@ -11,7 +11,7 @@ DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.4.0
+BASE        ?= ghcr.io/open-meridian/plugin-python:0.5.0
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, and the plugin's image (the pre-push gate)"
@@ -19,7 +19,7 @@ help:
 	@echo "  make test           the tests, in a container"
 	@echo "  make lint           ruff and mypy, strict"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
-	@echo "  make preview        write preview.html: the admin page on synthetic data, linking the kit"
+	@echo "  make preview        write preview/: each admin page on synthetic data, linking the kit"
 	@echo "  make fmt            apply the formatter"
 	@echo "  make install-hooks  point git at hooks/ so push fires ci-local"
 
@@ -69,8 +69,11 @@ image:
 
 preview:
 	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
-	@docker run --rm $(CHECK) python -m snaptrade.preview >preview.html
-	@echo "preview: preview.html"
+	@mkdir -p preview
+	@for tab in connections accounts holdings; do \
+		docker run --rm $(CHECK) python -m snaptrade.preview $$tab >preview/$$tab.html || exit 1; \
+	done
+	@echo "preview: preview/connections.html, preview/accounts.html, preview/holdings.html"
 
 # Applied in a container and written back, because the host has no toolchain.
 fmt:

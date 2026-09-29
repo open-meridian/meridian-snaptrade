@@ -15,7 +15,7 @@ from datetime import datetime
 
 import meridian
 
-from .contract import Contract, Outcome, Recorder
+from .contract import Outcome, Recorder
 from .normalise import AccountView, ConnectionView, ns, views
 from .settings import Config
 from .synthetic import SyntheticVenue
@@ -38,11 +38,8 @@ class Status:
     user_id: str = ""
     # Why the last read failed, when it did. Safe to show.
     error: str = ""
-    # The credential settings not yet given.
+    # The required settings not yet given.
     missing: tuple[str, ...] = ()
-    # The parts of the account-side contract the SDK does not carry yet.
-    waiting: tuple[str, ...] = ()
-    accounts_reported: bool = False
 
     @property
     def accounts(self) -> tuple[AccountView, ...]:
@@ -65,18 +62,16 @@ class Syncer:
     def __init__(
         self,
         plugin: meridian.Plugin,
-        contract: Contract,
         now: Callable[[], datetime] = utc_now,
         make_venue: Callable[[Config], Venue | None] | None = None,
     ) -> None:
         self._plugin = plugin
-        self._recorder = Recorder(plugin, contract)
-        self._contract = contract
+        self._recorder = Recorder(plugin)
         self._now = now
         self._make_venue = make_venue or (lambda config: venue_for(config, now))
         self.config = Config()
         self.venue: Venue | None = None
-        self.status = Status(waiting=contract.waiting())
+        self.status = Status()
 
     def configure(self, config: Config) -> None:
         self.config = config
@@ -89,7 +84,6 @@ class Syncer:
             mode=mode,
             user_id="synthetic-user" if config.synthetic else config.user_id,
             missing=config.missing,
-            waiting=self._contract.waiting(),
         )
         if venue is None:
             detail = "waiting for settings: " + ", ".join(config.missing)
@@ -115,11 +109,8 @@ class Syncer:
         observed = ns(snapshot.read_at)
         accounts = [view for connection in connections for view in connection.accounts]
         outcomes: dict[str, Outcome] = {}
-        reported = False
         try:
-            reported = await self._recorder.report_accounts(
-                [view.account for view in accounts], observed
-            )
+            await self._recorder.report_accounts([view.account for view in accounts])
         except meridian.MeridianError as refused:
             log.warning("reporting the accounts it reaches was refused: %s", refused)
         for view in accounts:
@@ -143,7 +134,6 @@ class Syncer:
             connections=connections,
             outcomes=outcomes,
             users=users,
-            accounts_reported=reported,
         )
         stopped = sum(1 for outcome in outcomes.values() if outcome.stopped)
         detail = f"read {len(accounts)} accounts through {len(connections)} connections"

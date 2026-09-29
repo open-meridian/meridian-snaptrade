@@ -4,8 +4,8 @@ The one place SnapTrade's vocabulary is read; nothing after this module knows
 it (decisions/023: the venue's convention stops at the plugin that speaks to
 the venue). Pure functions of a `venue.Snapshot` and the time, so each rule is
 tested on its own. What the account-side contract calls each thing
-(spec/the-account-side-fits-every-venue) is what it is called here, whether or
-not the SDK carries it yet; contract.py decides what reaches the sidecar.
+(spec/the-account-side-fits-every-venue) is what it is called here;
+contract.py sends it to the sidecar.
 
 The rules, each from the spec or the broker survey (reference/broker-apis.md):
 

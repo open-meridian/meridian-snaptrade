@@ -1,22 +1,25 @@
-"""The admin portal: served to deployment administrators only, the root
-sending them to it and telling anybody else there is no page for them, built on
-the kit and usable without it, and never a secret."""
+"""The admin pages: three tabs served to deployment administrators only, the
+root sending them to the first and telling anybody else there is no page for
+them, linking on the Accounts tab acting for the admin, built on the kit and
+usable without it, and never a secret."""
 
 from __future__ import annotations
 
 import asyncio
-import dataclasses
+import base64
 import http.client
 import json
 import re
 import threading
 from collections.abc import Iterator
+from typing import Any
+from urllib.parse import quote
 
 import meridian
 import pytest
+from meridian.v1 import sidecar_pb2
 
-from snaptrade import page
-from snaptrade.contract import Contract
+from snaptrade.linking import Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
     AccountView,
     ConnectionView,
@@ -24,7 +27,19 @@ from snaptrade.normalise import (
     Freshness,
     SyncState,
 )
-from snaptrade.page import KIT, CsrfTokens, render_admin, render_no_page, serve
+from snaptrade.page import (
+    ACCOUNTS,
+    ADMIN_PAGES,
+    CONNECTIONS,
+    HOLDINGS,
+    KIT,
+    CsrfTokens,
+    render_accounts,
+    render_connections,
+    render_holdings,
+    render_no_page,
+    serve,
+)
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
 from snaptrade.synthetic import SyntheticVenue
@@ -32,6 +47,11 @@ from snaptrade.synthetic import SyntheticVenue
 from conftest import Sidecar, caller_header, clock
 
 TOKENS = CsrfTokens(b"a secret for tests only")
+TABS = (CONNECTIONS, ACCOUNTS, HOLDINGS)
+ADMIN = caller_header(deployment_admin=True)
+PERSON = caller_header("person-2", "Not An Admin")
+# The synthetic read's accounts, as the last read reached them.
+ALPACA = "ALPACA:SYN-ALP-1001"
 
 
 @pytest.fixture
@@ -45,19 +65,28 @@ def loop() -> Iterator[asyncio.AbstractEventLoop]:
     running.close()
 
 
-@pytest.fixture
-def synced(loop: asyncio.AbstractEventLoop) -> Syncer:
-    sidecar = Sidecar()
-    syncer = Syncer(sidecar.plugin(), Contract.of(sidecar), now=clock())
+def read_once(sidecar: Sidecar, loop: asyncio.AbstractEventLoop) -> Syncer:
+    syncer = Syncer(sidecar.plugin(), now=clock())
     syncer.configure(config_from({SYNTHETIC: True}))
     asyncio.run_coroutine_threadsafe(syncer.run_once(), loop).result(timeout=10)
     return syncer
 
 
 @pytest.fixture
-def server(synced: Syncer, loop: asyncio.AbstractEventLoop) -> Iterator[int]:
-    wake = asyncio.Event()
-    running = serve(synced, loop, 0, wake, TOKENS)
+def synced(sidecar: Sidecar, loop: asyncio.AbstractEventLoop) -> Syncer:
+    return read_once(sidecar, loop)
+
+
+@pytest.fixture
+def woken() -> asyncio.Event:
+    return asyncio.Event()
+
+
+@pytest.fixture
+def server(
+    synced: Syncer, sidecar: Sidecar, loop: asyncio.AbstractEventLoop, woken: asyncio.Event
+) -> Iterator[int]:
+    running = serve(synced, Links(sidecar.plugin()), loop, 0, woken, TOKENS)
     yield running.server_address[1]
     running.shutdown()
 
@@ -76,30 +105,63 @@ def ask(
     return answer.status, answer.getheader("Location") or "", answer.read().decode()
 
 
-@pytest.fixture
-def administrator(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(page, "is_administrator", lambda caller: True)
+def token_of(caller: str) -> str:
+    return TOKENS.token(meridian.Caller.from_header(caller))
+
+
+def form(**fields: str) -> str:
+    return "&".join(f"{name}={quote(value)}" for name, value in fields.items())
+
+
+def assertion(header: str) -> sidecar_pb2.CallerAssertion:
+    padded = header + "=" * (-len(header) % 4)
+    decoded: sidecar_pb2.CallerAssertion = sidecar_pb2.CallerAssertion.FromString(
+        base64.urlsafe_b64decode(padded)
+    )
+    return decoded
+
+
+# ── Who is served ────────────────────────────────────────────────────────────
+
+
+def test_the_admin_pages_are_declared_as_three_tabs_in_order() -> None:
+    assert [(page.path, page.title) for page in ADMIN_PAGES] == [
+        ("/admin/connections", "Connections"),
+        ("/admin/accounts", "Accounts"),
+        ("/admin/holdings", "Holdings"),
+    ]
+    declared = meridian.Interface(port=8000, title="SnapTrade", admin_pages=ADMIN_PAGES)
+    assert [page.path for page in declared._declared().admin_pages] == list(TABS)
 
 
 def test_a_request_the_sidecar_did_not_vouch_for_is_refused(server: int) -> None:
-    assert ask(server, "GET", "/")[0] == 401
-    assert ask(server, "GET", "/admin")[0] == 401
+    for path in ("/", "/admin", *TABS):
+        assert ask(server, "GET", path)[0] == 401
 
 
-def test_anybody_but_an_administrator_is_told_there_is_no_page_for_them(server: int) -> None:
-    status, _, body = ask(server, "GET", "/", caller_header())
+def test_anybody_but_an_administrator_is_told_there_is_no_page_for_them(
+    server: int, sidecar: Sidecar
+) -> None:
+    status, _, body = ask(server, "GET", "/", PERSON)
     assert status == 200 and "This plugin has no page for you" in body
-    status, _, body = ask(server, "GET", "/admin", caller_header())
-    assert status == 403 and "Alpaca" not in body
-    token = TOKENS.token(meridian.Caller.from_header(caller_header()))
-    assert ask(server, "POST", "/admin/read", caller_header(), f"csrf={token}")[0] == 403
+    for path in ("/admin", *TABS):
+        status, _, body = ask(server, "GET", path, PERSON)
+        assert status == 403 and "This plugin has no page for you" in body
+        assert "Alpaca" not in body and ALPACA not in body
+    # Nor are the deployment's accounts read for them.
+    assert sidecar.sent("ReadAccountsForLinking") == []
 
 
-@pytest.mark.usefixtures("administrator")
-def test_an_administrator_is_sent_to_the_admin_portal(server: int) -> None:
-    status, location, _ = ask(server, "GET", "/", caller_header())
-    assert (status, location) == (303, "/admin")
-    status, _, body = ask(server, "GET", "/admin", caller_header())
+def test_an_administrator_is_sent_to_the_first_tab(server: int) -> None:
+    assert ask(server, "GET", "/", ADMIN)[:2] == (303, CONNECTIONS)
+    assert ask(server, "GET", "/admin", ADMIN)[:2] == (303, CONNECTIONS)
+    # The frame's theme, on the query, goes along.
+    status, location, _ = ask(server, "GET", "/admin?om-mode=dark", ADMIN)
+    assert (status, location) == (303, f"{CONNECTIONS}?om-mode=dark")
+
+
+def test_the_connections_tab(server: int) -> None:
+    status, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
     assert status == 200
     for shown in (
         "Alpaca",
@@ -107,24 +169,30 @@ def test_an_administrator_is_sent_to_the_admin_portal(server: int) -> None:
         "Schwab",
         "Delayed by design",
         "Disabled",
-        "ALPACA:SYN-ALP-1001",
         "Connect a brokerage",
         "synthetic-user",
     ):
         assert shown in body
-    assert "no stable ID" in body
+    assert "om-grid" not in body
 
 
-def test_the_deployment_admin_claim_serves_the_admin_page_once_the_sdk_reads_it(
-    server: int,
-) -> None:
-    # The claim as the sidecar forwards it. The pinned SDK does not read it
-    # yet, and then the page is served to nobody; the SDK that does serves it.
-    reads = "deployment_admin" in {field.name for field in dataclasses.fields(meridian.Caller)}
-    status, location, _ = ask(server, "GET", "/", caller_header(deployment_admin=True))
-    assert (status, location) == ((303, "/admin") if reads else (200, ""))
-    status, _, _ = ask(server, "GET", "/admin", caller_header(deployment_admin=True))
-    assert status == (200 if reads else 403)
+def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
+    status, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    assert status == 200
+    assert "Link each account" in body and ALPACA in body and "no stable ID" in body
+    assert 'om-grid id="accounts"' in body
+    # The deployment's accounts are read for the admin viewing the page.
+    (read,) = sidecar.sent("ReadAccountsForLinking")
+    assert read.acting_for == assertion(ADMIN)
+
+
+def test_the_holdings_tab(server: int) -> None:
+    status, _, body = ask(server, "GET", HOLDINGS, ADMIN)
+    assert status == 200 and 'om-grid id="holdings"' in body
+    assert "Connect a brokerage" not in body and "Link each account" not in body
+
+
+# ── The connections' actions ─────────────────────────────────────────────────
 
 
 class Recording(SyntheticVenue):
@@ -150,73 +218,276 @@ def recording(synced: Syncer) -> Recording:
     return venue
 
 
-def token_on_the_page(port: int, caller: str) -> str:
-    _, _, body = ask(port, "GET", "/admin", caller)
-    tokens: set[str] = set(re.findall(r'name="csrf" value="([0-9a-f]+)"', body))
-    assert len(tokens) == 1, "every form carries the one token"
-    return tokens.pop()
+def tokens_on(body: str) -> set[str]:
+    return set(re.findall(r'name="csrf" value="([0-9a-f]+)"', body))
 
 
-@pytest.mark.usefixtures("administrator")
-def test_the_admin_actions_answer_with_the_pages_token(
+def test_every_form_on_every_tab_carries_the_one_token(server: int) -> None:
+    for path in TABS:
+        _, _, body = ask(server, "GET", path, ADMIN)
+        assert tokens_on(body) == {token_of(ADMIN)}
+
+
+def test_the_connections_actions_answer_with_the_pages_token(
     server: int, synced: Syncer, recording: Recording
 ) -> None:
-    token = token_on_the_page(server, caller_header())
-    status, _, body = ask(server, "POST", "/admin/connect", caller_header(), f"csrf={token}")
+    token = token_of(ADMIN)
+    status, _, body = ask(server, "POST", "/admin/connect", ADMIN, f"csrf={token}")
     assert status == 200 and "Synthetic mode has no Connection Portal" in body
     known = synced.status.connections[0].connection_id
-    path = f"/admin/connections/{known}/refresh"
-    status, _, body = ask(server, "POST", path, caller_header(), f"csrf={token}")
+    path = f"{CONNECTIONS}/{known}/refresh"
+    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token}")
     assert status == 200 and "nothing was asked of SnapTrade" in body
     assert recording.asked == ["portal None", f"refresh {known}"]
-    # The answer's forms carry the token too.
-    assert f'value="{token}"' in body
-    status, _, _ = ask(
-        server,
-        "POST",
-        "/admin/connections/not-one-of-ours/refresh",
-        caller_header(),
-        f"csrf={token}",
+    assert tokens_on(body) == {token}
+    unknown = f"{CONNECTIONS}/not-one-of-ours/refresh"
+    assert ask(server, "POST", unknown, ADMIN, f"csrf={token}")[0] == 404
+
+
+def test_reading_now_answers_with_the_tab_it_was_asked_from(
+    server: int, woken: asyncio.Event
+) -> None:
+    token = token_of(ADMIN)
+    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back=HOLDINGS))
+    assert "Reading SnapTrade now" in body and 'om-grid id="holdings"' in body
+    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back="/elsewhere"))
+    assert "Brokerage connections" in body
+    assert woken.is_set()
+
+
+# ── Linking, on the Accounts tab ─────────────────────────────────────────────
+
+
+def links_sent(sidecar: Sidecar) -> list[Any]:
+    return sidecar.sent("LinkExternalAccount")
+
+
+def row_of(body: str, external_id: str) -> str:
+    """One account's row in the account mapping."""
+    start = body.index(f'<div class="list-row" data-account="{external_id}">')
+    ends = [
+        found
+        for found in (
+            body.find('<div class="list-row"', start + 1),
+            body.find("</section>", start),
+        )
+        if found != -1
+    ]
+    return body[start : min(ends)]
+
+
+def nothing_linked_or_read(sidecar: Sidecar) -> bool:
+    return links_sent(sidecar) == [] and sidecar.sent("ReadAccountsForLinking") == []
+
+
+def test_an_account_the_read_recorded_is_linked_and_offers_unlink(server: int) -> None:
+    _, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    row = row_of(body, ALPACA)
+    assert '<span class="badge good">Linked</span>' in row
+    assert "Its rows were recorded on the last read." in row
+
+
+def unlinked(name: str, params: Any) -> Exception | None:
+    """The sidecar's refusal of a row for the Alpaca account, which nothing links."""
+    if name == "RecordHolding" and params.external_account_id == ALPACA:
+        return meridian.CallFailed(
+            "RecordHolding", "refused", f"external account {ALPACA} is not linked to an account"
+        )
+    return None
+
+
+def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    refusing = Sidecar(refuse=unlinked)
+    syncer = read_once(refusing, loop)
+    running = serve(syncer, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
+    try:
+        _, _, body = ask(running.server_address[1], "GET", ACCOUNTS, ADMIN)
+    finally:
+        running.shutdown()
+    row = row_of(body, ALPACA)
+    assert '<span class="badge warn">Not linked</span>' in row
+    assert "refused on the last read" in row
+    # The picker holds the deployment's open accounts, and nothing closed.
+    assert '<option value="ACC-1">Household</option>' in row and "Retired" not in row
+    assert 'action="/admin/accounts/link"' in row and 'name="account_id"' in row
+    # A new account, named from the external one, editable.
+    assert 'action="/admin/accounts/create"' in row
+    assert 'name="new_account_name" value="Alpaca Margin"' in row
+    assert "Unlink" not in row
+    (read,) = refusing.sent("ReadAccountsForLinking")
+    assert read.acting_for == assertion(ADMIN)
+
+
+def test_linking_to_an_existing_account_is_sent_for_the_admin(
+    server: int, sidecar: Sidecar, woken: asyncio.Event
+) -> None:
+    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
+    status, _, body = ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)
+    assert status == 200 and "Linked Alpaca Margin." in body
+    (sent,) = links_sent(sidecar)
+    assert (sent.external_account_id, sent.account_id, sent.new_account_name) == (
+        ALPACA,
+        "ACC-1",
+        "",
     )
-    assert status == 404
+    assert sent.acting_for == assertion(ADMIN)
+    assert "Linked to Household. Linked from this page." in row_of(body, ALPACA)
+    # A read follows, so the account's rows are recorded.
+    assert woken.is_set()
 
 
-@pytest.mark.usefixtures("administrator")
+def test_creating_a_new_account_names_it_and_links_in_one_step(
+    server: int, sidecar: Sidecar
+) -> None:
+    fields = form(
+        csrf=token_of(ADMIN), external_account_id=ALPACA, new_account_name="  Alpaca margin  "
+    )
+    status, _, body = ask(server, "POST", f"{ACCOUNTS}/create", ADMIN, fields)
+    assert status == 200 and "Created Alpaca margin and linked Alpaca Margin to it." in body
+    (sent,) = links_sent(sidecar)
+    assert (sent.account_id, sent.new_account_name) == ("", "Alpaca margin")
+    assert sent.acting_for == assertion(ADMIN)
+
+
+def test_unlinking_sends_neither_account_nor_name(server: int, sidecar: Sidecar) -> None:
+    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
+    status, _, body = ask(server, "POST", f"{ACCOUNTS}/unlink", ADMIN, fields)
+    assert status == 200 and "Unlinked Alpaca Margin." in body
+    (sent,) = links_sent(sidecar)
+    assert (sent.external_account_id, sent.account_id, sent.new_account_name) == (
+        ALPACA,
+        "",
+        "",
+    )
+    assert sent.acting_for == assertion(ADMIN)
+    row = row_of(body, ALPACA)
+    assert "Not linked" in row and "Unlinked from this page." in row
+
+
 @pytest.mark.parametrize(
-    "form",
+    ("action", "fields", "said"),
+    [
+        ("link", {"account_id": ""}, "Choose the account to link it to."),
+        ("create", {"new_account_name": "   "}, "Name the new account."),
+    ],
+)
+def test_a_form_missing_its_choice_asks_for_it_and_sends_nothing(
+    server: int, sidecar: Sidecar, action: str, fields: dict[str, str], said: str
+) -> None:
+    sent = form(csrf=token_of(ADMIN), external_account_id=ALPACA, **fields)
+    status, _, body = ask(server, "POST", f"{ACCOUNTS}/{action}", ADMIN, sent)
+    assert status == 200 and said in body and links_sent(sidecar) == []
+
+
+def test_only_an_account_the_read_reached_is_linked(server: int, sidecar: Sidecar) -> None:
+    for external_id in ("not-one-of-ours", ""):
+        fields = form(csrf=token_of(ADMIN), external_account_id=external_id, account_id="ACC-1")
+        assert ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)[0] == 404
+    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
+    assert ask(server, "POST", f"{ACCOUNTS}/delete", ADMIN, fields)[0] == 404
+    assert links_sent(sidecar) == []
+
+
+def test_the_sidecars_refusal_is_shown_plainly(
+    synced: Syncer, loop: asyncio.AbstractEventLoop
+) -> None:
+    said = "LinkExternalAccount is admitted only acting for a deployment admin"
+
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "LinkExternalAccount":
+            return meridian.CallFailed("LinkExternalAccount", "refused", said)
+        return None
+
+    refusing = Sidecar(refuse=refuse)
+    running = serve(synced, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
+    try:
+        fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
+        status, _, body = ask(
+            running.server_address[1], "POST", f"{ACCOUNTS}/link", ADMIN, fields
+        )
+    finally:
+        running.shutdown()
+    assert status == 200
+    assert (
+        f'<div class="notice bad" role="alert">The sidecar refused this: {said}</div>' in body
+    )
+    # Still as the last read left it.
+    assert "Its rows were recorded on the last read." in row_of(body, ALPACA)
+
+
+def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "ReadAccountsForLinking":
+            return meridian.CallFailed("ReadAccountsForLinking", "refused", "not an admin")
+        return unlinked(name, params)
+
+    refusing = Sidecar(refuse=refuse)
+    syncer = read_once(refusing, loop)
+    running = serve(syncer, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
+    try:
+        _, _, body = ask(running.server_address[1], "GET", ACCOUNTS, ADMIN)
+    finally:
+        running.shutdown()
+    assert "The deployment's accounts could not be read: not an admin" in body
+    row = row_of(body, ALPACA)
+    assert 'name="account_id"' not in row and 'name="new_account_name"' in row
+    assert "none is offered here" in row
+
+
+def test_linking_is_only_for_an_administrator(server: int, sidecar: Sidecar) -> None:
+    # Even with a token that is theirs, somebody else is refused before
+    # anything is sent.
+    for action in ("link", "create", "unlink"):
+        fields = form(
+            csrf=token_of(PERSON),
+            external_account_id=ALPACA,
+            account_id="ACC-1",
+            new_account_name="Mine",
+        )
+        status, _, body = ask(server, "POST", f"{ACCOUNTS}/{action}", PERSON, fields)
+        assert status == 403 and "This plugin has no page for you" in body
+    assert nothing_linked_or_read(sidecar)
+
+
+# ── The CSRF token ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "sent",
     [
         None,
         "",
         "csrf=",
         "csrf=0123456789abcdef",
         # Another person's token.
-        f"csrf={TOKENS.token(meridian.Caller.from_header(caller_header('person-2')))}",
+        f"csrf={token_of(caller_header('person-2'))}",
         # A token under another secret, as a different process would make.
-        f"csrf={CsrfTokens(b'another').token(meridian.Caller.from_header(caller_header()))}",
+        f"csrf={CsrfTokens(b'another').token(meridian.Caller.from_header(ADMIN))}",
+        # The right token twice.
+        f"csrf={token_of(ADMIN)}&csrf={token_of(ADMIN)}",
     ],
 )
 def test_a_post_without_the_right_token_is_refused_and_does_nothing(
-    server: int, synced: Syncer, recording: Recording, form: str | None
+    server: int, synced: Syncer, sidecar: Sidecar, recording: Recording, sent: str | None
 ) -> None:
     known = synced.status.connections[0].connection_id
+    rest = f"&external_account_id={quote(ALPACA)}&account_id=ACC-1&new_account_name=N"
     for path in (
         "/admin/connect",
-        f"/admin/connections/{known}/refresh",
-        f"/admin/connections/{known}/reconnect",
+        f"{CONNECTIONS}/{known}/refresh",
+        f"{CONNECTIONS}/{known}/reconnect",
         "/admin/read",
+        f"{ACCOUNTS}/link",
+        f"{ACCOUNTS}/create",
+        f"{ACCOUNTS}/unlink",
     ):
-        status, _, body = ask(server, "POST", path, caller_header(), form)
+        status, _, body = ask(server, "POST", path, ADMIN, (sent or "") + rest)
         assert status == 403 and "expired" in body
-    assert recording.asked == []
-
-
-@pytest.mark.usefixtures("administrator")
-def test_two_tokens_in_one_form_are_refused(server: int, recording: Recording) -> None:
-    token = token_on_the_page(server, caller_header())
-    status, _, _ = ask(
-        server, "POST", "/admin/connect", caller_header(), f"csrf={token}&csrf={token}"
-    )
-    assert status == 403 and recording.asked == []
+    assert recording.asked == [] and nothing_linked_or_read(sidecar)
 
 
 def test_a_token_is_the_same_for_one_person_and_differs_between_people() -> None:
@@ -229,26 +500,29 @@ def test_a_token_is_the_same_for_one_person_and_differs_between_people() -> None
     assert "secret" not in repr(TOKENS)
 
 
+# ── What is drawn ────────────────────────────────────────────────────────────
+
+
 def test_what_snaptrade_says_is_escaped() -> None:
     hostile = ConnectionView(
         "c1", "<script>alert(1)</script>", "Broker & Co", "read", SyncState.CURRENT, "", None
     )
-    shown = render_admin(Status(mode="snaptrade", connections=(hostile,)), "t")
+    shown = render_connections(Status(mode="snaptrade", connections=(hostile,)), "t")
     assert "<script>" not in shown and "&lt;script&gt;" in shown
     assert "Broker &amp; Co" in shown
 
 
 def test_the_portal_link_opens_outside_the_frame() -> None:
-    shown = render_admin(
+    shown = render_connections(
         Status(mode="snaptrade"), "t", portal="https://portal.example/x?a=1&b=2"
     )
     assert 'href="https://portal.example/x?a=1&amp;b=2" target="_blank"' in shown
     assert 'rel="noopener noreferrer"' in shown
 
 
-def test_waiting_for_settings_names_them_without_values() -> None:
-    shown = render_admin(Status(mode="waiting", missing=("snaptrade_consumer_key",)), "t")
-    assert "SnapTrade consumer key" in shown
+def test_waiting_for_settings_names_them_by_label_without_values() -> None:
+    shown = render_holdings(Status(mode="waiting", missing=("snaptrade_consumer_key",)), "t")
+    assert "Consumer key" in shown
 
 
 def test_the_no_page_answer_holds_no_account() -> None:
@@ -257,23 +531,50 @@ def test_the_no_page_answer_holds_no_account() -> None:
     assert f'href="{KIT}meridian.css"' in shown
 
 
-def synthetic_page() -> str:
-    """The admin page on the synthetic read, as an administrator gets it."""
+def synthetic_status() -> Status:
     sidecar = Sidecar()
-    syncer = Syncer(sidecar.plugin(), Contract.of(sidecar), now=clock())
+    syncer = Syncer(sidecar.plugin(), now=clock())
     syncer.configure(config_from({SYNTHETIC: True}))
-    return render_admin(asyncio.run(syncer.run_once()), "t")
+    return asyncio.run(syncer.run_once())
 
 
-def test_the_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> None:
-    for shown in (synthetic_page(), render_no_page()):
+def links_for(status: Status) -> dict[str, LinkView]:
+    return {
+        view.account.external_account_id: link_of(
+            None, status.outcomes.get(view.account.external_account_id)
+        )
+        for view in status.accounts
+    }
+
+
+def synthetic_pages() -> dict[str, str]:
+    status = synthetic_status()
+    offered = Offered()
+    return {
+        CONNECTIONS: render_connections(status, "t"),
+        ACCOUNTS: render_accounts(status, "t", links_for(status), offered),
+        HOLDINGS: render_holdings(status, "t"),
+    }
+
+
+def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> None:
+    for shown in (*synthetic_pages().values(), render_no_page()):
         assert f'<link rel="stylesheet" href="{KIT}meridian.css">' in shown
         assert f'<script src="{KIT}meridian.js"></script>' in shown
         # One stylesheet, the kit's; no style, colour or chrome of the page's.
         assert shown.count('rel="stylesheet"') == 1
         assert "<style" not in shown and "style=" not in shown
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", shown)
-        for chrome in ("<nav", "<img", "<svg", "<footer", "data-om-mode", "theme"):
+        # The dashboard draws the tabs, and the frame the rest.
+        for chrome in (
+            "<nav",
+            "<img",
+            "<svg",
+            "<footer",
+            'class="tabs"',
+            "data-om-mode",
+            "theme",
+        ):
             assert chrome not in shown
         assert '<main class="page">' in shown
 
@@ -288,8 +589,9 @@ def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, object]]]:
 
 
 def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
-    shown = synthetic_page()
-    for grid_id, row_key in (("accounts", "id"), ("holdings", "key")):
+    pages = synthetic_pages()
+    for path, grid_id, row_key in ((ACCOUNTS, "accounts", "id"), (HOLDINGS, "holdings", "key")):
+        shown = pages[path]
         element = re.search(
             rf'<om-grid id="{grid_id}" row-key="{row_key}"[^>]*>(.*?)</om-grid>', shown
         )
@@ -298,12 +600,18 @@ def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
         # As many rows in the table a browser shows as the grid is given.
         assert element.group(1).count("<tr>") == len(data["rows"]) + 1
         assert len({row[row_key] for row in data["rows"]}) == len(data["rows"])
-    # Set only once the kit has defined the grid.
-    assert 'customElements.whenDefined("om-grid")' in shown
+        # Set only once the kit has defined the grid.
+        assert 'customElements.whenDefined("om-grid")' in shown
+
+
+def test_the_accounts_grid_says_each_link() -> None:
+    rows = grid(synthetic_pages()[ACCOUNTS], "accounts")["rows"]
+    assert {row["link"] for row in rows} == {"Linked"}
+    assert {row["link_tone"] for row in rows} == {"good"}
 
 
 def test_quantities_are_exact_decimal_strings_as_read() -> None:
-    shown = synthetic_page()
+    shown = synthetic_pages()[HOLDINGS]
     rows = grid(shown, "holdings")["rows"]
     quantities = {row["instrument"]: row["quantity"] for row in rows}
     assert all(isinstance(quantity, str) for quantity in quantities.values())
@@ -321,6 +629,30 @@ def test_the_grids_data_cannot_close_its_script() -> None:
     connection = ConnectionView(
         "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, (view,)
     )
-    shown = render_admin(Status(mode="snaptrade", connections=(connection,)), "t")
+    status = Status(mode="snaptrade", connections=(connection,))
+    shown = render_accounts(status, "t", links_for(status), Offered())
     assert "<script>alert" not in shown
     assert grid(shown, "accounts")["rows"][0]["account"] == hostile
+
+
+def test_a_closed_account_is_not_offered() -> None:
+    status = synthetic_status()
+    offered = Links(Sidecar().plugin())
+    read = asyncio.run(offered.offered(ADMIN))
+    assert [(a.account_id, a.open) for a in read.accounts] == [
+        ("ACC-1", True),
+        ("ACC-2", False),
+    ]
+    unlinked = {key: link_of("", None) for key in links_for(status)}
+    shown = render_accounts(status, "t", unlinked, read)
+    assert "Household" in shown and "Retired" not in shown
+
+
+def test_an_account_whose_link_is_not_known_offers_linking_and_unlinking() -> None:
+    status = synthetic_status()
+    unknown = {key: link_of(None, None) for key in links_for(status)}
+    offered = asyncio.run(Links(Sidecar().plugin()).offered(ADMIN))
+    row = row_of(render_accounts(status, "t", unknown, offered), ALPACA)
+    assert '<span class="badge">Not known</span>' in row
+    assert 'name="account_id"' in row and 'name="new_account_name"' in row
+    assert f'action="{ACCOUNTS}/unlink"' in row and "It may be linked already." in row

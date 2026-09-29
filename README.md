@@ -6,10 +6,13 @@ cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role.
 
-**Built offline, not yet run on a deployment.** It is written against the
-SDK's operations that exist today, with everything the account-side contract
-adds isolated until the SDK carries it (below). It has not yet read a real
-SnapTrade account: no key is held yet.
+It is built on the SDK it pins, `open-meridian==0.5.0`, which carries the
+whole account-side contract (spec/the-account-side-fits-every-venue): a
+holding's side, a market value left unset, a currency marked as assumed, a fund
+marked as counted in cash too, buying power on the statement, the sync state
+with holdings and history freshness, the accounts a connection reaches, and
+linking them. The asset class on an ambiguous miss is sent empty until
+sdk-contract/asset-class-is-an-enum rules its names.
 
 ## What it does
 
@@ -70,20 +73,38 @@ it.
 ## Settings
 
 Declared through the SDK and given by a deployment administrator in the
-dashboard's settings form. None is required, so synthetic mode runs before any
-key exists; without it, the plugin reports itself unhealthy, naming the
-settings it is waiting for, and calls nothing.
+dashboard's settings form, which is built from the declarations: each field's
+label, a default greyed in the empty field, a unit beside a number, and the
+key type first, as a choice whose answer decides which fields follow
+(kernel/a-plugins-admin-view, points 4 and 7). While a required setting that
+applies is missing, the sidecar reports the plugin unhealthy, naming it, and
+the plugin calls nothing but says which it is waiting for. Synthetic mode runs
+without any of them.
 
-| Setting | Kind | Secret | |
-|---|---|---|---|
-| `snaptrade_client_id` | text | yes | SnapTrade client ID |
-| `snaptrade_consumer_key` | text | yes | SnapTrade consumer key |
-| `snaptrade_user_id` | text | no | the SnapTrade user whose connections it reads; not with a personal key |
-| `snaptrade_user_secret` | text | yes | that user's secret; not with a personal key |
-| `snaptrade_personal_key` | on/off | no | the key is a SnapTrade personal key (off: a commercial key) |
-| `synthetic` | on/off | no | serve built-in responses instead of calling SnapTrade (off by default) |
-| `poll_seconds` | number | no | how often to read; default 900, at least 60 |
-| `stale_after_hours` | number | no | when a sync is stale; default 36 |
+| Setting | Label | Kind | Secret | Required | |
+|---|---|---|---|---|---|
+| `snaptrade_key_type` | Key type | choice | no | yes | `personal` (Personal key: belongs to one SnapTrade user, you) or `commercial` (Commercial key: registers SnapTrade users of its own, each with a secret); default `personal` |
+| `snaptrade_client_id` | Client ID | text | yes | yes | from SnapTrade's API keys page |
+| `snaptrade_consumer_key` | Consumer key | text | yes | yes | shown once, when SnapTrade issues the key |
+| `snaptrade_user_id` | User ID | text | no | with a commercial key | the SnapTrade user whose connections it reads |
+| `snaptrade_user_secret` | User secret | text | yes | with a commercial key | that user's secret |
+| `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
+| `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
+| `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
+| `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
+
+A developer's setting is shown in the form only on a development deployment.
+
+**From 0.1.0.** 0.1.0 said the key's kind with `snaptrade_personal_key`, on or
+off. While `snaptrade_key_type` is unset, a saved `snaptrade_personal_key`
+decides it (on: personal, off: commercial), and with neither saved it is the
+default, personal; once the key type is saved, the old setting is not read.
+The old setting stays declared, as a developer's setting, rather than being
+dropped: the sidecar delivers a plugin only the settings it declares, so an
+undeclared one's saved value would never reach it, and the form leaves a
+setting it does not show as it is when it saves, so nothing saved is lost.
+The key type being required, the dashboard names it as missing until it is
+saved once, though the plugin reads with the old setting meanwhile.
 
 The credentials reach the plugin as settings and nowhere else. They are never
 logged, shown or bundled: they are kept out of every repr, and a failed call
@@ -103,23 +124,52 @@ fund, crypto to nine decimals, cash in two currencies), Interactive Brokers
 (delayed by design; a euro listing, a position with no stated currency,
 negative cash), and Schwab (disabled, with no stable account ID).
 
-## The admin page
+## The admin pages
 
 Ruled 2026-09-28: an admin portal only; people see accounts and holdings
-through a reporting plugin, not through custody. `/admin` shows the SnapTrade
-users under the key, each brokerage connection with its health, each account
-with its sync state, what to do, its freshness and its last statement, and
-the holdings the last read found, and offers connecting a brokerage through
-SnapTrade's Connection Portal (a link that opens outside the dashboard's
-frame), reconnecting and refreshing a connection, and reading now. It is
-served to deployment administrators only, as the verified caller's
-`deployment_admin` claim says (below, under waiting for the contract). `/`
-sends an administrator there and tells anyone else the plugin has no page for
-them. No credential is entered or shown here: keys are the dashboard's
-settings form, and linking accounts and granting access are the dashboard's
-too.
+through a reporting plugin, not through custody. Three admin pages, declared at
+registration (`Interface(admin_pages=...)`), which the dashboard's admin view
+of the instance shows as tabs after its own Overview, Settings and Access,
+each framing its path (ruled 2026-09-29, "tabs at both levels"):
 
-Every action is a POST whose form carries a CSRF token, checked before
+- **Connections** (`/admin/connections`): figures for the last read, each
+  brokerage connection with its health, what to do about it, and refreshing
+  or reconnecting it, connecting a brokerage through SnapTrade's Connection
+  Portal (a link that opens outside the dashboard's frame), and the SnapTrade
+  users under the key.
+- **Accounts** (`/admin/accounts`): each account the connections reach with
+  its link to one of the deployment's accounts, and each one's sync state,
+  what to do, its freshness and its last statement.
+- **Holdings** (`/admin/holdings`): the holdings the last read found.
+
+Each has "Read now". Each is served to a caller whose verified
+`deployment_admin` claim is true, and anybody else is told the plugin has no
+page for them. `/admin` and, for an administrator, `/` send the caller to
+Connections. No credential is entered or shown here: keys are the dashboard's
+settings form, and granting access is the dashboard's too.
+
+### Linking accounts
+
+Each plugin links its own external accounts (kernel/a-plugins-admin-view,
+point 8), and the link is its right to the account: a statement for an account
+nothing links is refused. On the Accounts tab an account not linked offers
+**Link to an existing account**, a picker of the deployment's open accounts
+read with `read_accounts_for_linking`, or **Create a new account**, named from
+the SnapTrade account and editable, which the conductor creates and links in
+one step; a linked one offers **Unlink**. Each is sent with
+`link_external_account`, acting for the admin viewing the page (their
+`Meridian-Caller` header as `acting_for`), and the sidecar refuses it for
+anybody else; a refusal is shown as the sidecar worded it.
+
+The contract gives a plugin no read of its own links, so the page says what it
+knows and how: a link made or removed from this page since the plugin
+started; otherwise what the last read showed, rows recorded (only a link
+allows that) or refused because nothing links the account; otherwise "not
+known", with both linking and unlinking offered.
+
+### Forms and the kit
+
+Every action is a plain POST whose form carries a CSRF token, checked before
 anything is done; one without it, or with another's, is refused. The plugin
 host has its own session cookie (decisions/021), so the dashboard's front alone
 would not stop a page elsewhere posting here through an administrator's
@@ -132,55 +182,18 @@ The pages are built on Open Meridian's plugin UI kit
 spec/plugin-pages-share-one-kit), which the dashboard serves at
 `/.meridian/ui/<version>/` on the plugin's own host: `page.py` links its
 stylesheet and script, uses its classes and its `om-grid` for the accounts and
-the holdings, and has no style, colour or theme of its own. The dashboard's
-frame draws the plugin's name, the way back and the person, and hands the kit
-the person's colour scheme and light or dark. Where the kit is not served the
-page still works, unstyled: each table is in the HTML until the kit's grid
+the holdings, and has no style, colour or theme of its own. The dashboard
+draws the tabs, the plugin's name, the way back and the person, and hands the
+kit the person's colour scheme and light or dark. Where the kit is not served
+the pages still work, unstyled: each table is in the HTML until the kit's grid
 replaces it, and every action is a plain form. Quantities are exact decimal
-strings, as SnapTrade reported them.
+strings, as SnapTrade reported them. The kit has no account-mapping component
+yet, so the Accounts tab draws one from its classes (a list row per account,
+a badge for its link, and two plain forms).
 
-`make preview` writes the admin page on synthetic data to `preview.html`. It
-links the kit at `/.meridian/ui/0.1.0/`, so serve it beside the kit to see it
-styled; opened on its own it is the page without the kit.
-
-## Waiting for the contract
-
-The account-side contract (spec/the-account-side-fits-every-venue, accepted
-2026-09-28) is being built and is not in the SDK this plugin pins. Each part is
-isolated in `src/snaptrade/contract.py` and switches on by itself when the
-installed SDK's operations carry it, detected by parameter name:
-
-- **A holding's side** (`record_holding(side=...)`). Until then the quantity's
-  sign says it.
-- **The settle-date quantity** (`settle_date_quantity`). SnapTrade reports
-  none, so nothing changes for it.
-- **A currency marked as assumed** (`currency_assumed`). Until then the
-  assumption goes unsaid.
-- **A market value left unset** (`market_value=None` accepted). Until then a
-  value SnapTrade did not report is sent as zero in the row's currency, which
-  is what the street store reads an unset value as today.
-- **Buying power on the statement** (`record_holdings_statement(buying_power=...)`).
-  One figure per statement; sent only when SnapTrade reports buying power in
-  exactly one currency.
-- **Sync state and holdings and history freshness**
-  (`report_sync_status(state=..., holdings_as_of_ns=..., history_as_of_ns=...)`).
-  Until then `connection_healthy` (true for `current` and `delayed_by_design`)
-  and the state at the head of the detail text.
-- **The accounts a connection reaches** (`report_external_accounts`, on
-  `platform.custody.{instance}.event.external-accounts`). Until then the
-  dashboard learns an account when its rows are refused unlinked (W4.8).
-- **Who administers the deployment**, on the verified caller
-  (kernel/a-plugins-admin-view): the claim `CallerClaims.deployment_admin`
-  (meridian-schema), which the SDK reads as `Caller.deployment_admin` from the
-  release after 0.4.0. Until the pinned SDK reads it the admin page is served
-  to nobody; only `True` serves it.
-- **The asset class on an ambiguous miss** (sdk-contract/asset-class-is-an-enum).
-  Sent empty until the names are ruled.
-
-The names are those in the contract's in-progress protos. A name that
-differs leaves its part off, which is safe, and it does not go unnoticed:
-`tests/test_contract.py` fails when the pinned SDK's operations have a
-parameter or an operation this plugin does not know, naming it.
+`make preview` writes each page on synthetic data to `preview/`. They link the
+kit at `/.meridian/ui/0.1.0/`, so serve them beside the kit to see them
+styled; opened on their own they are the pages without the kit.
 
 ## Depends on
 
@@ -189,19 +202,21 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.4.0`, and the `Dockerfile` builds
-on the base image of the same version, `plugin-python:0.4.0`. To move to a new
-SDK release, change both together and run `make ci-local`.
+The SDK is pinned exactly, `open-meridian==0.5.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.5.0`.
+To move to a new SDK release, change all three together and run
+`make ci-local`; `tests/test_contract.py` fails on any operation or parameter
+the new SDK has that this plugin does not know, naming it.
 
 ## Working on it
 
     make ci-local        # lint (ruff, mypy strict), tests, and the plugin's image
-    make preview         # the admin page on synthetic data, as preview.html, linking the kit
+    make preview         # each admin page on synthetic data, in preview/, linking the kit
     make install-hooks   # once per clone, so git push runs ci-local first
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.1.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.2.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on (the
 `develop-live` skill under `.claude/` walks that loop).
 

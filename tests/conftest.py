@@ -1,20 +1,17 @@
 """Stand-ins for the sidecar, for SnapTrade's SDK, and for the clock.
 
-`Sidecar` is the SDK's own generated `Operations` with the transport replaced:
-every call goes through the SDK's real conversion (a Decimal to the wire's
-integer and scale, a float refused) and is kept as the protobuf message the
-sidecar would have received. `FutureSidecar` has the account-side contract's
-parameters, as the SDK is expected to gain them, so the adapters can be shown
-to switch on.
+`Sidecar` is the pinned SDK's own generated `Operations` with the transport
+replaced: every call goes through the SDK's real conversion (a Decimal to the
+wire's integer and scale, a float refused, a caller's header to the assertion
+it carries) and is kept as the protobuf message the sidecar would have
+received.
 """
 
 from __future__ import annotations
 
 import base64
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable
 from datetime import UTC, datetime
-from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -33,6 +30,14 @@ _OPERATIONS = SimpleNamespace(
     ResolveIdentifier="ResolveIdentifier",
     ReportMissingInstrument="ReportMissingInstrument",
     ReportExternalAccounts="ReportExternalAccounts",
+    ReadAccountsForLinking="ReadAccountsForLinking",
+    LinkExternalAccount="LinkExternalAccount",
+)
+
+# The deployment's accounts, as ReadAccountsForLinking answers by default.
+DEPLOYMENT_ACCOUNTS = (
+    ops.AccountRecord(account_id="ACC-1", name="Household", state=ops.ACCOUNT_STATE_OPEN),
+    ops.AccountRecord(account_id="ACC-2", name="Retired", state=ops.ACCOUNT_STATE_CLOSED),
 )
 
 
@@ -85,6 +90,15 @@ class Sidecar(Operations):
             return ops.RecordHoldingResult(
                 holding_id=f"H-{len(self.calls)}", resolved=bool(params.instrument_id)
             )
+        if name == "ReadAccountsForLinking":
+            return ops.ReadAccountsForLinkingResult(accounts=DEPLOYMENT_ACCOUNTS)
+        if name == "LinkExternalAccount":
+            # The conductor creates a named account and links it in one step.
+            made = f"ACC-NEW-{len(self.calls)}" if params.new_account_name else ""
+            return ops.LinkExternalAccountResult(
+                external_account_id=params.external_account_id,
+                account_id=params.account_id or made,
+            )
         return ops.Published(message_id=f"M-{len(self.calls)}")
 
     async def report(self, *, healthy: bool, detail: str = "") -> None:
@@ -97,109 +111,13 @@ class Sidecar(Operations):
         return cast(meridian.Plugin, self)
 
 
-@dataclass
-class FutureSidecar:
-    """The account-side contract's operations, as the SDK is expected to gain
-    them (names from the in-progress protos). Keeps the keyword arguments."""
-
-    calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    reports: list[tuple[bool, str]] = field(default_factory=list)
-
-    async def report_sync_status(
-        self,
-        *,
-        source: str = "",
-        last_synced_at_ns: int = 0,
-        connection_healthy: bool = False,
-        status_detail: str = "",
-        observed_at_ns: int = 0,
-        external_account_id: str = "",
-        state: str | None = None,
-        holdings_as_of_ns: int = 0,
-        history_as_of_ns: int = 0,
-    ) -> ops.Published:
-        self.calls.append(("report_sync_status", dict(locals_without_self(locals()))))
-        return ops.Published(message_id="M")
-
-    async def record_holdings_statement(
-        self,
-        *,
-        source: str = "",
-        external_statement_id: str = "",
-        as_of_date: str = "",
-        read_at_ns: int = 0,
-        expected_rows: int = 0,
-        acting_for: str | None = None,
-        buying_power: meridian.Money | None = None,
-        margin_requirement: meridian.Money | None = None,
-        maintenance_excess: meridian.Money | None = None,
-        currency_assumed: bool = False,
-    ) -> ops.RecordHoldingsStatementResult:
-        self.calls.append(("record_holdings_statement", dict(locals_without_self(locals()))))
-        return ops.RecordHoldingsStatementResult(statement_id="STMT-F")
-
-    async def record_holding(
-        self,
-        *,
-        statement_id: str = "",
-        instrument_id: str = "",
-        unresolved_identifiers: Sequence[ops.Identifier] = (),
-        quantity: Decimal | int,
-        market_value: meridian.Money | None = None,
-        external_account_id: str = "",
-        acting_for: str | None = None,
-        side: str | None = None,
-        settle_date_quantity: Decimal | None = None,
-        currency_assumed: bool = False,
-        also_counted_in_cash: bool = False,
-    ) -> ops.RecordHoldingResult:
-        self.calls.append(("record_holding", dict(locals_without_self(locals()))))
-        return ops.RecordHoldingResult(holding_id="H", resolved=bool(instrument_id))
-
-    async def resolve_identifier(
-        self,
-        *,
-        identifiers: Sequence[ops.Identifier] = (),
-        as_of_ns: int = 0,
-        exchange_mic: str = "",
-        currency: str = "",
-    ) -> ops.ResolveIdentifierResult:
-        self.calls.append(("resolve_identifier", dict(locals_without_self(locals()))))
-        return found()
-
-    async def report_missing_instrument(self, **kwargs: Any) -> ops.Published:
-        self.calls.append(("report_missing_instrument", kwargs))
-        return ops.Published(message_id="M")
-
-    async def report_external_accounts(
-        self, *, accounts: Sequence[ops.ExternalAccount] = ()
-    ) -> ops.Published:
-        self.calls.append(("report_external_accounts", dict(locals_without_self(locals()))))
-        return ops.Published(message_id="M")
-
-    async def report(self, *, healthy: bool, detail: str = "") -> None:
-        self.reports.append((healthy, detail))
-
-    def sent(self, name: str) -> list[dict[str, Any]]:
-        return [kwargs for called, kwargs in self.calls if called == name]
-
-    def plugin(self) -> meridian.Plugin:
-        return cast(meridian.Plugin, self)
-
-
-def locals_without_self(values: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in values.items() if key != "self"}
-
-
 def caller_header(
     subject: str = "person-1", name: str = "A Person", deployment_admin: bool = False
 ) -> str:
     """A Meridian-Caller header as a sidecar forwards one."""
-    claims = sidecar_pb2.CallerClaims(subject=subject, display_name=name).SerializeToString()
-    if deployment_admin:
-        # CallerClaims.deployment_admin (field 8, a bool) as the wire carries
-        # it, whether or not the pinned SDK's generated code knows the field.
-        claims += bytes([8 << 3, 1])
+    claims = sidecar_pb2.CallerClaims(
+        subject=subject, display_name=name, deployment_admin=deployment_admin
+    ).SerializeToString()
     assertion = sidecar_pb2.CallerAssertion(claims=claims)
     return base64.urlsafe_b64encode(assertion.SerializeToString()).decode().rstrip("=")
 

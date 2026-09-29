@@ -8,10 +8,11 @@ from typing import Any
 import pytest
 from meridian.plugin.v1 import operations_pb2 as ops
 
-from snaptrade.contract import Contract
 from snaptrade.settings import (
     CLIENT_ID,
+    COMMERCIAL,
     CONSUMER_KEY,
+    KEY_TYPE,
     SYNTHETIC,
     USER_ID,
     USER_SECRET,
@@ -26,6 +27,7 @@ from conftest import Sidecar, clock
 
 SECRET = "user-secret-77aa-not-real"
 GIVEN: dict[str, str | int | bool] = {
+    KEY_TYPE: COMMERCIAL,
     CLIENT_ID: "CLIENT",
     CONSUMER_KEY: "KEY-not-real",
     USER_ID: "u-1",
@@ -34,7 +36,7 @@ GIVEN: dict[str, str | int | bool] = {
 
 
 def syncer(sidecar: Sidecar, make_venue: Any = None) -> Syncer:
-    return Syncer(sidecar.plugin(), Contract.of(sidecar), now=clock(), make_venue=make_venue)
+    return Syncer(sidecar.plugin(), now=clock(), make_venue=make_venue)
 
 
 def test_the_venue_is_synthetic_snaptrade_or_nothing() -> None:
@@ -58,10 +60,8 @@ async def test_without_credentials_it_refuses_to_read_and_says_what_it_needs() -
     assert sidecar.calls == []
     ((healthy, detail),) = sidecar.reports
     assert not healthy
-    assert detail == (
-        "waiting for settings: snaptrade_client_id, snaptrade_consumer_key, "
-        "snaptrade_user_id, snaptrade_user_secret"
-    )
+    # A personal key, the default, needs no user.
+    assert detail == "waiting for settings: snaptrade_client_id, snaptrade_consumer_key"
 
 
 async def test_synthetic_mode_records_every_account_it_can() -> None:
@@ -71,6 +71,8 @@ async def test_synthetic_mode_records_every_account_it_can() -> None:
     status = await running.run_once()
     assert status.mode == "synthetic" and status.error == ""
     assert len(sidecar.sent("ReportSyncStatus")) == 3
+    (reported,) = sidecar.sent("ReportExternalAccounts")
+    assert len(reported.accounts) == 3
     opened = sidecar.sent("RecordHoldingsStatement")
     assert len(opened) == 3
     rows = sidecar.sent("RecordHolding")

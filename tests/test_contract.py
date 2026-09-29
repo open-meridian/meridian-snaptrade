@@ -1,17 +1,15 @@
-"""What reaches the sidecar: through today's SDK, and through the account-side
-contract's operations once the SDK has them."""
+"""What reaches the sidecar, through the pinned SDK's operations."""
 
 from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
-from types import SimpleNamespace
 from typing import Any
 
 import meridian
 from meridian.plugin.v1 import operations_pb2 as ops
 
-from snaptrade.contract import Contract, Recorder, is_administrator
+from snaptrade.contract import Recorder
 from snaptrade.normalise import (
     ExternalAccount,
     Freshness,
@@ -23,7 +21,7 @@ from snaptrade.normalise import (
     ns,
 )
 
-from conftest import NOW, FutureSidecar, Sidecar, ambiguous, found
+from conftest import NOW, Sidecar, ambiguous, found
 
 ACCOUNT = ExternalAccount(
     external_account_id="ALPACA:INST-1",
@@ -74,46 +72,12 @@ DISABLED = Freshness(
 )
 
 
-# ── Which parts the SDK carries ──────────────────────────────────────────────
-
-
-def test_the_pinned_sdk_carries_the_whole_account_side_contract(sidecar: Sidecar) -> None:
-    contract = Contract.of(sidecar)
-    assert contract == Contract(True, True, True, True, True, True, True, True)
-    assert contract.waiting() == ()
-
-
-def test_an_sdk_without_the_account_side_leaves_every_part_waiting() -> None:
-    contract = Contract.of(object())
-    assert contract == Contract()
-    assert len(contract.waiting()) == 8
-
-
-def test_each_part_switches_on_when_the_sdk_has_it() -> None:
-    contract = Contract.of(FutureSidecar())
-    assert contract == Contract(True, True, True, True, True, True, True, True)
-    assert contract.waiting() == ()
-
-
-def test_the_admin_page_is_for_whoever_the_caller_says_is_a_deployment_admin() -> None:
-    # The pinned SDK's caller has no deployment_admin: nobody is served.
-    caller = meridian.Caller(subject="s", display_name="d", access=(), header="h")
-    assert not is_administrator(caller)
-    assert is_administrator(SimpleNamespace(deployment_admin=True))  # type: ignore[arg-type]
-    # Only True counts, and only under the claim's name.
-    assert not is_administrator(SimpleNamespace(deployment_admin=False))  # type: ignore[arg-type]
-    assert not is_administrator(SimpleNamespace(deployment_admin="yes"))  # type: ignore[arg-type]
-    assert not is_administrator(SimpleNamespace(administrator=True))  # type: ignore[arg-type]
-
-
-# ── Through today's SDK ──────────────────────────────────────────────────────
+# ── A statement and its rows ─────────────────────────────────────────────────
 
 
 async def test_a_statement_is_opened_with_its_row_count_and_every_row_recorded() -> None:
     sidecar = Sidecar()
-    outcome = await Recorder(sidecar.plugin(), Contract.of(sidecar)).record(
-        ACCOUNT, STATEMENT, ns(NOW)
-    )
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     (opened,) = sidecar.sent("RecordHoldingsStatement")
     assert opened.source == "snaptrade"
     assert opened.external_statement_id == STATEMENT.external_statement_id
@@ -134,7 +98,7 @@ async def test_a_statement_is_opened_with_its_row_count_and_every_row_recorded()
 
 async def test_resolution_is_dated_to_the_statement_and_qualified() -> None:
     sidecar = Sidecar()
-    await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
+    await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     first = sidecar.sent("ResolveIdentifier")[0]
     assert [(i.scheme, i.value, i.source) for i in first.identifiers] == [
         ("figi", "BBG000B9XRY4", ""),
@@ -146,20 +110,65 @@ async def test_resolution_is_dated_to_the_statement_and_qualified() -> None:
     assert [(i.scheme, i.value) for i in cash.identifiers] == [("iso4217", "CAD")]
 
 
-async def test_until_it_can_be_unset_a_market_value_not_reported_is_sent_as_zero() -> None:
+async def test_a_row_says_its_side_and_what_was_and_was_not_reported() -> None:
     sidecar = Sidecar()
-    await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
-    values = [meridian.as_money(row.market_value) for row in sidecar.sent("RecordHolding")]
-    assert values == [
-        meridian.Money(Decimal("0"), "USD"),
-        meridian.Money(Decimal("0"), "USD"),
-        meridian.Money(Decimal("200.00"), "CAD"),
+    await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    rows = sidecar.sent("RecordHolding")
+    assert [ops.HoldingSide.Name(row.side) for row in rows] == [
+        "HOLDING_SIDE_LONG",
+        "HOLDING_SIDE_SHORT",
+        "HOLDING_SIDE_LONG",
     ]
+    # A value SnapTrade did not report is left unset, never zero; cash's is its amount.
+    assert [row.HasField("market_value") for row in rows] == [False, False, True]
+    assert meridian.as_money(rows[2].market_value) == meridian.Money(Decimal("200.00"), "CAD")
+    assert [row.currency_assumed for row in rows] == [False, True, False]
+    # SnapTrade reports no settle-date quantity, so none is sent.
+    assert not any(row.HasField("settle_date_quantity") for row in rows)
+    assert not any(row.also_counted_in_cash for row in rows)
+
+
+async def test_a_fund_snaptrade_counts_in_cash_is_marked_so() -> None:
+    sidecar = Sidecar()
+    fund = Holding(
+        identifiers=(Identifier("symbol", "SWVXX", "snaptrade"),),
+        description="Money market",
+        kind="mutualfund",
+        side=Side.LONG,
+        quantity=Decimal("10"),
+        currency="USD",
+        cash_equivalent=True,
+    )
+    statement = Statement(STATEMENT.external_statement_id, "2026-09-28", ns(NOW), (fund,))
+    await Recorder(sidecar.plugin()).record(ACCOUNT, statement, ns(NOW))
+    (row,) = sidecar.sent("RecordHolding")
+    assert row.also_counted_in_cash
+
+
+async def test_buying_power_in_one_currency_is_on_the_statement() -> None:
+    sidecar = Sidecar()
+    await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    (opened,) = sidecar.sent("RecordHoldingsStatement")
+    assert meridian.as_money(opened.buying_power) == meridian.Money(Decimal("3046.90"), "USD")
+
+
+async def test_buying_power_in_several_currencies_is_not_summed() -> None:
+    sidecar = Sidecar()
+    several = Statement(
+        STATEMENT.external_statement_id,
+        "2026-09-28",
+        ns(NOW),
+        (),
+        (meridian.Money(Decimal("1"), "USD"), meridian.Money(Decimal("2"), "CAD")),
+    )
+    await Recorder(sidecar.plugin()).record(ACCOUNT, several, ns(NOW))
+    (opened,) = sidecar.sent("RecordHoldingsStatement")
+    assert not opened.HasField("buying_power")
 
 
 async def test_a_placeholder_is_recorded_against_and_counted() -> None:
     sidecar = Sidecar(resolve=lambda p: found("LCL-1", placeholder=True))
-    outcome = await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     assert {row.instrument_id for row in sidecar.sent("RecordHolding")} == {"LCL-1"}
     assert outcome.placeholders == 3
     # The instrument store reports a not-found; the connector does not.
@@ -170,7 +179,7 @@ async def test_an_ambiguous_row_is_still_recorded_and_its_miss_published_once() 
     sidecar = Sidecar(
         resolve=lambda p: ambiguous() if p.identifiers[0].value == "ZZTOP" else found()
     )
-    outcome = await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     rows = sidecar.sent("RecordHolding")
     assert len(rows) == 3
     assert rows[1].instrument_id == ""
@@ -184,7 +193,7 @@ async def test_an_ambiguous_row_is_still_recorded_and_its_miss_published_once() 
 
 async def test_a_redelivered_statement_records_no_rows() -> None:
     sidecar = Sidecar(already_recorded=True)
-    outcome = await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     assert outcome.already_recorded and sidecar.sent("RecordHolding") == []
 
 
@@ -195,99 +204,64 @@ async def test_a_refused_row_stops_the_statement_and_is_not_retried() -> None:
         return None
 
     sidecar = Sidecar(refuse=refuse)
-    outcome = await Recorder(sidecar.plugin(), Contract()).record(ACCOUNT, STATEMENT, ns(NOW))
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     assert outcome.recorded == 0 and "no link" in outcome.stopped
     assert len(sidecar.sent("RecordHoldingsStatement")) == 1
+    # Refused for something other than a missing link.
+    assert not outcome.unlinked
 
 
-async def test_sync_status_says_its_state_in_the_only_words_today_has() -> None:
+async def test_a_row_refused_for_want_of_a_link_says_so() -> None:
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "RecordHolding":
+            return meridian.CallFailed(
+                "RecordHolding",
+                "refused",
+                "external account ALPACA:INST-1 is not linked to an account; a deployment "
+                "admin links it on the plugin's admin page (W6.4)",
+            )
+        return None
+
+    sidecar = Sidecar(refuse=refuse)
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    assert outcome.unlinked and outcome.recorded == 0
+
+
+async def test_sync_status_carries_a_state_and_both_freshnesses() -> None:
     sidecar = Sidecar()
-    await Recorder(sidecar.plugin(), Contract()).report_sync(ACCOUNT, DISABLED, ns(NOW))
+    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, DISABLED, ns(NOW))
     (sent,) = sidecar.sent("ReportSyncStatus")
+    assert sent.state == ops.SYNC_STATE_DISABLED
     assert not sent.connection_healthy
-    assert sent.status_detail == "disabled: SnapTrade disabled it."
-    assert sent.last_synced_at_ns == ns(NOW - timedelta(days=5))
+    assert sent.holdings_as_of_ns == sent.last_synced_at_ns == ns(NOW - timedelta(days=5))
+    assert sent.history_as_of_ns == ns(NOW.replace(hour=0))
+    assert sent.status_detail == "SnapTrade disabled it."
     assert sent.external_account_id == "ALPACA:INST-1"
 
 
 async def test_delayed_by_design_is_healthy() -> None:
     sidecar = Sidecar()
     late = Freshness(SyncState.DELAYED_BY_DESIGN, NOW, NOW.date(), "")
-    await Recorder(sidecar.plugin(), Contract()).report_sync(ACCOUNT, late, ns(NOW))
+    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, late, ns(NOW))
     (sent,) = sidecar.sent("ReportSyncStatus")
-    assert sent.connection_healthy and sent.status_detail == "delayed_by_design"
+    assert sent.connection_healthy and sent.state == ops.SYNC_STATE_DELAYED_BY_DESIGN
 
 
-async def test_the_accounts_are_not_reported_until_the_sdk_can(sidecar: Sidecar) -> None:
-    assert not await Recorder(sidecar.plugin(), Contract()).report_accounts([ACCOUNT], 1)
-    assert sidecar.calls == []
-
-
-# ── Through the account-side contract ────────────────────────────────────────
-
-
-async def test_with_the_contract_a_row_says_its_side_and_leaves_value_unset() -> None:
-    future = FutureSidecar()
-    await Recorder(future.plugin(), Contract.of(future)).record(ACCOUNT, STATEMENT, ns(NOW))
-    rows = future.sent("record_holding")
-    assert [row["side"] for row in rows] == [
-        "HOLDING_SIDE_LONG",
-        "HOLDING_SIDE_SHORT",
-        "HOLDING_SIDE_LONG",
-    ]
-    assert [row["market_value"] for row in rows] == [
-        None,
-        None,
-        meridian.Money(Decimal("200.00"), "CAD"),
-    ]
-    assert [row["currency_assumed"] for row in rows] == [False, True, False]
-    # SnapTrade reports no settle-date quantity, so none is sent.
-    assert {row["settle_date_quantity"] for row in rows} == {None}
-    (opened,) = future.sent("record_holdings_statement")
-    assert opened["buying_power"] == meridian.Money(Decimal("3046.90"), "USD")
-
-
-async def test_with_the_contract_buying_power_in_several_currencies_is_not_summed() -> None:
-    future = FutureSidecar()
-    several = Statement(
-        STATEMENT.external_statement_id,
-        "2026-09-28",
-        ns(NOW),
-        (),
-        (meridian.Money(Decimal("1"), "USD"), meridian.Money(Decimal("2"), "CAD")),
-    )
-    await Recorder(future.plugin(), Contract.of(future)).record(ACCOUNT, several, ns(NOW))
-    (opened,) = future.sent("record_holdings_statement")
-    assert opened["buying_power"] is None
-
-
-async def test_with_the_contract_sync_status_carries_a_state_and_both_freshnesses() -> None:
-    future = FutureSidecar()
-    await Recorder(future.plugin(), Contract.of(future)).report_sync(ACCOUNT, DISABLED, ns(NOW))
-    (sent,) = future.sent("report_sync_status")
-    assert sent["state"] == "SYNC_STATE_DISABLED"
-    assert sent["holdings_as_of_ns"] == ns(NOW - timedelta(days=5))
-    assert sent["history_as_of_ns"] == ns(NOW.replace(hour=0))
-    assert sent["status_detail"] == "SnapTrade disabled it."
-
-
-async def test_with_the_contract_the_accounts_a_connection_reaches_are_reported() -> None:
-    future = FutureSidecar()
-    assert await Recorder(future.plugin(), Contract.of(future)).report_accounts([ACCOUNT], 7)
-    (sent,) = future.sent("report_external_accounts")
-    assert sent["accounts"] == [
+async def test_the_accounts_a_connection_reaches_are_reported(sidecar: Sidecar) -> None:
+    await Recorder(sidecar.plugin()).report_accounts([ACCOUNT])
+    (sent,) = sidecar.sent("ReportExternalAccounts")
+    assert list(sent.accounts) == [
         meridian.ExternalAccount(
             external_account_id="ALPACA:INST-1", name="Margin", venue_account_type="margin"
         )
     ]
 
 
-# ── The tripwire for when the SDK lands ──────────────────────────────────────
+# ── The tripwire for the next SDK ────────────────────────────────────────────
 
-# Every parameter of the pinned SDK's operations this plugin knows: today's,
-# and the account-side contract's as contract.py names them. A parameter
-# outside this set is one the contract added under a name the adapters do not
-# use, which would leave its part silently off.
+# Every parameter of the pinned SDK's operations this plugin knows. Moving the
+# pin to an SDK with an operation or a parameter outside this set fails here,
+# naming it, so what the new contract adds is decided rather than missed.
 KNOWN_PARAMETERS = {
     "report_sync_status": {
         "source",
@@ -335,6 +309,13 @@ KNOWN_PARAMETERS = {
         "observed_at_ns",
     },
     "report_external_accounts": {"accounts"},
+    "link_external_account": {
+        "external_account_id",
+        "account_id",
+        "new_account_name",
+        "acting_for",
+    },
+    "read_accounts_for_linking": {"acting_for"},
 }
 
 
@@ -349,8 +330,8 @@ def test_the_pinned_sdk_has_no_operation_or_parameter_this_plugin_does_not_know(
         if inspect.iscoroutinefunction(member) and not name.startswith("_")
     }
     unknown_operations = operations - set(KNOWN_PARAMETERS)
-    assert not unknown_operations, f"map these in contract.py: {unknown_operations}"
+    assert not unknown_operations, f"decide what to do with: {unknown_operations}"
     for name in operations:
         parameters = set(inspect.signature(getattr(Operations, name)).parameters) - {"self"}
         unknown = parameters - KNOWN_PARAMETERS[name]
-        assert not unknown, f"{name} has parameters contract.py does not map: {unknown}"
+        assert not unknown, f"{name} has parameters this plugin does not know: {unknown}"

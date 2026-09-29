@@ -1,28 +1,31 @@
-"""The plugin's admin portal, and nothing for anybody else.
+"""The plugin's admin pages, and nothing for anybody else.
 
 Ruled by the product owner on 2026-09-28 (spec/plugin-pages-share-one-kit,
 Q5, and the amendment the same day): this plugin has an admin portal and no
-user portal. The admin portal covers what only SnapTrade knows: its users
-under the key, the brokerage connections, connecting one through SnapTrade's
-Connection Portal, each connection's health and each account's sync state with
-what to do, what the last read found, and reconnecting or refreshing a
-connection. The SnapTrade keys are entered in the dashboard's settings form,
-never here; linking accounts and granting access are the dashboard's too.
-People see accounts and holdings through a reporting plugin, not through
-custody.
+user portal. It covers what only SnapTrade knows, and linking the accounts it
+reaches: its users under the key, the brokerage connections, connecting one
+through SnapTrade's Connection Portal, each connection's health and each
+account's sync state with what to do, linking each account to one of the
+deployment's (W6.4, point 8 of kernel/a-plugins-admin-view), what the last
+read found, and reconnecting or refreshing a connection. The SnapTrade keys
+are entered in the dashboard's settings form, never here. People see
+accounts and holdings through a reporting plugin, not through custody.
 
-`/` sends a deployment administrator to `/admin` and tells anybody else there
-is no page for them. `/admin` is served to deployment administrators only,
-decided from the caller the sidecar verified (contract.is_administrator).
+Three admin pages, declared at registration (`ADMIN_PAGES`), which the
+dashboard's admin view of the instance shows as tabs after its own, each
+framing its path (the product owner, 2026-09-29, "tabs at both levels"):
+Connections, Accounts and Holdings. The dashboard draws the tabs; a page
+draws only its content. `/admin` sends a caller to Connections, and `/`
+sends a deployment admin there and tells anybody else there is no page for
+them. Each page is served to a caller whose verified `deployment_admin` claim
+is true, and to nobody else.
 
 Built on the kit (spec/plugin-pages-share-one-kit, requirement 5): the
 dashboard serves Open Meridian's UI kit at /.meridian/ui/<version>/ on this
-plugin's own host, and the page links its stylesheet and script, uses its
-classes and its grid, and has no style, colour or theme code of its own. The
-dashboard's frame draws the plugin's name, the way back and the person; the
-page draws only its content.
+plugin's own host, and each page links its stylesheet and script, uses its
+classes and its grid, and has no style, colour or theme code of its own.
 
-Where the kit is not served the page still works, unstyled: each table is in
+Where the kit is not served a page still works, unstyled: each table is in
 the HTML inside its <om-grid>, which a browser shows as it is until the kit's
 grid replaces it; the grid's columns and rows sit beside it as JSON, read only
 once the grid is defined; and every action is a plain form.
@@ -48,27 +51,57 @@ import http.server
 import json
 import secrets
 import threading
-from collections.abc import Coroutine, Sequence
+from collections.abc import Coroutine, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, TypeVar
 from urllib.parse import parse_qs
 
 import meridian
 
-from .contract import is_administrator
+from .linking import Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, SyncState
-from .settings import CLIENT_ID, CONSUMER_KEY, USER_ID, USER_SECRET
+from .settings import label
 from .sync import Status, Syncer
 from .venue import VenueError
 
 TITLE = "SnapTrade"
-# The kit's version this page was built against. The dashboard serves the
-# deployment's; pinning one keeps the page as it was built.
+# The kit's version these pages were built against. The dashboard serves the
+# deployment's; pinning one keeps the pages as they were built.
 KIT = "/.meridian/ui/0.1.0/"
 CSRF_FIELD = "csrf"
-# A form here carries a token and nothing else; anything longer is not one.
+# A form here carries a token, an account and a name at most; anything longer
+# is not one of this page's.
 _MOST_BODY = 4096
+# The longest name a new account is given here.
+_MOST_NAME = 200
+
+CONNECTIONS = "/admin/connections"
+ACCOUNTS = "/admin/accounts"
+HOLDINGS = "/admin/holdings"
+# The admin pages, in the order the dashboard shows them as tabs.
+ADMIN_PAGES = (
+    meridian.Page(CONNECTIONS, "Connections"),
+    meridian.Page(ACCOUNTS, "Accounts"),
+    meridian.Page(HOLDINGS, "Holdings"),
+)
+
+_Answer = TypeVar("_Answer")
+
+
+def is_administrator(caller: meridian.Caller) -> bool:
+    """Whether the verified caller is a deployment administrator: the claim
+    the dashboard sets and the sidecar verifies (W6.9). Only True counts."""
+    return caller.deployment_admin is True
+
+
+@dataclass(frozen=True)
+class Notice:
+    """What an action came to, shown at the head of the page it answers with."""
+
+    text: str
+    # The kit's notice tones: info, good, warn or bad.
+    tone: str = "info"
 
 
 class CsrfTokens:
@@ -105,12 +138,8 @@ _STATE_TONE = {
 }
 # The states that ask a person to do something.
 _ATTENTION = (SyncState.STALE, SyncState.NEEDS_SIGN_IN, SyncState.DISABLED)
-_SETTING_LABEL = {
-    CLIENT_ID: "SnapTrade client ID",
-    CONSUMER_KEY: "SnapTrade consumer key",
-    USER_ID: "SnapTrade user ID",
-    USER_SECRET: "SnapTrade user secret",
-}
+_LINK_LABEL = {Link.LINKED: "Linked", Link.UNLINKED: "Not linked", Link.UNKNOWN: "Not known"}
+_LINK_TONE = {Link.LINKED: "good", Link.UNLINKED: "warn", Link.UNKNOWN: ""}
 
 
 def e(value: object) -> str:
@@ -155,12 +184,19 @@ def _badge(state: SyncState) -> str:
     return f'<span class="badge {_STATE_TONE[state]}">{_STATE_LABEL[state]}</span>'
 
 
-def _button(action: str, label: str, token: str, kind: str = "") -> str:
+def _hidden(name: str, value: str) -> str:
+    return f'<input type="hidden" name="{e(name)}" value="{e(value)}">'
+
+
+def _button(
+    action: str, said: str, token: str, kind: str = "", fields: Mapping[str, str] | None = None
+) -> str:
     shown = f' class="{kind}"' if kind else ""
+    carried = "".join(_hidden(name, value) for name, value in (fields or {}).items())
     return (
         f'<form method="post" action="{e(action)}" class="inline">'
-        f'<input type="hidden" name="{CSRF_FIELD}" value="{e(token)}">'
-        f"<button{shown}>{e(label)}</button></form>"
+        f"{_hidden(CSRF_FIELD, token)}{carried}"
+        f"<button{shown}>{e(said)}</button></form>"
     )
 
 
@@ -277,6 +313,7 @@ customElements.whenDefined("om-grid").then(() => {
 # Most wanted first, so a narrow frame shows it before the table scrolls.
 _ACCOUNT_COLUMNS = (
     Column("account", "Account", hint="where", strong=True),
+    Column("link", "Link", tone="link_tone"),
     Column("state", "Sync state", tone="tone", hint="todo"),
     Column("holdings_as_of", "Holdings as of", blank="not reported"),
     Column("history_as_of", "History as of", blank="not reported"),
@@ -319,7 +356,7 @@ def _recorded(view: AccountView, status: Status) -> tuple[str, str, str]:
 
 
 def _account_row(
-    connection: ConnectionView, view: AccountView, status: Status
+    connection: ConnectionView, view: AccountView, status: Status, link: LinkView
 ) -> dict[str, str]:
     account, fresh = view.account, view.freshness
     todo = [fresh.detail] if fresh.detail else []
@@ -328,19 +365,11 @@ def _account_row(
     recorded, ink, note = _recorded(view, status)
     return {
         "account": account.name,
-        "where": " · ".join(
-            (
-                connection.institution or "Unknown brokerage",
-                account.account_type or "type not given",
-            )
-        ),
+        "where": _where(connection, view),
         "id": account.external_account_id,
-        "id_note": ""
-        if account.stable
-        else (
-            "SnapTrade gives no stable ID for this account: after a reconnect it "
-            "appears as a new account, to be linked again."
-        ),
+        "id_note": _unstable(view),
+        "link": _LINK_LABEL[link.state],
+        "link_tone": _LINK_TONE[link.state],
         "state": _STATE_LABEL[fresh.state],
         "tone": _STATE_TONE[fresh.state],
         "todo": " ".join(todo),
@@ -350,6 +379,24 @@ def _account_row(
         "recorded_ink": ink,
         "recorded_note": note,
     }
+
+
+def _unstable(view: AccountView) -> str:
+    if view.account.stable:
+        return ""
+    return (
+        "SnapTrade gives no stable ID for this account: after a reconnect it appears "
+        "as a new account, to be linked again."
+    )
+
+
+def _where(connection: ConnectionView, view: AccountView) -> str:
+    return " · ".join(
+        (
+            connection.institution or "Unknown brokerage",
+            view.account.account_type or "type not given",
+        )
+    )
 
 
 def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
@@ -424,10 +471,135 @@ def _tiles(status: Status) -> str:
     )
 
 
+# ── The account mapping ──────────────────────────────────────────────────────
+#
+# Each external account with its link and what can be done about it, drawn
+# with the kit's classes: a list row per account, a badge for its link, and
+# for one not linked, two plain forms side by side (the kit's grid-2, one
+# column on a phone): an existing account from a picker, or a new account
+# named from the external one. The kit has no component for this yet.
+
+
+def _picker(external_id: str, offered: Offered, token: str) -> str:
+    """Link to one of the deployment's open accounts."""
+    choices = [account for account in offered.accounts if account.open]
+    if offered.refused:
+        return (
+            '<p class="hint">The deployment\'s accounts could not be read, so none is '
+            "offered here.</p>"
+        )
+    if not choices:
+        return '<p class="hint">The deployment has no open accounts yet: create one.</p>'
+    options = "".join(
+        f'<option value="{e(account.account_id)}">{e(account.name or account.account_id)}'
+        "</option>"
+        for account in choices
+    )
+    return (
+        f'<form method="post" action="{ACCOUNTS}/link">'
+        f"{_hidden(CSRF_FIELD, token)}{_hidden('external_account_id', external_id)}"
+        '<label class="field"><span>Link to an existing account</span>'
+        '<select name="account_id" required><option value="">Choose an account</option>'
+        f"{options}</select></label>"
+        # In a field of its own, so a stacked form below it keeps its distance.
+        '<div class="field"><button>Link</button></div></form>'
+    )
+
+
+def _create(view: AccountView, token: str) -> str:
+    """Create a new account, named from the external one, and link it."""
+    return (
+        f'<form method="post" action="{ACCOUNTS}/create">'
+        f"{_hidden(CSRF_FIELD, token)}"
+        f"{_hidden('external_account_id', view.account.external_account_id)}"
+        '<label class="field"><span>Create a new account</span>'
+        f'<input type="text" name="new_account_name" value="{e(view.account.name)}" '
+        f'required maxlength="{_MOST_NAME}"></label>'
+        '<div class="field"><button class="primary">Create and link</button></div></form>'
+    )
+
+
+def _mapping_row(
+    connection: ConnectionView, view: AccountView, link: LinkView, offered: Offered, token: str
+) -> str:
+    account = view.account
+    external_id = account.external_account_id
+    said = [link.how]
+    if link.account_id:
+        said.insert(0, f"Linked to {offered.name_of(link.account_id) or link.account_id}.")
+    note = _unstable(view)
+    head = (
+        '<div class="grow">'
+        f'<div class="row"><span class="title">{e(account.name)}</span> '
+        f'<span class="{" ".join(filter(None, ("badge", _LINK_TONE[link.state])))}">'
+        f"{_LINK_LABEL[link.state]}</span></div>"
+        f'<div class="meta">{e(_where(connection, view))} · '
+        f"<code>{e(external_id)}</code></div>"
+        f'<span class="hint">{e(" ".join(said))}</span>'
+        + (f'<span class="hint">{e(note)}</span>' if note else "")
+    )
+    unlink = _button(
+        f"{ACCOUNTS}/unlink",
+        "Unlink",
+        token,
+        "danger",
+        {"external_account_id": external_id},
+    )
+    if link.state is Link.LINKED:
+        return (
+            f'<div class="list-row" data-account="{e(external_id)}">{head}</div>{unlink}</div>'
+        )
+    forms = (
+        f'<div class="grid-2">{_picker(external_id, offered, token)}'
+        f"{_create(view, token)}</div>"
+    )
+    # Where it is not known, it may be linked: removing the link is offered
+    # too, under the forms, so a phone's width is left to them.
+    also = (
+        f'<div class="row"><span class="muted">It may be linked already.</span>{unlink}</div>'
+        if link.state is Link.UNKNOWN
+        else ""
+    )
+    return (
+        f'<div class="list-row" data-account="{e(external_id)}">{head}{forms}{also}</div></div>'
+    )
+
+
+def _mapping(
+    status: Status, links: Mapping[str, LinkView], offered: Offered, token: str
+) -> str:
+    rows = [
+        _mapping_row(connection, view, links[view.account.external_account_id], offered, token)
+        for connection in status.connections
+        for view in connection.accounts
+    ]
+    counted = [links[view.account.external_account_id].state for view in status.accounts]
+    summary = ", ".join(
+        f"{counted.count(state)} {_LINK_LABEL[state].lower()}"
+        for state in Link
+        if counted.count(state)
+    )
+    return (
+        '<section class="panel">'
+        '<div class="panel-body"><h2>Link each account</h2>'
+        '<p class="muted">Each account SnapTrade reaches is recorded against the '
+        "deployment's account it is linked to, and one nothing links is not recorded. "
+        "Link it to an existing account, or create one for it."
+        + (f" {e(summary.capitalize())}." if summary else "")
+        + "</p></div>"
+        + (
+            "".join(rows)
+            or '<div class="empty-state"><strong>No accounts yet</strong>'
+            "<p>They appear here once SnapTrade is read.</p></div>"
+        )
+        + "</section>"
+    )
+
+
 # ── The pages ────────────────────────────────────────────────────────────────
 
 
-def _notices(status: Status, notice: str, portal: str | None) -> str:
+def _notices(status: Status, notice: Notice | None, portal: str | None) -> str:
     parts: list[str] = []
     if portal is not None:
         if portal:
@@ -444,10 +616,13 @@ def _notices(status: Status, notice: str, portal: str | None) -> str:
                 "Portal. It opens once the SnapTrade settings are given and synthetic mode "
                 "is off.</div>"
             )
-    if notice:
-        parts.append(f'<div class="notice info" role="status">{e(notice)}</div>')
+    if notice is not None:
+        role = "alert" if notice.tone == "bad" else "status"
+        parts.append(
+            f'<div class="notice {e(notice.tone)}" role="{role}">{e(notice.text)}</div>'
+        )
     if status.mode == "waiting":
-        wanted = ", ".join(_SETTING_LABEL.get(name, name) for name in status.missing)
+        wanted = ", ".join(label(name) for name in status.missing)
         parts.append(
             '<div class="notice warn">Not reading SnapTrade: this plugin\'s settings need '
             f"{e(wanted)}. Give them in this plugin's settings in the dashboard, or turn "
@@ -456,6 +631,23 @@ def _notices(status: Status, notice: str, portal: str | None) -> str:
     if status.error:
         parts.append(f'<div class="notice bad">The last read failed: {e(status.error)}</div>')
     return "".join(parts)
+
+
+def _head(title: str, status: Status, token: str, back: str, primary: str = "") -> str:
+    """A page's heading: what it is, how the plugin is reading, and its actions."""
+    mode = {
+        "synthetic": "Synthetic mode: built-in responses, not SnapTrade.",
+        "snaptrade": "Reading SnapTrade.",
+        "waiting": "Waiting for settings.",
+    }[status.mode]
+    read = f" Last read {_when(status.read_at)}." if status.read_at else ""
+    return (
+        '<header class="page-head">'
+        f"<div><h1>{e(title)}</h1><p>{e(mode)}{read}</p></div>"
+        '<div class="actions">'
+        f"{_button('/admin/read', 'Read now', token, fields={'back': back})}"
+        f"{primary}</div></header>"
+    )
 
 
 def _connection(connection: ConnectionView, token: str) -> str:
@@ -475,37 +667,21 @@ def _connection(connection: ConnectionView, token: str) -> str:
         f'<div class="meta">{e(" · ".join(filter(None, meta)))}</div>'
         + (f'<span class="hint">{e(said)}</span>' if said else "")
         + "</div>"
-        f"{_button(f'/admin/connections/{key}/refresh', 'Refresh', token)}"
-        f"{_button(f'/admin/connections/{key}/reconnect', 'Reconnect', token, reconnect)}"
+        f"{_button(f'{CONNECTIONS}/{key}/refresh', 'Refresh', token)}"
+        f"{_button(f'{CONNECTIONS}/{key}/reconnect', 'Reconnect', token, reconnect)}"
         "</div>"
     )
 
 
-def render_admin(
-    status: Status, token: str, notice: str = "", portal: str | None = None
+def render_connections(
+    status: Status, token: str, notice: Notice | None = None, portal: str | None = None
 ) -> str:
-    """The admin portal for the last read, its forms carrying `token`."""
-    mode = {
-        "synthetic": "Synthetic mode: built-in responses, not SnapTrade.",
-        "snaptrade": "Reading SnapTrade.",
-        "waiting": "Waiting for settings.",
-    }[status.mode]
-    read = f" Last read {_when(status.read_at)}." if status.read_at else ""
+    """The Connections tab: the brokerages connected through SnapTrade, and
+    the SnapTrade user they belong to."""
     connections = "".join(_connection(c, token) for c in status.connections) or (
         '<div class="empty-state"><strong>No brokerage connections yet</strong>'
         "<p>Connect one through SnapTrade's Connection Portal to begin.</p></div>"
     )
-    accounts = [
-        _account_row(connection, view, status)
-        for connection in status.connections
-        for view in connection.accounts
-    ]
-    holdings = [
-        _holding_row(view, holding)
-        for view in status.accounts
-        if view.statement is not None
-        for holding in view.statement.holdings
-    ]
     users = (
         "".join(
             f"<li><code>{e(user)}</code>"
@@ -519,34 +695,82 @@ def render_admin(
         )
         or '<li class="faint">None listed.</li>'
     )
-    waiting = (
-        '<details class="notice quiet"><summary>Waiting for the account-side '
-        "contract</summary><p>The SDK this version is built on does not carry these "
-        "yet, so the plugin shows them here and records what today's contract can: "
-        f"{e('; '.join(status.waiting))}.</p></details>"
-        if status.waiting
-        else ""
-    )
     return _document(
-        '<header class="page-head">'
-        f"<div><h1>Brokerage connections</h1><p>{e(mode)}{read}</p></div>"
-        '<div class="actions">'
-        f"{_button('/admin/read', 'Read now', token)}"
-        f"{_button('/admin/connect', 'Connect a brokerage', token, 'primary')}"
-        "</div></header>"
-        f"{_notices(status, notice, portal)}"
-        f"{_tiles(status)}"
-        '<section class="panel">'
+        _head(
+            "Brokerage connections",
+            status,
+            token,
+            CONNECTIONS,
+            _button("/admin/connect", "Connect a brokerage", token, "primary"),
+        )
+        + _notices(status, notice, portal)
+        + _tiles(status)
+        + '<section class="panel">'
         '<div class="panel-body"><h2>Connections</h2>'
         '<p class="muted">Each brokerage connected through SnapTrade, and how it is.</p>'
         f"</div>{connections}</section>"
-        '<section class="panel">'
-        '<div class="panel-body"><h2>Accounts</h2>'
-        '<p class="muted">Each account the connections reach, its sync state and what to '
+        '<section class="panel padded">'
+        "<h2>SnapTrade user</h2>"
+        + (
+            "<p>This instance reads the brokerage connections of "
+            f"<code>{e(status.user_id)}</code>.</p>"
+            if status.user_id
+            else '<p class="muted">No SnapTrade user is set, as with a personal key.</p>'
+        )
+        + f'<p class="hint">Users registered under this key:</p><ul class="plain">{users}</ul>'
+        "</section>"
+    )
+
+
+def render_accounts(
+    status: Status,
+    token: str,
+    links: Mapping[str, LinkView],
+    offered: Offered,
+    notice: Notice | None = None,
+) -> str:
+    """The Accounts tab: each account the connections reach, linked to one of
+    the deployment's here, and its sync state. `links` is each account's link
+    by its external ID; `offered`, the deployment's accounts read for the
+    admin viewing the page."""
+    accounts = [
+        _account_row(connection, view, status, links[view.account.external_account_id])
+        for connection in status.connections
+        for view in connection.accounts
+    ]
+    refused = (
+        '<div class="notice bad" role="alert">The deployment\'s accounts could not be '
+        f"read: {e(offered.refused)}</div>"
+        if offered.refused
+        else ""
+    )
+    return _document(
+        _head("Accounts", status, token, ACCOUNTS)
+        + _notices(status, notice, None)
+        + refused
+        + _mapping(status, links, offered, token)
+        + '<section class="panel">'
+        '<div class="panel-body"><h2>Sync state</h2>'
+        '<p class="muted">How fresh SnapTrade\'s data about each account is, what to '
         "do about it, and what the last read recorded.</p></div>"
         + _grid("accounts", "Accounts", "No accounts yet.", "id", _ACCOUNT_COLUMNS, accounts)
-        + "</section>"
-        '<section class="panel">'
+        + "</section>",
+        _GRIDS,
+    )
+
+
+def render_holdings(status: Status, token: str, notice: Notice | None = None) -> str:
+    """The Holdings tab: what the last read found in each account."""
+    holdings = [
+        _holding_row(view, holding)
+        for view in status.accounts
+        if view.statement is not None
+        for holding in view.statement.holdings
+    ]
+    return _document(
+        _head("Holdings read", status, token, HOLDINGS)
+        + _notices(status, notice, None)
+        + '<section class="panel">'
         '<div class="panel-body"><h2>Holdings read</h2>'
         '<p class="muted">What the last read found in each account, as recorded in the '
         "deployment's street store. Quantities are exact, as SnapTrade reported them.</p>"
@@ -559,24 +783,13 @@ def render_admin(
             _HOLDING_COLUMNS,
             holdings,
         )
-        + "</section>"
-        '<section class="panel padded">'
-        "<h2>SnapTrade user</h2>"
-        + (
-            "<p>This instance reads the brokerage connections of "
-            f"<code>{e(status.user_id)}</code>.</p>"
-            if status.user_id
-            else '<p class="muted">No SnapTrade user is set, as with a personal key.</p>'
-        )
-        + f'<p class="hint">Users registered under this key:</p><ul class="plain">{users}</ul>'
-        "</section>"
-        f"{waiting}",
+        + "</section>",
         _GRIDS,
     )
 
 
 def render_no_page() -> str:
-    """What anybody but a deployment administrator gets at `/`."""
+    """What anybody but a deployment administrator gets."""
     return _document(
         '<section class="panel padded narrow">'
         "<h1>This plugin has no page for you</h1>"
@@ -586,19 +799,58 @@ def render_no_page() -> str:
     )
 
 
+# ── The server ───────────────────────────────────────────────────────────────
+
+
+def _field(form: Mapping[str, list[str]], name: str) -> str:
+    """A form's one value for `name`, or "" where it has none or several."""
+    values = form.get(name, [])
+    return values[0].strip() if len(values) == 1 else ""
+
+
 def serve(
     syncer: Syncer,
+    links: Links,
     loop: asyncio.AbstractEventLoop,
     port: int,
     wake: asyncio.Event,
     tokens: CsrfTokens | None = None,
 ) -> http.server.ThreadingHTTPServer:
     """Start the pages on 127.0.0.1:`port`, in a thread; the returned server's
-    `shutdown()` stops it. SnapTrade is asked on `loop`, where the plugin lives."""
+    `shutdown()` stops it. SnapTrade and the sidecar are asked on `loop`, where
+    the plugin lives."""
     csrf = tokens if tokens is not None else CsrfTokens()
 
-    def on_loop(work: Coroutine[Any, Any, str]) -> str:
+    def on_loop(work: Coroutine[Any, Any, _Answer]) -> _Answer:
         return asyncio.run_coroutine_threadsafe(work, loop).result(timeout=30)
+
+    def links_of(status: Status) -> dict[str, LinkView]:
+        return {
+            view.account.external_account_id: links.of(
+                view, status.outcomes.get(view.account.external_account_id)
+            )
+            for view in status.accounts
+        }
+
+    def offered_to(caller: meridian.Caller) -> Offered:
+        try:
+            return on_loop(links.offered(caller.header))
+        except Exception as failed:
+            # Named by its type only: its text is not known to be safe to show.
+            return Offered(refused=f"that failed: {type(failed).__name__}")
+
+    def render(
+        path: str,
+        caller: meridian.Caller,
+        notice: Notice | None = None,
+        portal: str | None = None,
+    ) -> str:
+        status, token = syncer.status, csrf.token(caller)
+        if path == ACCOUNTS:
+            return render_accounts(status, token, links_of(status), offered_to(caller), notice)
+        if path == HOLDINGS:
+            return render_holdings(status, token, notice)
+        return render_connections(status, token, notice, portal)
 
     class Page(http.server.BaseHTTPRequestHandler):
         def _caller(self) -> meridian.Caller | None:
@@ -637,41 +889,46 @@ def serve(
             self.end_headers()
 
         def do_GET(self) -> None:  # noqa: N802 - the server's name
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
+            # The frame's theme rides the query on first load; it goes along.
+            connections = CONNECTIONS + (f"?{query}" if query else "")
             if path == "/":
                 caller = self._caller()
                 if caller is None:
                     return
                 if is_administrator(caller):
-                    self._redirect("/admin")
+                    self._redirect(connections)
                 else:
                     self._send(200, render_no_page())
                 return
-            if path == "/admin":
+            if path in ("/admin", CONNECTIONS, ACCOUNTS, HOLDINGS):
                 caller = self._administrator()
-                if caller is not None:
-                    self._send(200, render_admin(syncer.status, csrf.token(caller)))
+                if caller is None:
+                    return
+                if path == "/admin":
+                    self._redirect(connections)
+                else:
+                    self._send(200, render(path, caller))
                 return
             self._send(404, "No such page.", "text/plain")
 
-        def _presented_token(self) -> str:
+        def _form(self) -> dict[str, list[str]]:
             length = int(self.headers.get("Content-Length") or 0)
             if length > _MOST_BODY:
-                return ""
+                return {}
             body = self.rfile.read(length).decode("utf-8", errors="replace")
-            values = parse_qs(body).get(CSRF_FIELD, [])
-            return values[0] if len(values) == 1 else ""
+            return parse_qs(body)
 
         def do_POST(self) -> None:  # noqa: N802
             try:
-                presented = self._presented_token()
+                form = self._form()
             except ValueError:
-                presented = ""
+                form = {}
             caller = self._administrator()
             if caller is None:
                 return
-            if not csrf.valid(caller, presented):
-                # Refused before anything is asked of SnapTrade or the plugin.
+            if not csrf.valid(caller, _field(form, CSRF_FIELD)):
+                # Refused before anything is asked of SnapTrade or the sidecar.
                 self._send(
                     403,
                     "This form has expired or did not come from this page. "
@@ -679,17 +936,21 @@ def serve(
                     "text/plain",
                 )
                 return
-            token = csrf.token(caller)
             parts = self.path.split("?", 1)[0].strip("/").split("/")
+            if parts[:2] == ["admin", "accounts"]:
+                self._link(caller, parts[2:], form)
+                return
             venue = syncer.venue
             known = {c.connection_id for c in syncer.status.connections}
-            notice, portal = "", None
+            notice, portal, answer = None, None, CONNECTIONS
             try:
                 if parts == ["admin", "read"]:
                     loop.call_soon_threadsafe(wake.set)
-                    notice = "Reading SnapTrade now. Reload in a moment."
+                    notice = Notice("Reading SnapTrade now. Reload in a moment.")
+                    back = _field(form, "back")
+                    answer = back if back in (CONNECTIONS, ACCOUNTS, HOLDINGS) else CONNECTIONS
                 elif venue is None:
-                    notice = "Nothing to ask SnapTrade until its settings are given."
+                    notice = Notice("Nothing to ask SnapTrade until its settings are given.")
                 elif parts == ["admin", "connect"]:
                     portal = on_loop(venue.connection_portal())
                 elif (
@@ -699,7 +960,7 @@ def serve(
                     and parts[3] in ("refresh", "reconnect")
                 ):
                     if parts[3] == "refresh":
-                        notice = on_loop(venue.refresh(parts[2]))
+                        notice = Notice(on_loop(venue.refresh(parts[2])))
                         loop.call_soon_threadsafe(wake.set)
                     else:
                         portal = on_loop(venue.connection_portal(reconnect=parts[2]))
@@ -707,11 +968,48 @@ def serve(
                     self._send(404, "No such action.", "text/plain")
                     return
             except VenueError as failed:
-                notice = str(failed)
+                notice = Notice(str(failed), "bad")
             except Exception as failed:
                 # Named by its type only: its text is not known to be safe to show.
-                notice = f"That failed: {type(failed).__name__}"
-            self._send(200, render_admin(syncer.status, token, notice, portal))
+                notice = Notice(f"That failed: {type(failed).__name__}", "bad")
+            self._send(200, render(answer, caller, notice, portal))
+
+        def _link(
+            self, caller: meridian.Caller, action: list[str], form: Mapping[str, list[str]]
+        ) -> None:
+            """Link, create and link, or unlink one of the accounts the last
+            read reached, for the admin who sent the form (W6.4)."""
+            external_id = _field(form, "external_account_id")
+            views = {view.account.external_account_id: view for view in syncer.status.accounts}
+            if action not in (["link"], ["create"], ["unlink"]) or external_id not in views:
+                self._send(404, "No such account.", "text/plain")
+                return
+            named = views[external_id].account.name or external_id
+            account_id = _field(form, "account_id") if action == ["link"] else ""
+            name = _field(form, "new_account_name")[:_MOST_NAME] if action == ["create"] else ""
+            if action == ["link"] and not account_id:
+                notice = Notice("Choose the account to link it to.", "warn")
+            elif action == ["create"] and not name:
+                notice = Notice("Name the new account.", "warn")
+            else:
+                try:
+                    on_loop(links.link(caller.header, external_id, account_id, name))
+                except meridian.MeridianError as refused:
+                    notice = Notice(f"The sidecar refused this: {refusal(refused)}", "bad")
+                except Exception as failed:
+                    notice = Notice(f"That failed: {type(failed).__name__}", "bad")
+                else:
+                    # Read again, so its rows follow the link.
+                    loop.call_soon_threadsafe(wake.set)
+                    notice = Notice(
+                        f"Unlinked {named}."
+                        if action == ["unlink"]
+                        else f"Created {name} and linked {named} to it."
+                        if action == ["create"]
+                        else f"Linked {named}.",
+                        "good",
+                    )
+            self._send(200, render(ACCOUNTS, caller, notice))
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             pass

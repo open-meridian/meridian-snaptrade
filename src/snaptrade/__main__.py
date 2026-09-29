@@ -2,7 +2,7 @@
 Meridian deployment, through SnapTrade (plans/proving-the-plugin-system, step 1).
 
 It connects to the sidecar it is launched beside, declares its settings and
-its admin page, and then, on every poll and every settings change, reads
+its admin pages, and then, on every poll and every settings change, reads
 SnapTrade (or, in synthetic mode, its built-in responses), normalises what it
 read to the platform's convention (normalise.py), and records it through the
 SDK's typed operations (contract.py): each account's sync status, and a
@@ -24,8 +24,8 @@ import signal
 
 import meridian
 
-from .contract import Contract
-from .page import TITLE, serve
+from .linking import Links
+from .page import ADMIN_PAGES, TITLE, serve
 from .settings import DECLARED, config_from
 from .sync import Syncer
 
@@ -37,7 +37,7 @@ async def watch_settings(
 ) -> None:
     """Apply each delivery of the settings, and read again at once."""
     async for delivered in plugin.settings():
-        syncer.configure(config_from(delivered.values))
+        syncer.configure(config_from(delivered.values, delivered.missing_required))
         configured.set()
         wake.set()
 
@@ -65,7 +65,8 @@ async def run() -> None:
 
     port = int(os.environ.get("SNAPTRADE_PAGE_PORT", "8000"))
     async with await meridian.connect(
-        interface=meridian.Interface(port=port, title=TITLE),
+        # Shown as tabs in the dashboard's admin view of the instance.
+        interface=meridian.Interface(port=port, title=TITLE, admin_pages=ADMIN_PAGES),
         settings=DECLARED,
         # It names accounts by SnapTrade's identifiers, which a deployment
         # admin links to accounts (W6.4).
@@ -76,14 +77,10 @@ async def run() -> None:
             plugin.identity.instance_id,
             ", ".join(plugin.identity.roles) or "none",
         )
-        contract = Contract.of(plugin)
-        for part in contract.waiting():
-            log.info("waiting for the account-side contract: %s", part)
-
-        syncer = Syncer(plugin, contract)
+        syncer = Syncer(plugin)
         configured, wake = asyncio.Event(), asyncio.Event()
-        page = serve(syncer, loop, port, wake)
-        log.info("serving its admin page on 127.0.0.1:%d", port)
+        page = serve(syncer, Links(plugin), loop, port, wake)
+        log.info("serving its admin pages on 127.0.0.1:%d", port)
         tasks = [
             asyncio.create_task(watch_settings(plugin, syncer, configured, wake)),
             asyncio.create_task(poll(syncer, configured, wake)),
