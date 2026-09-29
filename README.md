@@ -283,8 +283,10 @@ the new SDK has that this plugin does not know, naming it.
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
 `meridian plugin launch snaptrade 0.3.1 --instance snaptrade`; or develop it
-live with `meridian plugin dev --instance snaptrade` and `synthetic` on (the
-`develop-live` skill under `.claude/` walks that loop).
+live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
+`AGENTS.md` walks any coding agent through that loop, and through
+`meridian plugin check`, which holds the plugin to the framework's rules;
+`CLAUDE.md` and the `develop-live` skill under `.claude/` lead Claude Code to it.
 
 ## Licence
 

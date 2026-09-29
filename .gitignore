@@ -10,10 +10,10 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
-# CLAUDE.md and .claude/ are committed with the plugin, so whoever works on it
-# next gets the same instructions and the develop-live skill. What is one
-# person's own is not: their notes, their settings, and what `meridian plugin
-# dev` printed for them, which the skill keeps in .meridian/.
+# AGENTS.md, CLAUDE.md and .claude/ are committed with the plugin, so whoever
+# works on it next, with whichever agent, gets the same instructions. What is
+# one person's own is not: their notes, their settings, and what `meridian
+# plugin dev` printed for them, which the loop keeps in .meridian/.
 CLAUDE.local.md
 .claude/settings.local.json
 .meridian/
