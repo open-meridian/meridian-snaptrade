@@ -17,7 +17,8 @@ theirs.
 
 - `meridian --version` is 0.1.3 or later. Older ones have no `plugin dev`: the
   person runs `meridian upgrade`.
-- The person has run `meridian connect <address>`. You cannot do it for them:
+- The person has run `meridian connect` (with the address, for a deployment
+  not on this machine). You cannot do it for them:
   it signs in through their browser. `meridian plugin list` says whether the
   session is there: it lists the catalogue, or exits **3**. Whenever any
   command exits 3, the session is missing or has lapsed. Stop, tell the person
