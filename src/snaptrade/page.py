@@ -743,11 +743,14 @@ def _head(title: str, status: Status, token: str, back: str, primary: str = "") 
         "waiting": "Waiting for settings.",
     }[status.mode]
     read = f" {_moment_of(status.read_at, 'Last read')}." if status.read_at else ""
+    refresh_all = _button(
+        "/admin/read", "Refresh all", token, fields={"back": back}, header="refresh"
+    )
     return (
         '<header class="page-head">'
         f"<div><h1>{e(title)}</h1><p>{e(mode)}{read}</p></div>"
         '<div class="actions">'
-        f"{_button('/admin/read', 'Refresh', token, fields={'back': back}, header='refresh')}"
+        f"{refresh_all}"
         f"{primary}</div></header>"
     )
 

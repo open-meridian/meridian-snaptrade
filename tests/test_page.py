@@ -519,7 +519,7 @@ def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     marked = [(action, inside) for action, inside in forms if "data-om-action" in inside]
     assert len(marked) == 1, "one header action in the head"
     action, inside = marked[0]
-    assert re.search(r'<button data-om-action="refresh">Refresh</button>', inside)
+    assert re.search(r'<button data-om-action="refresh">Refresh all</button>', inside)
     fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', inside))
     return action, fields
 
