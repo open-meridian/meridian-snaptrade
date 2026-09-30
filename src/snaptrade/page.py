@@ -744,7 +744,7 @@ def _head(title: str, status: Status, token: str, back: str, primary: str = "") 
     }[status.mode]
     read = f" {_moment_of(status.read_at, 'Last read')}." if status.read_at else ""
     refresh_all = _button(
-        "/admin/read", "Refresh all", token, fields={"back": back}, header="refresh"
+        "/admin/read", "Refresh", token, fields={"back": back}, header="refresh"
     )
     return (
         '<header class="page-head">'
