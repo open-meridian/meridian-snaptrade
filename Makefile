@@ -5,19 +5,24 @@ SHELL := /bin/bash
 unexport GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR \
          GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_PREFIX
 
-.PHONY: help ci-local ci-local-deep ci-remote test lint image preview fmt install-hooks
+.PHONY: help ci-local ci-local-deep ci-remote test lint check image preview fmt install-hooks
 
 DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
 BASE        ?= ghcr.io/open-meridian/plugin-python:0.6.1
+PLUGIN_CHECK := meridian-snaptrade-plugin-check
+# The meridian check.yaml holds the plugin to, read from there so the two
+# cannot drift.
+MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\1/p' .github/workflows/check.yaml)
 
 help:
-	@echo "  make ci-local       every gate: lint, tests, and the plugin's image (the pre-push gate)"
-	@echo "  make ci-remote      what CI runs: lint and tests"
+	@echo "  make ci-local       every gate: lint, tests, plugin check, and the plugin's image (the pre-push gate)"
+	@echo "  make ci-remote      what ci.yaml runs: lint and tests"
 	@echo "  make test           the tests, in a container"
 	@echo "  make lint           ruff and mypy, strict"
+	@echo "  make check          what check.yaml runs: meridian plugin check --run-tests, in a container"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
 	@echo "  make preview        write preview/: each page on synthetic data, linking the kit"
 	@echo "  make fmt            apply the formatter"
@@ -25,7 +30,7 @@ help:
 
 # Local green is the completion signal; CI is confirmation. Every CI job is a
 # target reachable from here.
-ci-local: ci-remote image
+ci-local: ci-remote check image
 	@echo
 	@echo "ci-local: GREEN"
 
@@ -49,6 +54,20 @@ test:
 		|| { echo "test FAILED. The last 40 lines, and the whole of it in .test.log:" >&2; \
 		     tail -40 .test.log >&2; exit 1; }
 	@echo "test OK: $$(tail -1 .test.log)"
+
+# check.yaml's job, in a container: the meridian it pins, installed as it is
+# there, holds the plugin to the framework's rules and runs its tests. The
+# repository is mounted read-only, and the check writes nothing to it.
+check:
+	@[ -n "$(MERIDIAN_VERSION)" ] \
+		|| { echo "check FAILED: .github/workflows/check.yaml pins no MERIDIAN_VERSION" >&2; exit 1; }
+	@$(DOCKER) build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
+		-t $(PLUGIN_CHECK) . >/dev/null 2>&1 \
+		|| { echo "check FAILED to build; see it with:" >&2; \
+		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
+	@out="$$(docker run --rm -v "$(CURDIR)":/w:ro $(PLUGIN_CHECK) meridian plugin check --run-tests 2>&1)" \
+		|| { echo "check FAILED:" >&2; echo "$$out" >&2; exit 1; }
+	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --run-tests, every rule holds"
 
 # The image `meridian plugin upload` builds from this Dockerfile, checked for
 # what a plugin's image must be: it starts as 65532, imports itself and

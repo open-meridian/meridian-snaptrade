@@ -1,0 +1,52 @@
+# The framework's check, on every push and pull request: `meridian plugin
+# check --run-tests` holds the plugin to the rules every Meridian plugin is
+# built to, and runs its tests. It is the check AGENTS.md has a coding agent
+# run after each change, so a failure here is one that run would have shown.
+#
+# The job is named for the make target that runs it locally: `make check`,
+# part of ci-local and so of the pre-push hook, takes the same steps in
+# python:3.12-slim with the same meridian.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The meridian whose rules the plugin is held to: the rules are compiled
+  # into it. Move it deliberately, as the SDK's pin is moved, since a newer
+  # one may hold a rule this plugin does not keep yet. `make check` reads it
+  # from here.
+  MERIDIAN_VERSION: 0.1.16
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The Python of the SDK's base image, with the plugin and its dev
+      # extras, for the tests: `--run-tests` runs `python3 -m pytest` here,
+      # and the tests need pytest-asyncio as well as pytest.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the plugin and its dev extras
+        run: python -m pip install -e '.[dev]'
+      # meridian's own installer, from the same release: it checks the binary
+      # against the checksum published beside it.
+      - name: Install meridian ${{ env.MERIDIAN_VERSION }}
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/open-meridian/meridian-cli/v${MERIDIAN_VERSION}/install.sh" \
+            | MERIDIAN_INSTALL_DIR="$HOME/.local/bin" sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: meridian plugin check --run-tests
+        run: meridian plugin check --run-tests

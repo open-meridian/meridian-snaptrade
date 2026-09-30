@@ -276,7 +276,7 @@ the new SDK has that this plugin does not know, naming it.
 
 ## Working on it
 
-    make ci-local        # lint (ruff, mypy strict), tests, and the plugin's image
+    make ci-local        # lint (ruff, mypy strict), tests, plugin check, and the plugin's image
     make preview         # each page on synthetic data, in preview/, linking the kit
     make install-hooks   # once per clone, so git push runs ci-local first
 

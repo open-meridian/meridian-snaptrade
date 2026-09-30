@@ -3,9 +3,10 @@
 # or the runner differs from a developer's machine -- both worth knowing.
 #
 # The job is named for the make target it runs. It runs ci-remote rather than
-# ci-local, and the difference is the plugin's image: building it pulls the
-# SDK's base image and is what `meridian plugin upload` does, which is checked
-# by ci-local before every push.
+# ci-local: check.yaml takes `make check`'s steps, so the difference is the
+# plugin's image. Building it pulls the SDK's base image and is what
+# `meridian plugin upload` does, which is checked by ci-local before every
+# push.
 name: ci
 
 on:

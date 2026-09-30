@@ -16,6 +16,24 @@ COPY tests tests
 # Run by `make test` and `make preview` with `docker run`.
 FROM base AS test
 
+# meridian, as check.yaml installs it: its own installer, from the release's
+# tag, which checks the binary against the checksum published beside it. A
+# stage of its own, so a change to the plugin does not download it again.
+FROM python:${PYTHON_VERSION}-slim AS meridian
+ARG MERIDIAN_VERSION
+RUN test -n "${MERIDIAN_VERSION}" \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends curl \
+ && rm -rf /var/lib/apt/lists/* \
+ && curl -fsSL "https://raw.githubusercontent.com/open-meridian/meridian-cli/v${MERIDIAN_VERSION}/install.sh" \
+    | MERIDIAN_VERSION="${MERIDIAN_VERSION}" MERIDIAN_INSTALL_DIR=/usr/local/bin sh \
+ && /usr/local/bin/meridian --version
+
+# Run by `make check` with `docker run`, the repository mounted over /w:
+# check.yaml's job, on the plugin and its dev extras installed as above.
+FROM base AS check
+COPY --from=meridian /usr/local/bin/meridian /usr/local/bin/meridian
+
 FROM base AS lint
 RUN python -m ruff check src tests \
  && python -m ruff format --check src tests \
