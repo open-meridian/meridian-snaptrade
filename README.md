@@ -4,7 +4,9 @@ An [Open Meridian](https://open-meridian.com) plugin that reads brokerage
 accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
-workflow W2 (holdings ingestion). It holds the `custody` role.
+workflow W2 (holdings ingestion). It holds the `custody` role. This is release
+0.4.2. How a plugin like it is built is documented at
+[open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.7.0`, which carries the
 whole account-side contract (spec/the-account-side-fits-every-venue): a
@@ -329,6 +331,11 @@ Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
 `meridian plugin launch snaptrade 0.4.2 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
+
+A release is the `version` in `pyproject.toml`, raised, with a commit saying
+what changed; nothing is published from here. Each deployment takes it into
+its own catalogue with `meridian plugin upload`, or `meridian plugin dev
+--release` from a live instance, and a version is never replaced.
 `AGENTS.md` walks any coding agent through that loop, and through
 `meridian plugin check`, which holds the plugin to the framework's rules;
 `CLAUDE.md` and the `develop-live` skill under `.claude/` lead Claude Code to it.
