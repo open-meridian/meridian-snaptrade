@@ -15,6 +15,7 @@ import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -25,7 +26,7 @@ from meridian.v1 import sidecar_pb2
 from snaptrade import synthetic
 from snaptrade.__main__ import follow_links
 from snaptrade.contract import Outcome
-from snaptrade.linking import Link, Links, LinkView, Offered, link_of
+from snaptrade.linking import DeploymentAccount, Link, Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
     AccountView,
     ConnectionView,
@@ -577,11 +578,19 @@ def row_of(body: str, external_id: str) -> str:
         found
         for found in (
             body.find('<div class="list-row"', start + 1),
+            body.find('<div class="panel-body panel-section">', start),
             body.find("</om-account-map>", start),
         )
         if found != -1
     ]
     return body[start : min(ends)]
+
+
+def fallback_of(body: str) -> str:
+    """The forms under the rows, shown without the kit: one to link any
+    account, and one to create an account for any."""
+    start = body.index('<div class="panel-body panel-section"><h3>Link an account</h3>')
+    return body[start : body.index("</om-account-map>", start)]
 
 
 def map_of(body: str) -> dict[str, Any]:
@@ -652,11 +661,13 @@ def test_a_linked_account_names_its_account_and_offers_unlink_and_another(
     row = row_of(body, ALPACA)
     assert '<span class="badge good">Linked</span>' in row
     assert 'name="intent" value="unlink"' in row and ">Unlink</button>" in row
-    # Linking to another account replaces this link: offered folded, without
-    # the account it is linked to.
-    assert "<details><summary>Link to another account</summary>" in row
-    assert '<option value="ACC-3">Spare</option>' in row
-    assert '<option value="ACC-1">' not in row
+    # Linking to another account replaces this link: the one form below the
+    # rows links any account, this one too, to another.
+    assert "<select" not in row
+    forms = fallback_of(body)
+    assert "Linking a linked account to another replaces its link." in forms
+    assert f'<option value="{ALPACA}">Alpaca Margin (Alpaca · margin)</option>' in forms
+    assert '<option value="ACC-3">Spare</option>' in forms
 
 
 def unlinked(name: str, params: Any) -> Exception | None:
@@ -677,20 +688,23 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
         _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
     row = row_of(body, ALPACA)
     assert '<span class="badge warn">Not linked</span>' in row
-    # The picker holds the deployment's open accounts, and nothing closed,
-    # each with its custodian and type beside its name where it has them.
-    assert '<option value="ACC-1">Household (Schwab, Brokerage)</option>' in row
-    assert '<option value="ACC-3">Spare</option>' in row and "Retired" not in row
-    assert f'action="{LINK}"' in row and 'name="account_id"' in row
-    assert 'name="intent" value="link"' in row
-    # A new account, named from the external one, editable.
-    assert 'name="intent" value="create"' in row
-    assert 'name="new_account_name" value="Alpaca Margin"' in row
-    # Its custodian from the connection's brokerage, and its type from the
-    # venue's account type, both editable (W6.4).
-    assert 'name="new_account_custodian" value="Alpaca" maxlength="200"' in row
-    assert 'name="new_account_type" value="margin" maxlength="200"' in row
-    assert "Unlink" not in row and "<details>" not in row
+    assert "Unlink" not in row and "<form" not in row
+    # Without the kit: one form links any account the read reached to any of
+    # the deployment's open accounts, and nothing closed, each with its
+    # custodian and type beside its name where it has them.
+    forms = fallback_of(body)
+    link, create = re.findall(r"<form .*?</form>", forms)
+    assert f'action="{LINK}"' in link and 'name="intent" value="link"' in link
+    assert '<option value="ACC-1">Household (Schwab, Brokerage)</option>' in link
+    assert '<option value="ACC-3">Spare</option>' in link and "Retired" not in link
+    assert f'<option value="{ALPACA}">Alpaca Margin (Alpaca · margin)</option>' in link
+    # And one creates a new account for any of them, named, held at and of
+    # the type the admin writes (W6.4).
+    assert 'name="intent" value="create"' in create
+    assert f'<option value="{ALPACA}">' in create
+    assert 'name="new_account_name" required maxlength="200"' in create
+    assert 'name="new_account_custodian" maxlength="200"' in create
+    assert 'name="new_account_type" maxlength="200"' in create
     (read,) = refusing.sent("ReadAccountsForLinking")
     assert read.acting_for == assertion(ADMIN)
     # The same for the kit's map, as its JSON.
@@ -703,6 +717,10 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
         "custodian": "Alpaca",
         "account_type": "margin",
         "note": "",
+        # What the kit's map matches a suggestion on, and groups by.
+        "number": "SYN0001001",
+        "connection": "Alpaca · Connection 1",
+        "connection_id": "00000000-0000-4000-8000-00000000a001",
     }
     assert data["accounts"][0] == {
         "account_id": "ACC-1",
@@ -877,6 +895,174 @@ def test_only_an_account_the_read_reached_is_linked(server: int, sidecar: Sideca
     assert links_sent(sidecar) == []
 
 
+# ── Several links in one form ────────────────────────────────────────────────
+
+
+def post_several(
+    port: int, pairs: Iterable[tuple[str, str]], caller: str = ADMIN
+) -> tuple[int, str, str]:
+    """The map's several-link form: the token, the intent, then a pair of IDs for each link."""
+    fields = [f"csrf={quote(token_of(caller))}", "intent=link-several"]
+    for external_id, account_id in pairs:
+        fields += [
+            f"external_account_id={quote(external_id)}",
+            f"account_id={quote(account_id)}",
+        ]
+    return ask(port, "POST", LINK, caller, "&".join(fields))
+
+
+def test_the_map_offers_several_links_and_groups_by_connection(server: int) -> None:
+    _, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    element = re.search(r"<om-account-map [^>]*>", body)
+    assert element is not None
+    assert ' group-by="connection" link-several ' in element.group(0)
+
+
+def test_several_links_are_sent_each_for_the_admin_and_each_reported(
+    server: int, sidecar: Sidecar, woken: asyncio.Event
+) -> None:
+    status, _, body = post_several(server, [(ALPACA, "ACC-1"), (IBKR, "ACC-3")])
+    assert status == 200
+    assert '<div class="notice good" role="status">Linked 2 accounts.' in body
+    assert "<li>Linked Alpaca Margin to Household.</li>" in body
+    assert "<li>Linked IBKR Individual to Spare.</li>" in body
+    sent = links_sent(sidecar)
+    # One link_external_account for each, acting for the admin, naming no new account.
+    assert sorted((s.external_account_id, s.account_id, s.new_account_name) for s in sent) == [
+        (ALPACA, "ACC-1", ""),
+        (IBKR, "ACC-3", ""),
+    ]
+    assert all(s.acting_for == assertion(ADMIN) for s in sent)
+    # The page answering shows both, as the account scope now gives them.
+    assert "Linked to Household" in row_of(body, ALPACA)
+    assert "Linked to Spare" in row_of(body, IBKR)
+    assert woken.is_set()
+
+
+def test_one_link_refused_leaves_the_others_and_each_is_said(
+    synced: Syncer, loop: asyncio.AbstractEventLoop
+) -> None:
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "LinkExternalAccount" and params.external_account_id == IBKR:
+            return meridian.CallFailed("LinkExternalAccount", "refused", "no such account")
+        return None
+
+    refusing = Sidecar(refuse=refuse)
+    with serving(synced, refusing, loop) as port:
+        status, _, body = post_several(
+            port, [(ALPACA, "ACC-1"), (IBKR, "ACC-404"), ("not-one-of-ours", "ACC-3")]
+        )
+    assert status == 200
+    assert (
+        '<div class="notice warn" role="status">Linked 1 of 3 accounts; 2 not linked:' in body
+    )
+    shown = body[body.index('<div class="notice warn"') :]
+    listed = shown[: shown.index("<details>")]
+    assert (
+        "<li>IBKR Individual: not linked. The sidecar refused it: no such account</li>"
+        in listed
+    )
+    assert (
+        "<li>not-one-of-ours: not linked, as the last read of SnapTrade did not reach it.</li>"
+        in listed
+    )
+    assert "<summary>Each of the 3</summary>" in shown
+    assert "<li>Linked Alpaca Margin to Household.</li>" in shown
+    assert [s.external_account_id for s in links_sent(refusing)] == [ALPACA]
+    assert "Linked to Household" in row_of(body, ALPACA)
+
+
+def test_every_link_refused_is_said_as_none(
+    synced: Syncer, loop: asyncio.AbstractEventLoop
+) -> None:
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "LinkExternalAccount":
+            return meridian.CallFailed("LinkExternalAccount", "refused", "not an admin")
+        return None
+
+    refusing = Sidecar(refuse=refuse)
+    with serving(synced, refusing, loop) as port:
+        status, _, body = post_several(port, [(ALPACA, "ACC-1")])
+    assert status == 200
+    assert '<div class="notice bad" role="alert">Linked none of the 1 account:' in body
+
+
+@pytest.mark.parametrize(
+    "pairs",
+    [
+        "",
+        # An account without the account it is to be linked to, and the other way.
+        f"&external_account_id={quote(ALPACA)}",
+        "&account_id=ACC-1",
+        f"&external_account_id={quote(ALPACA)}&external_account_id={quote(IBKR)}&account_id=ACC-1",
+        # One account twice, or an empty ID.
+        f"&external_account_id={quote(ALPACA)}&account_id=ACC-1"
+        f"&external_account_id={quote(ALPACA)}&account_id=ACC-3",
+        "&external_account_id=&account_id=ACC-1",
+        f"&external_account_id={quote(ALPACA)}&account_id=",
+    ],
+)
+def test_several_links_that_do_not_pair_up_are_refused_whole(
+    server: int, sidecar: Sidecar, pairs: str
+) -> None:
+    sent = f"csrf={quote(token_of(ADMIN))}&intent=link-several{pairs}"
+    status, _, body = ask(server, "POST", LINK, ADMIN, sent)
+    assert status == 400 and "do not pair up" in body
+    assert links_sent(sidecar) == []
+
+
+def test_several_links_take_a_form_of_thousands_of_pairs(server: int, sidecar: Sidecar) -> None:
+    # Far over the 8 KB any other form here may be: pairs for accounts the
+    # read did not reach, each said, none sent.
+    many = [(f"broker:{n:06d}-{'x' * 36}", f"ACC-{n:06d}-{'y' * 30}") for n in range(3000)]
+    status, _, body = post_several(server, [(ALPACA, "ACC-1"), *many])
+    assert status == 200
+    assert "Linked 1 of 3001 accounts; 3000 not linked:" in body
+    assert [s.external_account_id for s in links_sent(sidecar)] == [ALPACA]
+    # Anywhere else, a body that size is no form of this page's.
+    known = "/admin/read"
+    padded = f"csrf={quote(token_of(ADMIN))}&pad={'z' * 9000}"
+    assert ask(server, "POST", known, ADMIN, padded)[0] == 403
+
+
+def test_several_links_are_only_for_an_administrator(server: int, sidecar: Sidecar) -> None:
+    status, _, body = post_several(server, [(ALPACA, "ACC-1")], PERSON)
+    assert status == 403 and "for the deployment's administrators" in body
+    assert nothing_linked_or_read(sidecar)
+
+
+def test_the_page_without_the_kit_stays_one_list_however_many_accounts(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    # Each account is a row, and the choices are two lists below them, not a
+    # picker of every account on every row: the page grows with the accounts
+    # and the deployment's accounts added, not multiplied.
+    connection = synthetic_status().connections[0]
+    template = connection.accounts[0]
+
+    def page_with(n: int, deployment: int) -> str:
+        views = tuple(
+            replace(
+                template,
+                account=replace(
+                    template.account, external_account_id=f"broker:{i}", name=f"Account {i}"
+                ),
+            )
+            for i in range(n)
+        )
+        status = Status(mode="snaptrade", connections=(replace(connection, accounts=views),))
+        offered = Offered(
+            tuple(DeploymentAccount(f"ACC-{i}", f"Book {i}") for i in range(deployment))
+        )
+        return render_accounts(status, "t", links_for(status, meridian.AccountScope()), offered)
+
+    small, large = page_with(10, 10), page_with(1000, 1000)
+    for shown in (small, large):
+        assert fallback_of(shown).count("<select") == 3
+    assert large.count("<option") == 3 * 1000 + 3
+    assert len(large) < 100 * len(small)
+
+
 def test_the_sidecars_refusal_is_shown_plainly(
     synced: Syncer, loop: asyncio.AbstractEventLoop
 ) -> None:
@@ -913,9 +1099,9 @@ def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
     with serving(syncer, refusing, loop) as port:
         _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
     assert "The deployment's accounts could not be read: not an admin" in body
-    row = row_of(body, ALPACA)
-    assert 'name="account_id"' not in row and 'name="new_account_name"' in row
-    assert "none is offered here" in row
+    forms = fallback_of(body)
+    assert 'name="account_id"' not in forms and 'name="new_account_name"' in forms
+    assert "none is offered here" in forms
     # The kit's map is told they could not be read.
     assert map_of(body)["accounts"] is None
 
@@ -968,6 +1154,7 @@ def test_a_post_without_the_right_token_is_refused_and_does_nothing(
         (LINK, "&intent=link"),
         (LINK, "&intent=create"),
         (LINK, "&intent=unlink"),
+        (LINK, "&intent=link-several"),
     ):
         status, _, body = ask(server, "POST", path, ADMIN, (sent or "") + rest + intent)
         assert status == 403 and "expired" in body
@@ -1077,8 +1264,10 @@ def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> N
         assert '<main class="page">' in shown
 
 
-def test_the_kit_is_the_one_with_the_account_map() -> None:
-    assert KIT == "/.meridian/ui/0.3.0/"
+def test_the_kit_is_the_one_whose_account_map_scales() -> None:
+    # 0.5.0: the map searched, filtered, grouped and paged, with suggestions
+    # and several links in one form.
+    assert KIT == "/.meridian/ui/0.5.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:

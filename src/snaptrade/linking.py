@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -35,6 +36,9 @@ from meridian.plugin.v1 import operations_pb2 as ops
 # How long a link sent from the page waits for the account scope to show it,
 # so the page answering the form shows the link as it now stands.
 SETTLE_SECONDS = 5.0
+# Links sent to the sidecar at once when the page sends several: each is its
+# own call, for its own external account, so they do not wait on each other.
+LINKS_AT_ONCE = 8
 
 
 class Link(Enum):
@@ -168,6 +172,43 @@ class Links:
         )
         await self._settled(external_account_id, linked.account_id)
         return linked.account_id
+
+    async def link_several(
+        self, acting_for: str, pairs: Sequence[tuple[str, str]]
+    ) -> list[str]:
+        """Link each external account in `pairs` to its account, each as its
+        own call (a link is per external account: one refused leaves the
+        others as they went), a few at a time. Returns, for each pair in
+        order, "" where it was linked or the refusal's words where it was not,
+        once the account scope shows every link made or a few seconds have
+        passed."""
+        gate = asyncio.Semaphore(LINKS_AT_ONCE)
+
+        async def one(external_account_id: str, account_id: str) -> str:
+            async with gate:
+                try:
+                    await self._plugin.link_external_account(
+                        external_account_id=external_account_id,
+                        account_id=account_id,
+                        acting_for=acting_for,
+                    )
+                except meridian.MeridianError as refused:
+                    return refusal(refused)
+                except Exception as failed:
+                    # Named by its type only: its text is not known to be safe to show.
+                    return f"that failed: {type(failed).__name__}"
+            return ""
+
+        said = list(await asyncio.gather(*(one(e, a) for e, a in pairs)))
+        made = {e: a for (e, a), refused in zip(pairs, said, strict=True) if not refused}
+
+        def shown() -> bool:
+            return all(self.of(e).account_id == a for e, a in made.items())
+
+        with contextlib.suppress(TimeoutError):
+            async with self._changed:
+                await asyncio.wait_for(self._changed.wait_for(shown), self._settle)
+        return said
 
     async def _settled(self, external_account_id: str, account_id: str) -> None:
         """Wait until the account scope shows `external_account_id` linked to

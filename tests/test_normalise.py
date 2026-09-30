@@ -150,6 +150,24 @@ def test_the_venues_account_type_is_carried_verbatim_and_the_name_falls_back() -
 # ── Holdings ─────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize(
+    ("given", "kept"),
+    [
+        ("U1234567", "U1234567"),
+        ("  SYN-0001  ", "SYN-0001"),
+        # Masked: part of the number is hidden, so it matches nothing.
+        ("****3003", ""),
+        ("•••• 3003", ""),
+        (None, ""),
+        (12345, ""),
+    ],
+)
+def test_the_account_number_is_kept_whole_or_not_at_all(given: Any, kept: str) -> None:
+    # What the Account links tab matches an account to one of the
+    # deployment's by, besides its name.
+    assert external_account(account(number=given), connection()).number == kept
+
+
 def test_a_long_position_is_a_long_row_with_no_market_value() -> None:
     row = position_holding(
         stock(

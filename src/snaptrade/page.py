@@ -59,6 +59,7 @@ The standard library's server, as the SDK's reference plugin uses.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import html
@@ -74,7 +75,7 @@ from urllib.parse import parse_qs
 
 import meridian
 
-from .linking import Link, Links, LinkView, Offered, refusal
+from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
 from .settings import label
 from .sync import Status, Syncer
@@ -83,11 +84,14 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's; pinning one keeps the pages as they were built.
-KIT = "/.meridian/ui/0.3.0/"
+KIT = "/.meridian/ui/0.5.0/"
 CSRF_FIELD = "csrf"
 # A form here carries a token, an account, and a new account's name, custodian
 # and type at most; anything longer is not one of this page's.
 _MOST_BODY = 8192
+# But the map's several-link form carries a pair of IDs for each link, a
+# hundred bytes or so a pair: room for some thousands of accounts.
+_MOST_LINKS_BODY = 1 << 20
 # The longest name a new account is given here, and the longest custodian or
 # type the deployment keeps for one (W6.3).
 _MOST_NAME = 200
@@ -118,6 +122,10 @@ class Notice:
     text: str
     # The kit's notice tones: info, good, warn or bad.
     tone: str = "info"
+    # What each part of it came to, where it had several (several links):
+    # those in `shown` listed under the text, and every one folded below.
+    each: tuple[str, ...] = ()
+    shown: tuple[str, ...] = ()
 
 
 class CsrfTokens:
@@ -509,16 +517,23 @@ def _tiles(status: Status) -> str:
 
 # ── The account map ──────────────────────────────────────────────────────────
 #
-# The kit's om-account-map: each external account beside the deployment's
-# account it is linked to, or the forms to link it, from the JSON declared
-# inside it. Its forms all post to LINK, saying what they mean in `intent`
-# (`link`, `create` or `unlink`), with the page's token. Inside it too, for a
-# browser without the kit, the same as plain forms: a list row per account,
-# a badge for its link, and the forms to link it (folded under "Link to
-# another account" on a linked one, which a new link replaces).
+# The kit's om-account-map (0.5.0): a dense table of every account the read
+# reached, searched, filtered, grouped by connection and paged, one row's
+# choices opened at a time, with suggestions where a name or a number matches
+# one of the deployment's accounts, from the JSON declared inside it. Its
+# forms all post to LINK, saying what they mean in `intent` (`link`, `create`,
+# `unlink`, or `link-several` with a pair of IDs for each link), with the
+# page's token.
+#
+# Inside it too, for a browser without the kit, the same as plain forms, in a
+# size that holds for thousands of accounts: a list row per account (its link,
+# and Unlink on a linked one), then one form to link any account to any open
+# account and one to create an account for any, each choosing the account
+# from one list rather than a picker on every row.
 
 LINK = f"{ACCOUNTS}/link"
 INTENTS = ("link", "create", "unlink")
+SEVERAL = "link-several"
 
 
 def _intent_form(intent: str, external_id: str, token: str, inside: str, kind: str = "") -> str:
@@ -527,71 +542,37 @@ def _intent_form(intent: str, external_id: str, token: str, inside: str, kind: s
     return (
         f'<form method="post" action="{LINK}"{shown}>'
         f"{_hidden(CSRF_FIELD, token)}{_hidden('intent', intent)}"
-        f"{_hidden('external_account_id', external_id)}{inside}</form>"
+        f"{_hidden('external_account_id', external_id) if external_id else ''}{inside}</form>"
     )
 
 
-def _picker(external_id: str, offered: Offered, token: str, current: str) -> str:
-    """Link to one of the deployment's open accounts, other than `current`."""
-    choices = [a for a in offered.accounts if a.open and a.account_id != current]
-    if offered.refused:
-        return (
-            '<p class="hint">The deployment\'s accounts could not be read, so none is '
-            "offered here.</p>"
-        )
-    if not choices:
-        return (
-            '<p class="hint">The deployment has no other open account: create one.</p>'
-            if current
-            else '<p class="hint">The deployment has no open accounts yet: create one.</p>'
-        )
+def _external_choice(shown: Sequence[Shown]) -> str:
+    """A list of every account the read reached, to choose the one a form is for."""
     options = "".join(
-        f'<option value="{e(account.account_id)}">{e(account.label())}</option>'
-        for account in choices
+        f'<option value="{e(view.account.external_account_id)}">'
+        f"{e(view.account.name)} ({e(_where(connection, view))})</option>"
+        for connection, view in shown
     )
-    return _intent_form(
-        "link",
-        external_id,
-        token,
-        '<div class="field-row"><label class="field"><span>An existing account</span>'
-        '<select name="account_id" required><option value="">Choose an account</option>'
-        f"{options}</select></label><button>Link</button></div>",
-    )
-
-
-def _create(connection: ConnectionView, view: AccountView, token: str) -> str:
-    """Create a new account, named from the external one, held at the
-    connection's brokerage and of the venue's account type, each editable,
-    and link it."""
-    return _intent_form(
-        "create",
-        view.account.external_account_id,
-        token,
-        '<div class="field-row"><label class="field"><span>A new account</span>'
-        f'<input type="text" name="new_account_name" value="{e(view.account.name)}" '
-        f'required maxlength="{_MOST_NAME}"></label>'
-        '<label class="field"><span>Custodian</span>'
-        f'<input type="text" name="new_account_custodian" value="{e(connection.institution)}" '
-        f'maxlength="{_MOST_NAME}"></label>'
-        '<label class="field"><span>Type</span>'
-        f'<input type="text" name="new_account_type" value="{e(view.account.account_type)}" '
-        f'maxlength="{_MOST_NAME}"></label>'
-        '<button class="primary">Create and link</button></div>',
+    return (
+        '<label class="field"><span>The account</span>'
+        '<select name="external_account_id" required>'
+        f'<option value="">Choose one</option>{options}</select></label>'
     )
 
 
 def _mapping_row(
-    connection: ConnectionView, view: AccountView, link: LinkView, offered: Offered, token: str
+    connection: ConnectionView, view: AccountView, link: LinkView, token: str
 ) -> str:
-    """One account, as plain forms: shown without the kit."""
+    """One account, as a list row: shown without the kit."""
     account = view.account
     external_id = account.external_account_id
     note = _unstable(view)
+    number = f" · No. {e(account.number)}" if account.number else ""
     head = (
         '<div class="grow">'
         f'<div class="row"><span class="title">{e(account.name)}</span> '
         f'<span class="badge {_LINK_TONE[link.state]}">{_LINK_LABEL[link.state]}</span></div>'
-        f'<div class="meta">{e(_where(connection, view))} · '
+        f'<div class="meta">{e(_where(connection, view))}{number} · '
         f"<code>{e(external_id)}</code></div>"
         + (
             f'<span class="hint">Linked to {e(link.account_name or link.account_id)} '
@@ -600,27 +581,66 @@ def _mapping_row(
             else ""
         )
         + (f'<span class="hint">{e(note)}</span>' if note else "")
+        + "</div>"
     )
-    forms = (
-        f"{_picker(external_id, offered, token, link.account_id)}"
-        f"{_create(connection, view, token)}"
-    )
-    if link.state is Link.LINKED:
-        unlink = _intent_form(
+    unlink = (
+        _intent_form(
             "unlink", external_id, token, '<button class="danger">Unlink</button>', "inline"
         )
-        return (
-            f'<div class="list-row" data-account="{e(external_id)}">{head}'
-            f"<details><summary>Link to another account</summary>{forms}</details>"
-            f"</div>{unlink}</div>"
+        if link.state is Link.LINKED
+        else ""
+    )
+    return f'<div class="list-row" data-account="{e(external_id)}">{head}{unlink}</div>'
+
+
+def _fallback_forms(shown: Sequence[Shown], offered: Offered, token: str) -> str:
+    """Without the kit: link any account to any open account, or create one for it."""
+    choices = [a for a in offered.accounts if a.open]
+    if offered.refused:
+        linking = (
+            '<p class="hint">The deployment\'s accounts could not be read, so none is '
+            "offered here.</p>"
         )
-    return f'<div class="list-row" data-account="{e(external_id)}">{head}{forms}</div></div>'
+    elif not choices:
+        linking = '<p class="hint">The deployment has no open accounts yet: create one.</p>'
+    else:
+        options = "".join(
+            f'<option value="{e(a.account_id)}">{e(a.label())}</option>' for a in choices
+        )
+        linking = _intent_form(
+            "link",
+            "",
+            token,
+            f'<div class="field-row">{_external_choice(shown)}'
+            '<label class="field"><span>An existing account</span>'
+            '<select name="account_id" required><option value="">Choose an account</option>'
+            f"{options}</select></label><button>Link</button></div>",
+        )
+    creating = _intent_form(
+        "create",
+        "",
+        token,
+        f'<div class="field-row">{_external_choice(shown)}'
+        '<label class="field"><span>A new account</span>'
+        f'<input type="text" name="new_account_name" required maxlength="{_MOST_NAME}"></label>'
+        '<label class="field"><span>Custodian</span>'
+        f'<input type="text" name="new_account_custodian" maxlength="{_MOST_NAME}"></label>'
+        '<label class="field"><span>Type</span>'
+        f'<input type="text" name="new_account_type" maxlength="{_MOST_NAME}"></label>'
+        '<button class="primary">Create and link</button></div>',
+    )
+    return (
+        '<div class="panel-body panel-section"><h3>Link an account</h3>'
+        '<p class="muted">Linking a linked account to another replaces its link.</p>'
+        f"{linking}<h3>Create an account for one, and link it</h3>{creating}</div>"
+    )
 
 
 def _map_data(
     status: Status, links: Mapping[str, LinkView], offered: Offered
 ) -> dict[str, object]:
-    """What om-account-map takes: the external accounts, the deployment's
+    """What om-account-map takes: the external accounts (with the number the
+    map matches on, and the connection it groups by), the deployment's
     accounts (null where they could not be read), and the links standing."""
     shown = [(c, view) for c in status.connections for view in c.accounts]
     accounts = (
@@ -646,6 +666,9 @@ def _map_data(
                 "custodian": connection.institution,
                 "account_type": view.account.account_type,
                 "note": _unstable(view),
+                "number": view.account.number,
+                "connection": _connection_label(connection),
+                "connection_id": connection.connection_id,
             }
             for connection, view in shown
         ],
@@ -662,19 +685,25 @@ def _map_data(
     }
 
 
+def _connection_label(connection: ConnectionView) -> str:
+    """A connection as the map groups by it: its brokerage, and its own name."""
+    brokerage = connection.institution or "Unknown brokerage"
+    return f"{brokerage} · {connection.name}" if connection.name else brokerage
+
+
 def _mapping(
     status: Status, links: Mapping[str, LinkView], offered: Offered, token: str
 ) -> str:
     empty = "No accounts yet: they appear here once SnapTrade is read."
-    rows = (
+    shown = [(c, view) for c in status.connections for view in c.accounts]
+    fallback = (
         "".join(
-            _mapping_row(
-                connection, view, links[view.account.external_account_id], offered, token
-            )
-            for connection in status.connections
-            for view in connection.accounts
+            _mapping_row(connection, view, links[view.account.external_account_id], token)
+            for connection, view in shown
         )
-        or f'<div class="empty-state"><strong>{e(empty)}</strong></div>'
+        + _fallback_forms(shown, offered, token)
+        if shown
+        else f'<div class="empty-state"><strong>{e(empty)}</strong></div>'
     )
     counted = [links[view.account.external_account_id].state for view in status.accounts]
     summary = ", ".join(
@@ -691,9 +720,9 @@ def _mapping(
         + (f" {e(summary.capitalize())}." if summary else "")
         + "</p></div>"
         f'<om-account-map action="{LINK}" token-name="{CSRF_FIELD}" token="{e(token)}"'
-        f' empty="{e(empty)}">'
+        f' group-by="connection" link-several empty="{e(empty)}">'
         f'<script type="application/json">{_script_json(_map_data(status, links, offered))}'
-        f"</script>{rows}</om-account-map>"
+        f"</script>{fallback}</om-account-map>"
         "</section>"
     )
 
@@ -720,8 +749,18 @@ def _notices(status: Status, notice: Notice | None, portal: str | None) -> str:
             )
     if notice is not None:
         role = "alert" if notice.tone == "bad" else "status"
+        listed = "".join(f"<li>{e(item)}</li>" for item in notice.shown)
+        folded = "".join(f"<li>{e(item)}</li>" for item in notice.each)
         parts.append(
-            f'<div class="notice {e(notice.tone)}" role="{role}">{e(notice.text)}</div>'
+            f'<div class="notice {e(notice.tone)}" role="{role}">{e(notice.text)}'
+            + (f'<ul class="plain">{listed}</ul>' if listed else "")
+            + (
+                f"<details><summary>Each of the {len(notice.each)}</summary>"
+                f'<ul class="plain">{folded}</ul></details>'
+                if folded
+                else ""
+            )
+            + "</div>"
         )
     if status.mode == "waiting":
         wanted = ", ".join(label(name) for name in status.missing)
@@ -1049,8 +1088,8 @@ def serve(
     the plugin lives."""
     csrf = tokens if tokens is not None else CsrfTokens()
 
-    def on_loop(work: Coroutine[Any, Any, _Answer]) -> _Answer:
-        return asyncio.run_coroutine_threadsafe(work, loop).result(timeout=30)
+    def on_loop(work: Coroutine[Any, Any, _Answer], timeout: float = 30) -> _Answer:
+        return asyncio.run_coroutine_threadsafe(work, loop).result(timeout=timeout)
 
     def links_of(status: Status) -> dict[str, LinkView]:
         return {
@@ -1141,7 +1180,8 @@ def serve(
 
         def _form(self) -> dict[str, list[str]]:
             length = int(self.headers.get("Content-Length") or 0)
-            if length > _MOST_BODY:
+            most = _MOST_LINKS_BODY if self.path.split("?", 1)[0] == LINK else _MOST_BODY
+            if length > most:
                 return {}
             body = self.rfile.read(length).decode("utf-8", errors="replace")
             return parse_qs(body)
@@ -1220,6 +1260,9 @@ def serve(
             read reached, as the form's `intent` says, for the admin who sent
             it (W6.4). A link to another account replaces the one standing."""
             intent = _field(form, "intent")
+            if intent == SEVERAL:
+                self._link_several(caller, form)
+                return
             external_id = _field(form, "external_account_id")
             views = {view.account.external_account_id: view for view in syncer.status.accounts}
             if intent not in INTENTS:
@@ -1262,6 +1305,91 @@ def serve(
                         else f"Linked {named} to {to or account_id}.",
                         "good",
                     )
+            self._send(200, render(ACCOUNTS, caller, notice))
+
+        def _link_several(self, caller: meridian.Caller, form: Mapping[str, list[str]]) -> None:
+            """Link several accounts, each to the account paired with it: the
+            map's `link-several` form, one `external_account_id` and one
+            `account_id` for each link, in order, under the one token already
+            checked. Each is its own link, and the page answering says how each
+            went. A form whose IDs do not pair up is refused whole."""
+            externals = [value.strip() for value in form.get("external_account_id", [])]
+            accounts = [value.strip() for value in form.get("account_id", [])]
+            if (
+                not externals
+                or len(externals) != len(accounts)
+                or len(set(externals)) != len(externals)
+                or not all(externals)
+                or not all(accounts)
+            ):
+                self._send(
+                    400,
+                    "This form's accounts do not pair up: one account to link, and one "
+                    "to link it to, for each link.",
+                    "text/plain",
+                )
+                return
+            views = {view.account.external_account_id: view for view in syncer.status.accounts}
+            reached = [(x, a) for x, a in zip(externals, accounts, strict=True) if x in views]
+            # Thirty seconds, and a second more for each round of links sent at once.
+            waited = 30 + len(reached) / LINKS_AT_ONCE
+            try:
+                said = (
+                    on_loop(links.link_several(caller.header, reached), waited)
+                    if reached
+                    else []
+                )
+            except concurrent.futures.TimeoutError:
+                # Still going: which went through is for the account scope to say.
+                loop.call_soon_threadsafe(wake.set)
+                notice = Notice(
+                    f"Sent {len(reached)} links; not every one was answered within "
+                    f"{round(waited)} seconds. Reload in a moment to see which are linked.",
+                    "warn",
+                )
+                self._send(200, render(ACCOUNTS, caller, notice))
+                return
+            except Exception as failed:
+                said = [f"that failed: {type(failed).__name__}"] * len(reached)
+            refused = dict(zip((x for x, _ in reached), said, strict=True))
+            each: list[str] = []
+            failures: list[str] = []
+            linked = 0
+            for external_id, account_id in zip(externals, accounts, strict=True):
+                named = views[external_id].account.name if external_id in views else external_id
+                if external_id not in views:
+                    failures.append(
+                        f"{named}: not linked, as the last read of SnapTrade did not reach it."
+                    )
+                    each.append(failures[-1])
+                elif refused[external_id]:
+                    failures.append(
+                        f"{named}: not linked. The sidecar refused it: {refused[external_id]}"
+                    )
+                    each.append(failures[-1])
+                else:
+                    linked += 1
+                    now = links.of(external_id)
+                    to = now.account_name if now.account_id == account_id else ""
+                    each.append(f"Linked {named} to {to or account_id}.")
+            if linked:
+                # Read again, so their rows follow the links.
+                loop.call_soon_threadsafe(wake.set)
+            asked = len(externals)
+            plural = "account" if asked == 1 else "accounts"
+            if not failures:
+                notice = Notice(f"Linked {asked} {plural}.", "good", tuple(each))
+            elif linked:
+                notice = Notice(
+                    f"Linked {linked} of {asked} {plural}; {len(failures)} not linked:",
+                    "warn",
+                    tuple(each),
+                    tuple(failures),
+                )
+            else:
+                notice = Notice(
+                    f"Linked none of the {asked} {plural}:", "bad", tuple(each), tuple(failures)
+                )
             self._send(200, render(ACCOUNTS, caller, notice))
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002

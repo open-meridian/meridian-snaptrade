@@ -219,27 +219,53 @@ Each plugin links its own external accounts (kernel/a-plugins-admin-view,
 point 8), and the link is its right to the account: a statement for an account
 nothing links is refused, which the SDK raises as `meridian.NotLinked`, by the
 refusal's code and never its words. The Account links tab draws the kit's
-`om-account-map`: each SnapTrade account beside the deployment's account it is
-linked to, or the forms to link it. An account not linked offers **an
-existing account**, a picker of the deployment's open accounts read with
-`read_accounts_for_linking`, each shown with its custodian and type beside
-its name where the deployment has them, or **a new account**, named from the
-SnapTrade account, its custodian pre-filled from the connection's brokerage
-and its type from the account type SnapTrade reports, all three editable,
-which the conductor creates and links in one step (an owner and a note are
-given on the dashboard's Accounts tab). A linked one names the account it is
-linked to, from the link itself, and offers **Unlink**, and **Link to another
-account**: the conductor keeps one link per external account, so a new link
-replaces the one standing.
+`om-account-map` (kit 0.5.0), built for an industrial deployment's hundreds or
+thousands of accounts: a dense table, one row per SnapTrade account with its
+link, searched by name, ID, account number, custodian and type, filtered to
+Unlinked (where it opens, while any are), Linked or All, grouped by
+connection, and paged, so the page holds a page of rows however many there
+are.
+
+A row's choices open under that row alone. An account not linked is linked
+to **an existing account**, found by typing among the deployment's open
+accounts read with `read_accounts_for_linking` (each with its custodian and
+type beside its name where the deployment has them), or to **a new account**,
+named from the SnapTrade account, its custodian pre-filled from the
+connection's brokerage and its type from the account type SnapTrade reports,
+all three editable, which the conductor creates and links in one step (an
+owner and a note are given on the dashboard's Accounts tab). A linked one
+names the account it is linked to, from the link itself, and offers
+**Unlink**, or another account: the conductor keeps one link per external
+account, so a new link replaces the one standing.
+
+Where an unlinked account's name, or its account number, matches exactly one
+open account of the deployment's that nothing else is linked to, the map
+suggests it in the row; **Link** takes it. The plugin gives the map
+SnapTrade's account number where SnapTrade gives it whole (a masked one,
+`****3003`, matches nothing, and is left out); the deployment keeps no number
+for an account, so a number matches an account named by it. **Link N
+suggested…** lists every suggestion the search finds, each to be left out or
+kept, and sends them in one form.
 
 Every form posts to one route, `/admin/accounts/link`, saying what it means in
-its `intent` field: `link`, `create` or `unlink`. A form with any other
-intent, or none, is refused and nothing is sent. Each is sent with
-`link_external_account`, acting for the admin viewing the page (their
+its `intent` field: `link`, `create`, `unlink`, or `link-several`. A form with
+any other intent, or none, is refused and nothing is sent. Each link is sent
+with `link_external_account`, acting for the admin viewing the page (their
 `Meridian-Caller` header as `acting_for`), and the sidecar refuses it for
 anybody else; a refusal is shown as the sidecar worded it. The page answering
 the form waits a few seconds at most for the account scope to show the new
 link, so it shows the link as it now stands.
+
+`link-several` carries the token once and then `external_account_id` and
+`account_id` repeated, one pair per link, in order. The route checks the
+token once, refuses the whole form (400, nothing sent) if the two lists
+differ in length, name an account twice or hold an empty ID, and otherwise
+links each pair as its own `link_external_account`, a few at a time: one
+refused leaves the others as they went, and an account the last read did not
+reach is not sent. The page answering says how many were linked, lists each
+one not linked and why, and folds every result below; it waits for the
+account scope to show every link made, a few seconds at most. It takes a
+body of up to 1 MB, some thousands of pairs; every other form here, 8 KB.
 
 Whether an account is linked, and to what, is only what the account scope
 says: linked, naming the account, or not linked. There is no third state, and
@@ -268,11 +294,15 @@ name, the way back and the person, and hands the kit the person's colour
 scheme and light or dark. Where the kit is not served the pages still work,
 unstyled: each table, and the account map's plain forms, are in the HTML
 inside the component that replaces them, and every action is a plain form.
+Without the kit the map is a list row per account (its link, and Unlink on a
+linked one) and two forms under them, one to link any account to any open
+account and one to create an account for any, so the page grows with the
+accounts rather than with the accounts times the deployment's.
 Quantities are exact decimal strings, as SnapTrade reported them.
 
 `make preview` writes each page on synthetic data to `preview/`: Connections,
 Account links, and Statements as a reader sees it who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.3.0/`, so serve them
+three accounts. They link the kit at `/.meridian/ui/0.5.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -297,7 +327,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.4.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.4.2 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 `AGENTS.md` walks any coding agent through that loop, and through
 `meridian plugin check`, which holds the plugin to the framework's rules;

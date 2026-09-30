@@ -137,6 +137,11 @@ class ExternalAccount:
     connection_id: str
     # SnapTrade's per-call handle. Stays inside the plugin.
     snaptrade_account_id: str
+    # The brokerage's account number, as SnapTrade gives it, for matching the
+    # account to one of the deployment's on the Account links tab and shown
+    # there to the admin. Empty when SnapTrade gives none, or masks it
+    # ("****3003"): a masked number matches nothing.
+    number: str = ""
 
 
 @dataclass(frozen=True)
@@ -321,7 +326,15 @@ def external_account(account: Json, connection: Json) -> ExternalAccount:
         institution=institution,
         connection_id=_text(account.get("brokerage_authorization")),
         snaptrade_account_id=snaptrade_id,
+        number=account_number(account),
     )
+
+
+def account_number(account: Json) -> str:
+    """The account's number as the brokerage writes it, or "" where SnapTrade
+    gives none or masks part of it."""
+    number = _text(account.get("number"))
+    return "" if any(mark in number for mark in "*•") else number
 
 
 def late_by_design(connection: Json) -> bool:
