@@ -202,7 +202,12 @@ something, by the connection's `data_freshness_mode.snaptrade`:
   exception's type and the HTTP status, never its text.
 
 0.2.0's Holdings tab is gone: what the last read found is on Statements.
-Each admin page has "Read now". Each is served to a caller whose verified
+Each admin page has Refresh, which reads SnapTrade now. It is marked as a
+header action (`data-om-action="refresh"`, kit 0.4.0): where the dashboard
+frames the page, it draws Refresh in its own header, beside the plugin's name,
+and the kit drops the page's copy; pressing it there presses the page's, so
+the form still posts from the page, with its token. Opened on its own, the
+page shows it in its head. Each admin page is served to a caller whose verified
 `deployment_admin` claim is true, and anybody else is told it is for the
 deployment's administrators, with the way to Statements. `/admin` sends the
 caller to Connections. No credential is entered or shown here: keys are the
@@ -292,7 +297,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.4.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.4.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 `AGENTS.md` walks any coding agent through that loop, and through
 `meridian plugin check`, which holds the plugin to the framework's rules;

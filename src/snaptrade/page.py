@@ -231,14 +231,25 @@ def _hidden(name: str, value: str) -> str:
 
 
 def _button(
-    action: str, said: str, token: str, kind: str = "", fields: Mapping[str, str] | None = None
+    action: str,
+    said: str,
+    token: str,
+    kind: str = "",
+    fields: Mapping[str, str] | None = None,
+    header: str = "",
 ) -> str:
+    """A one-button form posting to `action` with the page's token. `header`
+    marks it one of the head's header actions (the kit's `data-om-action`):
+    where the dashboard frames the page, it draws the button in its own header
+    and, when it is pressed there, the kit presses this one, so the form still
+    posts from the page with its token."""
     shown = f' class="{kind}"' if kind else ""
+    marked = f' data-om-action="{e(header)}"' if header else ""
     carried = "".join(_hidden(name, value) for name, value in (fields or {}).items())
     return (
         f'<form method="post" action="{e(action)}" class="inline">'
         f"{_hidden(CSRF_FIELD, token)}{carried}"
-        f"<button{shown}>{e(said)}</button></form>"
+        f"<button{shown}{marked}>{e(said)}</button></form>"
     )
 
 
@@ -736,7 +747,7 @@ def _head(title: str, status: Status, token: str, back: str, primary: str = "") 
         '<header class="page-head">'
         f"<div><h1>{e(title)}</h1><p>{e(mode)}{read}</p></div>"
         '<div class="actions">'
-        f"{_button('/admin/read', 'Read now', token, fields={'back': back})}"
+        f"{_button('/admin/read', 'Refresh', token, fields={'back': back}, header='refresh')}"
         f"{primary}</div></header>"
     )
 

@@ -506,6 +506,63 @@ def test_reading_now_answers_with_the_tab_it_was_asked_from(
     assert woken.is_set()
 
 
+def refresh_form(body: str) -> tuple[str, dict[str, str]]:
+    """The head's Refresh: the one form in the page head's actions whose
+    button is marked as a header action, its action and its fields."""
+    head = re.search(r'<header class="page-head">(.*?)</header>', body, re.S)
+    assert head is not None
+    actions = re.search(r'<div class="actions">(.*)</div>', head.group(1), re.S)
+    assert actions is not None
+    forms = re.findall(
+        r'<form method="post" action="([^"]+)" class="inline">(.*?)</form>', actions.group(1)
+    )
+    marked = [(action, inside) for action, inside in forms if "data-om-action" in inside]
+    assert len(marked) == 1, "one header action in the head"
+    action, inside = marked[0]
+    assert re.search(r'<button data-om-action="refresh">Refresh</button>', inside)
+    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', inside))
+    return action, fields
+
+
+def test_each_admin_tab_marks_refresh_as_a_header_action_for_the_dashboard(
+    server: int,
+) -> None:
+    # The product owner, 2026-09-30: "Read now" becomes Refresh in the
+    # dashboard's header. The kit hands it to the dashboard where it frames
+    # the page; the form, its token and its POST stay the page's.
+    for path in TABS:
+        _, _, body = ask(server, "GET", path, ADMIN)
+        assert "Read now" not in body
+        action, fields = refresh_form(body)
+        assert action == "/admin/read"
+        assert fields == {"csrf": token_of(ADMIN), "back": path}
+    # Only the head's: no other button on a tab is handed to the dashboard.
+    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    assert body.count("data-om-action") == 1
+
+
+def test_the_marked_refresh_still_posts_from_the_page_with_its_token(
+    server: int, woken: asyncio.Event
+) -> None:
+    tabs = ((CONNECTIONS, "Brokerage connections"), (ACCOUNTS, "Link each account"))
+    for path, shown in tabs:
+        _, _, body = ask(server, "GET", path, ADMIN)
+        action, fields = refresh_form(body)
+        # Without the page's token, nothing is read.
+        forged = form(**{**fields, "csrf": "0" * len(fields["csrf"])})
+        status, _, answer = ask(server, "POST", action, ADMIN, forged)
+        assert status == 403 and "Reading SnapTrade now" not in answer
+        status, _, answer = ask(server, "POST", action, ADMIN, form(**fields))
+        assert status == 200 and "Reading SnapTrade now" in answer and shown in answer
+    assert woken.is_set()
+
+
+def test_statements_hands_the_dashboard_no_header_action(server: int) -> None:
+    for caller in (ADMIN, PERSON):
+        _, _, body = ask(server, "GET", STATEMENTS, caller)
+        assert "data-om-action" not in body
+
+
 # ── Linking, on the Account links tab ───────────────────────────────────────
 
 
