@@ -26,21 +26,23 @@ user pages", step 1): admin pages are setup, user pages are daily work.
   the dashboard's settings form, never here.
 
 Which of the deployment's accounts an external account is linked to is what
-cuts Statements to a reader, and the contract gives this plugin no read of
-its links (sdk-contract/a-plugin-reads-its-own-links). So a reader sees an
-account whose link this plugin can name: one made on the Account links tab
-since it started. One it cannot name is shown to deployment admins only,
-never guessed at. Nothing is stored for it: plugins are ephemeral.
+cuts Statements to a reader. The plugin reads its links beside its account
+scope (W4.11), each with the linked account's name, and holds the latest
+delivery (linking.py): a reader sees each account linked to one they may
+read, before a restart and after it. Nothing is stored for it: plugins are
+ephemeral.
 
 Built on the kit (spec/plugin-pages-share-one-kit, requirement 5): the
 dashboard serves Open Meridian's UI kit at /.meridian/ui/<version>/ on this
 plugin's own host, and each page links its stylesheet and script, uses its
-classes and its grid, and has no style, colour or theme code of its own.
+classes and its components (om-grid, om-account-map, om-moment), and has no
+style, colour, theme code or script of its own.
 
-Where the kit is not served a page still works, unstyled: each table is in
-the HTML inside its <om-grid>, which a browser shows as it is until the kit's
-grid replaces it; the grid's columns and rows sit beside it as JSON, read only
-once the grid is defined; and every action is a plain form.
+Each component reads its data from the JSON declared inside it (the kit's
+"data without script"), and what else is inside it is what a browser shows
+where the kit is not served: each grid's table, and the account map's plain
+forms. So without the kit a page still works, unstyled, and every action is a
+plain form.
 
 Every action is a POST carrying a CSRF token in its form, checked before
 anything is done. The plugin host has its own session cookie (decisions/021),
@@ -65,7 +67,7 @@ import json
 import secrets
 import threading
 from collections.abc import Coroutine, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any, TypeVar
 from urllib.parse import parse_qs
@@ -81,7 +83,7 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's; pinning one keeps the pages as they were built.
-KIT = "/.meridian/ui/0.1.0/"
+KIT = "/.meridian/ui/0.3.0/"
 CSRF_FIELD = "csrf"
 # A form here carries a token, an account, and a new account's name, custodian
 # and type at most; anything longer is not one of this page's.
@@ -168,8 +170,12 @@ REFRESH_REFUSED = (
     "SnapTrade doesn't allow a manual refresh for this connection on this plan; "
     "it reads fresh data on every sync."
 )
-_LINK_LABEL = {Link.LINKED: "Linked", Link.UNLINKED: "Not linked", Link.UNKNOWN: "Not known"}
-_LINK_TONE = {Link.LINKED: "good", Link.UNLINKED: "warn", Link.UNKNOWN: ""}
+_LINK_LABEL = {Link.LINKED: "Linked", Link.UNLINKED: "Not linked"}
+_LINK_TONE = {Link.LINKED: "good", Link.UNLINKED: "warn"}
+# The tones a grid column may take from a row's field, and the text class each
+# is on a column that is not a badge; anything else is no tone.
+_INK = {"good": "good-ink", "warn": "warn-ink", "bad": "bad-ink"}
+_BADGE_TONES = frozenset({"good", "warn", "bad", "accent", "info"})
 
 
 def e(value: object) -> str:
@@ -197,16 +203,22 @@ def _when(moment: datetime | date | None) -> str:
     return f'<time datetime="{e(moment.isoformat())}">{e(_moment(moment))}</time>'
 
 
-def _document(body: str, script: str = "") -> str:
+def _moment_of(moment: datetime, label: str = "") -> str:
+    """The kit's om-moment for a moment to read, with what it shows until the
+    kit draws it (or where the kit is not served) inside."""
+    labelled = f' label="{e(label)}"' if label else ""
+    shown = " ".join(filter(None, (label, _moment(moment))))
+    return f'<om-moment{labelled} value="{e(moment.isoformat())}">{e(shown)}</om-moment>'
+
+
+def _document(body: str) -> str:
     return (
         '<!doctype html><html lang="en"><head><meta charset="utf-8">'
         '<meta name="viewport" content="width=device-width, initial-scale=1">'
         f"<title>{TITLE}</title>"
         f'<link rel="stylesheet" href="{KIT}meridian.css">'
         f'<script src="{KIT}meridian.js"></script>'
-        f'</head><body><main class="page">{body}</main>'
-        + (f'<script type="module">{script}</script>' if script else "")
-        + "</body></html>"
+        f'</head><body><main class="page">{body}</main></body></html>'
     )
 
 
@@ -235,10 +247,11 @@ def _button(
 
 @dataclass(frozen=True)
 class Column:
-    """One column of a grid, as the kit's om-grid takes it and as the plain
-    table shown without the kit draws it. `hint` names a field shown
-    under the value, `tone` the field holding a badge's tone, `ink` the field
-    holding a text class, and `blank` is what an empty value says."""
+    """One column of a grid, as the kit's om-grid takes it in its declared
+    JSON and as the plain table shown without the kit draws it. `hint` names
+    a field shown under the value, `tone` the field holding its tone (a
+    badge's, or on another column its text's), and `blank` is what an empty
+    value says."""
 
     key: str
     label: str
@@ -246,25 +259,41 @@ class Column:
     group: bool = False
     hint: str = ""
     tone: str = ""
-    ink: str = ""
     blank: str = ""
     strong: bool = False
 
+    def declared(self) -> dict[str, object]:
+        """As om-grid's columns take it, plain JSON: only what is set."""
+        column: dict[str, object] = {"key": self.key, "label": self.label, "type": self.type}
+        if self.group:
+            column["group"] = True
+        if self.hint:
+            column["hint"] = self.hint
+        if self.tone:
+            column["tone"] = {"field": self.tone}
+        if self.blank:
+            column["blank"] = self.blank
+        if self.strong:
+            column["strong"] = True
+        return column
+
 
 def _cell(column: Column, row: dict[str, str]) -> str:
+    """One cell of the plain table, drawn as the kit's grid draws it."""
     value = row.get(column.key, "")
+    tone = row.get(column.tone, "") if column.tone else ""
     if not value:
         shown = f'<span class="faint">{e(column.blank)}</span>' if column.blank else ""
-    elif column.tone:
-        shown = f'<span class="badge {e(row.get(column.tone, ""))}">{e(value)}</span>'
+    elif column.type == "badge":
+        classes = " ".join(filter(None, ("badge", tone if tone in _BADGE_TONES else "")))
+        shown = f'<span class="{classes}">{e(value)}</span>'
     elif column.type == "code":
         shown = f"<code>{e(value)}</code>"
-    elif column.strong:
-        shown = f"<strong>{e(value)}</strong>"
-    elif column.ink and row.get(column.ink):
-        shown = f'<span class="{e(row[column.ink])}">{e(value)}</span>'
     else:
-        shown = e(value)
+        ink = _INK.get(tone, "")
+        shown = f"<strong>{e(value)}</strong>" if column.strong else e(value)
+        if ink:
+            shown = f'<span class="{ink}">{shown}</span>'
     if column.hint and row.get(column.hint):
         # The space keeps the two apart where the kit is not there to.
         shown += f' <span class="hint">{e(row[column.hint])}</span>'
@@ -280,8 +309,9 @@ def _grid(
     columns: Sequence[Column],
     rows: Sequence[dict[str, str]],
 ) -> str:
-    """An om-grid over `rows`, with the same table inside it for a browser
-    without the kit, and its columns and rows beside it for the kit's."""
+    """An om-grid over `rows`, drawn as cards where it is narrow: its columns
+    and rows declared inside it as JSON, which the kit's grid reads, and the
+    same table beside them for a browser without the kit."""
     head = "".join(
         f'<th class="num">{e(c.label)}</th>'
         if c.type == "decimal"
@@ -292,62 +322,24 @@ def _grid(
         "".join("<tr>" + "".join(_cell(c, row) for c in columns) + "</tr>" for row in rows)
         or f'<tr><td colspan="{len(columns)}">{e(empty)}</td></tr>'
     )
-    data = {"columns": [asdict(c) for c in columns], "rows": list(rows)}
+    data = {"columns": [c.declared() for c in columns], "rows": list(rows)}
     return (
-        f'<om-grid id="{grid_id}" row-key="{key}" caption="{e(caption)}" empty="{e(empty)}"'
-        f' data-grid="{grid_id}-data">'
+        f'<om-grid id="{grid_id}" row-key="{key}" narrow="cards" caption="{e(caption)}"'
+        f' empty="{e(empty)}">'
+        f'<script type="application/json">{_script_json(data)}</script>'
         f'<div class="table-wrap"><table><thead><tr>{head}</tr></thead>'
         f"<tbody>{body}</tbody></table></div></om-grid>"
-        f'<script type="application/json" id="{grid_id}-data">{_script_json(data)}</script>'
     )
 
-
-# Set on each grid once the kit has defined om-grid; without the kit it never
-# is, and the tables stay. A column's hint, tone, ink and blank become a
-# `format` drawing what the table above draws; nothing here is a colour.
-_GRIDS = """
-const shown = (tag, className, text) => {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  node.textContent = text;
-  return node;
-};
-const column = (c) => {
-  const plain = { key: c.key, label: c.label, type: c.type, group: c.group };
-  if (!c.hint && !c.tone && !c.ink && !c.blank && !c.strong) return plain;
-  return {
-    ...plain,
-    type: c.type === "code" ? "text" : c.type,
-    format(value, row) {
-      const cell = document.createElement("span");
-      if (value === undefined || value === null || value === "") {
-        if (c.blank) cell.append(shown("span", "faint", c.blank));
-      } else if (c.tone) cell.append(shown("span", `badge ${row[c.tone] || ""}`, value));
-      else if (c.type === "code") cell.append(shown("code", "", value));
-      else if (c.strong) cell.append(shown("strong", "", value));
-      else cell.append(shown("span", (c.ink && row[c.ink]) || "", value));
-      if (c.hint && row[c.hint]) cell.append(shown("span", "hint", row[c.hint]));
-      return cell;
-    },
-  };
-};
-customElements.whenDefined("om-grid").then(() => {
-  for (const grid of document.querySelectorAll("om-grid[data-grid]")) {
-    const data = JSON.parse(document.getElementById(grid.dataset.grid).textContent);
-    grid.columns = data.columns.map(column);
-    grid.setRows(data.rows);
-  }
-});
-"""
 
 # Most wanted first, so a narrow frame shows it before the table scrolls.
 _ACCOUNT_COLUMNS = (
     Column("account", "Account", hint="where", strong=True),
-    Column("link", "Link", tone="link_tone"),
-    Column("state", "Sync state", tone="tone", hint="todo"),
+    Column("link", "Link", type="badge", tone="link_tone"),
+    Column("state", "Sync state", type="badge", tone="tone", hint="todo"),
     Column("holdings_as_of", "Holdings as of", blank="not reported"),
     Column("history_as_of", "History as of", blank="not reported"),
-    Column("recorded", "Last statement", ink="recorded_ink", hint="recorded_note"),
+    Column("recorded", "Last statement", tone="recorded_tone", hint="recorded_note"),
     Column("id", "Account ID", type="code", hint="id_note"),
 )
 
@@ -363,7 +355,7 @@ _ROW_COLUMNS = (
 
 
 def _recorded(view: AccountView, status: Status) -> tuple[str, str, str]:
-    """What the last statement came to: its text, a text class, and a note."""
+    """What the last statement came to: its text, its tone, and a note."""
     outcome = status.outcomes.get(view.account.external_account_id)
     if view.statement is None:
         return "Nothing recorded", "", view.withheld
@@ -372,7 +364,7 @@ def _recorded(view: AccountView, status: Status) -> tuple[str, str, str]:
     if outcome.stopped:
         return (
             f"Stopped at {outcome.recorded} of {outcome.rows} rows",
-            "bad-ink",
+            "bad",
             outcome.stopped,
         )
     if outcome.already_recorded:
@@ -392,7 +384,7 @@ def _account_row(
     todo = [fresh.detail] if fresh.detail else []
     if fresh.state is not SyncState.CURRENT:
         todo.append(REMEDY[fresh.state])
-    recorded, ink, note = _recorded(view, status)
+    recorded, tone, note = _recorded(view, status)
     return {
         "account": account.name,
         "where": _where(connection, view),
@@ -406,7 +398,7 @@ def _account_row(
         "holdings_as_of": _moment(fresh.holdings_as_of),
         "history_as_of": _moment(fresh.history_as_of),
         "recorded": recorded,
-        "recorded_ink": ink,
+        "recorded_tone": tone,
         "recorded_note": note,
     }
 
@@ -469,6 +461,14 @@ def _tile(label: str, value: str, delta: str = "", ink: str = "") -> str:
     )
 
 
+def _last_read(status: Status) -> str:
+    """A tile's figure is short: the time, with the day under it. The moment
+    in full is the page head's om-moment."""
+    if status.read_at is None:
+        return _tile("Last read", "Not yet")
+    return _tile("Last read", f"{status.read_at:%H:%M} UTC", f"{status.read_at:%Y-%m-%d}")
+
+
 def _tiles(status: Status) -> str:
     connections = status.connections
     accounts = status.accounts
@@ -491,46 +491,60 @@ def _tiles(status: Status) -> str:
             str(rows),
             f"in {len(statements)} statement{'' if len(statements) == 1 else 's'}",
         )
-        + _tile(
-            "Last read",
-            f"{status.read_at:%H:%M} UTC" if status.read_at else "Not yet",
-            f"{status.read_at:%Y-%m-%d}" if status.read_at else "",
-        )
+        + _last_read(status)
         + "</div>"
     )
 
 
-# ── The account mapping ──────────────────────────────────────────────────────
+# ── The account map ──────────────────────────────────────────────────────────
 #
-# Each external account with its link and what can be done about it, drawn
-# with the kit's classes: a list row per account, a badge for its link, and
-# for one not linked, two plain forms side by side (the kit's grid-2, one
-# column on a phone): an existing account from a picker, or a new account
-# named from the external one. The kit has no component for this yet.
+# The kit's om-account-map: each external account beside the deployment's
+# account it is linked to, or the forms to link it, from the JSON declared
+# inside it. Its forms all post to LINK, saying what they mean in `intent`
+# (`link`, `create` or `unlink`), with the page's token. Inside it too, for a
+# browser without the kit, the same as plain forms: a list row per account,
+# a badge for its link, and the forms to link it (folded under "Link to
+# another account" on a linked one, which a new link replaces).
+
+LINK = f"{ACCOUNTS}/link"
+INTENTS = ("link", "create", "unlink")
 
 
-def _picker(external_id: str, offered: Offered, token: str) -> str:
-    """Link to one of the deployment's open accounts."""
-    choices = [account for account in offered.accounts if account.open]
+def _intent_form(intent: str, external_id: str, token: str, inside: str, kind: str = "") -> str:
+    """A plain form for the map's `intent`, posted to LINK with the page's token."""
+    shown = f' class="{kind}"' if kind else ""
+    return (
+        f'<form method="post" action="{LINK}"{shown}>'
+        f"{_hidden(CSRF_FIELD, token)}{_hidden('intent', intent)}"
+        f"{_hidden('external_account_id', external_id)}{inside}</form>"
+    )
+
+
+def _picker(external_id: str, offered: Offered, token: str, current: str) -> str:
+    """Link to one of the deployment's open accounts, other than `current`."""
+    choices = [a for a in offered.accounts if a.open and a.account_id != current]
     if offered.refused:
         return (
             '<p class="hint">The deployment\'s accounts could not be read, so none is '
             "offered here.</p>"
         )
     if not choices:
-        return '<p class="hint">The deployment has no open accounts yet: create one.</p>'
+        return (
+            '<p class="hint">The deployment has no other open account: create one.</p>'
+            if current
+            else '<p class="hint">The deployment has no open accounts yet: create one.</p>'
+        )
     options = "".join(
         f'<option value="{e(account.account_id)}">{e(account.label())}</option>'
         for account in choices
     )
-    return (
-        f'<form method="post" action="{ACCOUNTS}/link">'
-        f"{_hidden(CSRF_FIELD, token)}{_hidden('external_account_id', external_id)}"
-        '<label class="field"><span>Link to an existing account</span>'
+    return _intent_form(
+        "link",
+        external_id,
+        token,
+        '<div class="field-row"><label class="field"><span>An existing account</span>'
         '<select name="account_id" required><option value="">Choose an account</option>'
-        f"{options}</select></label>"
-        # In a field of its own, so a stacked form below it keeps its distance.
-        '<div class="field"><button>Link</button></div></form>'
+        f"{options}</select></label><button>Link</button></div>",
     )
 
 
@@ -538,11 +552,11 @@ def _create(connection: ConnectionView, view: AccountView, token: str) -> str:
     """Create a new account, named from the external one, held at the
     connection's brokerage and of the venue's account type, each editable,
     and link it."""
-    return (
-        f'<form method="post" action="{ACCOUNTS}/create">'
-        f"{_hidden(CSRF_FIELD, token)}"
-        f"{_hidden('external_account_id', view.account.external_account_id)}"
-        '<label class="field"><span>Create a new account</span>'
+    return _intent_form(
+        "create",
+        view.account.external_account_id,
+        token,
+        '<div class="field-row"><label class="field"><span>A new account</span>'
         f'<input type="text" name="new_account_name" value="{e(view.account.name)}" '
         f'required maxlength="{_MOST_NAME}"></label>'
         '<label class="field"><span>Custodian</span>'
@@ -551,64 +565,106 @@ def _create(connection: ConnectionView, view: AccountView, token: str) -> str:
         '<label class="field"><span>Type</span>'
         f'<input type="text" name="new_account_type" value="{e(view.account.account_type)}" '
         f'maxlength="{_MOST_NAME}"></label>'
-        '<div class="field"><button class="primary">Create and link</button></div></form>'
+        '<button class="primary">Create and link</button></div>',
     )
 
 
 def _mapping_row(
     connection: ConnectionView, view: AccountView, link: LinkView, offered: Offered, token: str
 ) -> str:
+    """One account, as plain forms: shown without the kit."""
     account = view.account
     external_id = account.external_account_id
-    said = [link.how]
-    if link.account_id:
-        said.insert(0, f"Linked to {offered.name_of(link.account_id) or link.account_id}.")
     note = _unstable(view)
     head = (
         '<div class="grow">'
         f'<div class="row"><span class="title">{e(account.name)}</span> '
-        f'<span class="{" ".join(filter(None, ("badge", _LINK_TONE[link.state])))}">'
-        f"{_LINK_LABEL[link.state]}</span></div>"
+        f'<span class="badge {_LINK_TONE[link.state]}">{_LINK_LABEL[link.state]}</span></div>'
         f'<div class="meta">{e(_where(connection, view))} · '
         f"<code>{e(external_id)}</code></div>"
-        f'<span class="hint">{e(" ".join(said))}</span>'
+        + (
+            f'<span class="hint">Linked to {e(link.account_name or link.account_id)} '
+            f"(<code>{e(link.account_id)}</code>).</span>"
+            if link.state is Link.LINKED
+            else ""
+        )
         + (f'<span class="hint">{e(note)}</span>' if note else "")
     )
-    unlink = _button(
-        f"{ACCOUNTS}/unlink",
-        "Unlink",
-        token,
-        "danger",
-        {"external_account_id": external_id},
+    forms = (
+        f"{_picker(external_id, offered, token, link.account_id)}"
+        f"{_create(connection, view, token)}"
     )
     if link.state is Link.LINKED:
-        return (
-            f'<div class="list-row" data-account="{e(external_id)}">{head}</div>{unlink}</div>'
+        unlink = _intent_form(
+            "unlink", external_id, token, '<button class="danger">Unlink</button>', "inline"
         )
-    forms = (
-        f'<div class="grid-2">{_picker(external_id, offered, token)}'
-        f"{_create(connection, view, token)}</div>"
+        return (
+            f'<div class="list-row" data-account="{e(external_id)}">{head}'
+            f"<details><summary>Link to another account</summary>{forms}</details>"
+            f"</div>{unlink}</div>"
+        )
+    return f'<div class="list-row" data-account="{e(external_id)}">{head}{forms}</div></div>'
+
+
+def _map_data(
+    status: Status, links: Mapping[str, LinkView], offered: Offered
+) -> dict[str, object]:
+    """What om-account-map takes: the external accounts, the deployment's
+    accounts (null where they could not be read), and the links standing."""
+    shown = [(c, view) for c in status.connections for view in c.accounts]
+    accounts = (
+        None
+        if offered.refused
+        else [
+            {
+                "account_id": account.account_id,
+                "name": account.name,
+                "custodian": account.custodian,
+                "account_type": account.account_type,
+                "open": account.open,
+            }
+            for account in offered.accounts
+        ]
     )
-    # Where it is not known, it may be linked: removing the link is offered
-    # too, under the forms, so a phone's width is left to them.
-    also = (
-        f'<div class="row"><span class="muted">It may be linked already.</span>{unlink}</div>'
-        if link.state is Link.UNKNOWN
-        else ""
-    )
-    return (
-        f'<div class="list-row" data-account="{e(external_id)}">{head}{forms}{also}</div></div>'
-    )
+    return {
+        "external_accounts": [
+            {
+                "external_account_id": view.account.external_account_id,
+                "name": view.account.name,
+                "detail": _where(connection, view),
+                "custodian": connection.institution,
+                "account_type": view.account.account_type,
+                "note": _unstable(view),
+            }
+            for connection, view in shown
+        ],
+        "accounts": accounts,
+        "links": [
+            {
+                "external_account_id": view.account.external_account_id,
+                "account_id": link.account_id,
+                "account_name": link.account_name,
+            }
+            for _, view in shown
+            if (link := links[view.account.external_account_id]).state is Link.LINKED
+        ],
+    }
 
 
 def _mapping(
     status: Status, links: Mapping[str, LinkView], offered: Offered, token: str
 ) -> str:
-    rows = [
-        _mapping_row(connection, view, links[view.account.external_account_id], offered, token)
-        for connection in status.connections
-        for view in connection.accounts
-    ]
+    empty = "No accounts yet: they appear here once SnapTrade is read."
+    rows = (
+        "".join(
+            _mapping_row(
+                connection, view, links[view.account.external_account_id], offered, token
+            )
+            for connection in status.connections
+            for view in connection.accounts
+        )
+        or f'<div class="empty-state"><strong>{e(empty)}</strong></div>'
+    )
     counted = [links[view.account.external_account_id].state for view in status.accounts]
     summary = ", ".join(
         f"{counted.count(state)} {_LINK_LABEL[state].lower()}"
@@ -623,12 +679,11 @@ def _mapping(
         "Link it to an existing account, or create one for it."
         + (f" {e(summary.capitalize())}." if summary else "")
         + "</p></div>"
-        + (
-            "".join(rows)
-            or '<div class="empty-state"><strong>No accounts yet</strong>'
-            "<p>They appear here once SnapTrade is read.</p></div>"
-        )
-        + "</section>"
+        f'<om-account-map action="{LINK}" token-name="{CSRF_FIELD}" token="{e(token)}"'
+        f' empty="{e(empty)}">'
+        f'<script type="application/json">{_script_json(_map_data(status, links, offered))}'
+        f"</script>{rows}</om-account-map>"
+        "</section>"
     )
 
 
@@ -676,7 +731,7 @@ def _head(title: str, status: Status, token: str, back: str, primary: str = "") 
         "snaptrade": "Reading SnapTrade.",
         "waiting": "Waiting for settings.",
     }[status.mode]
-    read = f" Last read {_when(status.read_at)}." if status.read_at else ""
+    read = f" {_moment_of(status.read_at, 'Last read')}." if status.read_at else ""
     return (
         '<header class="page-head">'
         f"<div><h1>{e(title)}</h1><p>{e(mode)}{read}</p></div>"
@@ -801,8 +856,7 @@ def render_accounts(
         '<p class="muted">How fresh SnapTrade\'s data about each account is, what to '
         "do about it, and what the last read recorded.</p></div>"
         + _grid("accounts", "Accounts", "No accounts yet.", "id", _ACCOUNT_COLUMNS, accounts)
-        + "</section>",
-        _GRIDS,
+        + "</section>"
     )
 
 
@@ -836,9 +890,8 @@ def visible(
     status: Status, links: Mapping[str, LinkView], caller: meridian.Caller
 ) -> list[Shown]:
     """The accounts Statements shows this caller: every one to a deployment
-    administrator, and to anybody else each one whose link this plugin can
-    name, to an account they may read. One whose link it cannot name is not
-    guessed at."""
+    administrator, and to anybody else each one linked to an account they may
+    read."""
     everyone = is_administrator(caller)
     return [
         (connection, view)
@@ -876,11 +929,7 @@ def _statement_tiles(status: Status, shown: Sequence[Shown]) -> str:
             str(rows),
             f"in {len(statements)} statement{'' if len(statements) == 1 else 's'}",
         )
-        + _tile(
-            "Last read",
-            f"{status.read_at:%H:%M} UTC" if status.read_at else "Not yet",
-            f"{status.read_at:%Y-%m-%d}" if status.read_at else "",
-        )
+        + _last_read(status)
         + "</div>"
     )
 
@@ -890,8 +939,9 @@ def _statement(
 ) -> str:
     """One account on Statements: its sync state, its last statement and its rows."""
     account, fresh, statement = view.account, view.freshness, view.statement
-    recorded, ink, note = _recorded(view, status)
-    said_recorded = f'<span class="{e(ink)}">{e(recorded)}</span>' if ink else e(recorded)
+    recorded, tone, note = _recorded(view, status)
+    ink = _INK.get(tone, "")
+    said_recorded = f'<span class="{ink}">{e(recorded)}</span>' if ink else e(recorded)
     last = (
         f"Last statement as of {e(statement.as_of_date)}: {said_recorded}"
         if statement is not None
@@ -933,7 +983,7 @@ def render_statements(status: Status, shown: Sequence[Shown], everyone: bool) ->
         "snaptrade": "",
         "waiting": " SnapTrade is not being read yet.",
     }[status.mode]
-    read = f" Last read {_when(status.read_at)}." if status.read_at else ""
+    read = f" {_moment_of(status.read_at, 'Last read')}." if status.read_at else ""
     failed = (
         '<div class="notice warn" role="status">The last read of SnapTrade failed, so '
         "nothing is shown from it.</div>"
@@ -959,8 +1009,7 @@ def render_statements(status: Status, shown: Sequence[Shown], everyone: bool) ->
         f"as SnapTrade reported them.{e(mode)}{read}</p></div></header>"
         + failed
         + (_statement_tiles(status, shown) if shown else "")
-        + accounts,
-        _GRIDS if shown else "",
+        + accounts
     )
 
 
@@ -991,9 +1040,7 @@ def serve(
 
     def links_of(status: Status) -> dict[str, LinkView]:
         return {
-            view.account.external_account_id: links.of(
-                view, status.outcomes.get(view.account.external_account_id)
-            )
+            view.account.external_account_id: links.of(view.account.external_account_id)
             for view in status.accounts
         }
 
@@ -1102,10 +1149,11 @@ def serve(
                     "text/plain",
                 )
                 return
-            parts = self.path.split("?", 1)[0].strip("/").split("/")
-            if parts[:2] == ["admin", "accounts"]:
-                self._link(caller, parts[2:], form)
+            path = self.path.split("?", 1)[0]
+            if path == LINK:
+                self._link(caller, form)
                 return
+            parts = path.strip("/").split("/")
             venue = syncer.venue
             serving = {c.connection_id: c.serving for c in syncer.status.connections}
             notice, portal, answer = None, None, CONNECTIONS
@@ -1153,26 +1201,29 @@ def serve(
                 notice = Notice(f"That failed: {type(failed).__name__}", "bad")
             self._send(200, render(answer, caller, notice, portal))
 
-        def _link(
-            self, caller: meridian.Caller, action: list[str], form: Mapping[str, list[str]]
-        ) -> None:
+        def _link(self, caller: meridian.Caller, form: Mapping[str, list[str]]) -> None:
             """Link, create and link, or unlink one of the accounts the last
-            read reached, for the admin who sent the form (W6.4)."""
+            read reached, as the form's `intent` says, for the admin who sent
+            it (W6.4). A link to another account replaces the one standing."""
+            intent = _field(form, "intent")
             external_id = _field(form, "external_account_id")
             views = {view.account.external_account_id: view for view in syncer.status.accounts}
-            if action not in (["link"], ["create"], ["unlink"]) or external_id not in views:
+            if intent not in INTENTS:
+                self._send(400, "This form does not say what to do.", "text/plain")
+                return
+            if external_id not in views:
                 self._send(404, "No such account.", "text/plain")
                 return
             named = views[external_id].account.name or external_id
-            account_id = _field(form, "account_id") if action == ["link"] else ""
-            name = _field(form, "new_account_name")[:_MOST_NAME] if action == ["create"] else ""
+            account_id = _field(form, "account_id") if intent == "link" else ""
+            name = _field(form, "new_account_name")[:_MOST_NAME] if intent == "create" else ""
             # Where it is held and what it is, as the admin left the venue's
             # words; longer than the deployment keeps is refused by it, by name.
-            custodian = _field(form, "new_account_custodian") if action == ["create"] else ""
-            account_type = _field(form, "new_account_type") if action == ["create"] else ""
-            if action == ["link"] and not account_id:
+            custodian = _field(form, "new_account_custodian") if intent == "create" else ""
+            account_type = _field(form, "new_account_type") if intent == "create" else ""
+            if intent == "link" and not account_id:
                 notice = Notice("Choose the account to link it to.", "warn")
-            elif action == ["create"] and not name:
+            elif intent == "create" and not name:
                 notice = Notice("Name the new account.", "warn")
             else:
                 try:
@@ -1187,12 +1238,14 @@ def serve(
                 else:
                     # Read again, so its rows follow the link.
                     loop.call_soon_threadsafe(wake.set)
+                    now = links.of(external_id)
+                    to = now.account_name if now.account_id == account_id else ""
                     notice = Notice(
                         f"Unlinked {named}."
-                        if action == ["unlink"]
+                        if intent == "unlink"
                         else f"Created {name} and linked {named} to it."
-                        if action == ["create"]
-                        else f"Linked {named}.",
+                        if intent == "create"
+                        else f"Linked {named} to {to or account_id}.",
                         "good",
                     )
             self._send(200, render(ACCOUNTS, caller, notice))

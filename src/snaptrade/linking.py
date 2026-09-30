@@ -10,17 +10,21 @@ Every call here is sent acting for the person the page request came from,
 their `Meridian-Caller` header handed back as `acting_for`, and the sidecar
 refuses it unless that person is a deployment admin. A link names an existing
 account, or a new account's name for the conductor to create and link in one
-step, or neither, to remove the link.
+step, or neither, to remove the link. A link to another account replaces the
+one standing: the conductor keeps one link per external account.
 
-What an external account is linked to, this plugin cannot read: the contract
-gives it no read of its own links. So it says what it knows and how: a link it
-made or removed itself since it started, then what the last read showed
-(rows recorded for the account, which only a link allows, or refused because
-nothing links it), and otherwise that it is not known.
+What each external account is linked to, and that account's name, this plugin
+reads beside its account scope (W4.11): `__main__` holds the first delivery
+before the pages are served and every one after it, and hands each to
+`Links`. So after a restart every link is known, and an external account no
+link names is not linked. There is no third state, and nothing is kept here
+beyond the latest delivery: plugins are ephemeral.
 """
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import threading
 from dataclasses import dataclass
 from enum import Enum
@@ -28,25 +32,34 @@ from enum import Enum
 import meridian
 from meridian.plugin.v1 import operations_pb2 as ops
 
-from .contract import Outcome
-from .normalise import AccountView
+# How long a link sent from the page waits for the account scope to show it,
+# so the page answering the form shows the link as it now stands.
+SETTLE_SECONDS = 5.0
 
 
 class Link(Enum):
     LINKED = "linked"
     UNLINKED = "unlinked"
-    UNKNOWN = "unknown"
 
 
 @dataclass(frozen=True)
 class LinkView:
-    """One external account's link, as far as this plugin knows it."""
+    """One external account's link, as the plugin's account scope gives it."""
 
     state: Link
-    # The deployment's account it is linked to, when this plugin linked it.
+    # The deployment's account it is linked to, and that account's name as
+    # the deployment holds it now (W6.3); both empty when it is not linked.
     account_id: str = ""
-    # How it is known, for the page.
-    how: str = ""
+    account_name: str = ""
+
+
+def link_of(scope: meridian.AccountScope, external_account_id: str) -> LinkView:
+    """One external account's link in `scope`: linked, naming the account, or
+    not linked."""
+    link = scope.link_of(external_account_id)
+    if link is None:
+        return LinkView(Link.UNLINKED)
+    return LinkView(Link.LINKED, link.account_id, link.account_name)
 
 
 @dataclass(frozen=True)
@@ -76,9 +89,6 @@ class Offered:
     accounts: tuple[DeploymentAccount, ...] = ()
     refused: str = ""
 
-    def name_of(self, account_id: str) -> str:
-        return next((a.name for a in self.accounts if a.account_id == account_id), "")
-
 
 def refusal(failed: meridian.MeridianError) -> str:
     """The sidecar's own words for a refusal, to show as they are."""
@@ -88,20 +98,32 @@ def refusal(failed: meridian.MeridianError) -> str:
 
 
 class Links:
-    """Sends links for the admin viewing the page, and keeps what it sent."""
+    """The plugin's links as its account scope last gave them, and links sent
+    for the admin viewing the page."""
 
-    def __init__(self, plugin: meridian.Plugin) -> None:
+    def __init__(self, plugin: meridian.Plugin, settle_seconds: float = SETTLE_SECONDS) -> None:
         self._plugin = plugin
-        # By external account ID: the account this process linked it to, or
-        # "" where it removed the link.
-        self._made: dict[str, str] = {}
+        self._settle = settle_seconds
+        self._scope = meridian.AccountScope()
+        # The page reads from its own threads; deliveries arrive on the loop.
         self._lock = threading.Lock()
+        self._changed = asyncio.Condition()
 
-    def of(self, view: AccountView, outcome: Outcome | None) -> LinkView:
-        """What is known of one external account's link."""
+    @property
+    def scope(self) -> meridian.AccountScope:
         with self._lock:
-            made = self._made.get(view.account.external_account_id)
-        return link_of(made, outcome)
+            return self._scope
+
+    async def hold(self, scope: meridian.AccountScope) -> None:
+        """Keep the latest delivery of the account scope, in place of the last."""
+        with self._lock:
+            self._scope = scope
+        async with self._changed:
+            self._changed.notify_all()
+
+    def of(self, external_account_id: str) -> LinkView:
+        """One external account's link, as the latest delivery gives it."""
+        return link_of(self.scope, external_account_id)
 
     async def offered(self, acting_for: str) -> Offered:
         """The deployment's accounts, for the admin the header names."""
@@ -133,8 +155,9 @@ class Links:
     ) -> str:
         """Link to `account_id`, or to a new account called `name`, held at
         `custodian` and of `account_type` as the admin left them, or with
-        neither, remove the link. Returns the account linked to, or "". A
-        refusal is raised as the SDK raises it."""
+        neither, remove the link; a link replaces the one standing. Returns
+        the account linked to, or "", once the account scope shows it or a
+        few seconds have passed. A refusal is raised as the SDK raises it."""
         linked = await self._plugin.link_external_account(
             external_account_id=external_account_id,
             account_id=account_id,
@@ -143,32 +166,16 @@ class Links:
             new_account_type=account_type if name else "",
             acting_for=acting_for,
         )
-        with self._lock:
-            self._made[external_account_id] = linked.account_id
+        await self._settled(external_account_id, linked.account_id)
         return linked.account_id
 
+    async def _settled(self, external_account_id: str, account_id: str) -> None:
+        """Wait until the account scope shows `external_account_id` linked to
+        `account_id` (or, for "", not linked), or until the wait runs out."""
 
-def link_of(made: str | None, outcome: Outcome | None) -> LinkView:
-    """A link this process made or removed, else what the last read showed,
-    else not known."""
-    if made is not None:
-        if made:
-            return LinkView(Link.LINKED, made, "Linked from this page.")
-        return LinkView(Link.UNLINKED, how="Unlinked from this page.")
-    if outcome is not None and outcome.recorded:
-        return LinkView(Link.LINKED, how="Its rows were recorded on the last read.")
-    if outcome is not None and outcome.unlinked:
-        return LinkView(
-            Link.UNLINKED,
-            how=(
-                "Its rows were refused on the last read: nothing is recorded until it is "
-                "linked."
-            ),
-        )
-    return LinkView(
-        Link.UNKNOWN,
-        how=(
-            "Nothing was recorded for it on the last read, so whether it is linked is "
-            "not known."
-        ),
-    )
+        def shown() -> bool:
+            return self.of(external_account_id).account_id == account_id
+
+        with contextlib.suppress(TimeoutError):
+            async with self._changed:
+                await asyncio.wait_for(self._changed.wait_for(shown), self._settle)

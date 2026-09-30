@@ -21,9 +21,11 @@ a deployment admin approves them.
   SnapTrade's shapes into the platform's convention; `contract.py` sends them
   through the SDK; `sync.py` carries one read through; `linking.py` links an
   account to one of the deployment's, acting for the admin on the Account
-  links tab. The contract gives it no read of its links, so Statements shows
-  a reader only accounts whose link it made since it started; never guess the
-  rest, and never store them.
+  links tab, and holds the plugin's links as `plugin.account_scope()` last
+  delivered them (`__main__` holds the first before serving the pages). An
+  account is linked, naming its account, or not linked: never guess a third
+  state from what a read recorded, and never store the links. A row refused
+  for want of a link is `meridian.NotLinked`; never match a refusal's words.
 - SnapTrade's vocabulary stops at `normalise.py`, and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.
@@ -89,8 +91,8 @@ plain HTML, as `page.py` writes it, and from React, Vue or Svelte alike.
 plugin's own host. The version is the one `page.py`'s `KIT` names:
 
 ```html
-<link rel="stylesheet" href="/.meridian/ui/0.1.0/meridian.css">
-<script src="/.meridian/ui/0.1.0/meridian.js"></script>
+<link rel="stylesheet" href="/.meridian/ui/0.3.0/meridian.css">
+<script src="/.meridian/ui/0.3.0/meridian.js"></script>
 ```
 
 Never copy the kit into the plugin, and never load it, or anything else for
@@ -100,18 +102,23 @@ the page, from another origin or a CDN.
 
 | For | Use |
 |---|---|
-| A table of records | `<om-grid row-key="…">`: set `columns`, then `setRows(rows)`; `upsert(rows)` replaces rows by key in place; figures sort exactly |
+| A table of records | `<om-grid row-key="…">`: set `columns`, then `setRows(rows)`; `upsert(rows)` replaces rows by key in place; figures sort exactly. `narrow="cards"` makes each row a card on a phone; a column's `hint`, `tone: {"field": …}`, `blank` and `strong` are plain JSON |
 | A stream: thousands of rows, many changes a second | `<om-grid high-rate>`: only the rows in view are drawn, only changed cells are touched, and they flash up or down; `freeze-sort` stops rows jumping while streaming |
 | Live data from the plugin's server | `<om-live src="events" snapshot="snapshot.json" for="grid-id">`: follows server-sent events in sequence, and reads the snapshot again after a gap or a reconnect, so nothing is missed |
-| The date the figures are as of | `<om-asof>` |
+| The date the figures are as of | `<om-asof>` to choose one; `<om-moment label="…" value="…ISO…">` to read one |
+| Linking external accounts to the deployment's (W6.4) | `<om-account-map action="…" token-name="csrf" token="…">`: every form posts to `action` with an `intent` field (`link`, `create`, `unlink`) |
 | Choosing an instrument | `<om-instrument-picker src="…" asof="…">`, searching through the plugin's own server |
 | A time series | `<om-chart type="line">` (or `bar`), `series` set in script |
 | Several views on one page, resizable and rearrangeable | `<om-panels layout-id="…">`, a `data-panel` child per view; each person's arrangement is remembered |
 | Everything else | The kit's classes: `.page`, `.page-head`, `.panel` and `.panel-body`, `.tiles`, `.tabs`, `.field`, `.filters`, `.notice`, `.badge`, `button.primary` and `.danger`, `table` and `.num`, `.empty-state` |
 
-Set a component's data (`columns`, `rows`, `series`) as properties, in a
-`customElements.whenDefined(...)` callback. The kit's README
-(open-meridian/meridian-ui) documents every component, attribute and event.
+Give a component its data as JSON declared inside it, a
+`<script type="application/json">` child, as `page.py` does for `om-grid` and
+`om-account-map` (write `<`, `>` and `&` in its strings as `\u003c`,
+`\u003e` and `\u0026`); or set it as properties (`columns`, `rows`,
+`series`, `data`) in a `customElements.whenDefined(...)` callback. The kit's
+README (open-meridian/meridian-ui) documents every component, attribute and
+event.
 
 **Colour.** Only the kit's custom properties, never a hex, `rgb()`, `hsl()` or
 a colour's name: not in a stylesheet, an inline style, an SVG or a script. A
@@ -151,16 +158,17 @@ further; figures are strings, never floats.
 
 **Where the kit is not served.** Until every dashboard serves `/.meridian/ui/`,
 build pages that work without it, as `page.py` does: put a plain `<table>`
-inside `<om-grid>` (a browser shows it as it is, and the kit's grid replaces
-it), set components' data only once they are defined, and make actions plain
-forms. Without the kit the page is unstyled, but everything on it works.
+inside `<om-grid>` and plain forms inside `<om-account-map>` (a browser shows
+them as they are, and the kit's component replaces them), and make actions
+plain forms. Without the kit the page is unstyled, but everything on it works.
 
 **This plugin's pages.** Every action is a plain POST whose form carries the
 CSRF token `page.py` makes, checked before anything is done (the README's
-"Forms and the kit"); a new form carries it too. The kit has no
-account-mapping component yet, so the Account links tab draws one from its
-classes. `make preview` writes each page on synthetic data to `preview/`,
-linking the kit.
+"Forms and the kit"); a new form carries it too. The Account links tab is
+the kit's `om-account-map`, whose forms all post to `/admin/accounts/link`
+with an `intent`; the page has no grid code of its own, since the grid's rich
+cells are declared JSON. `make preview` writes each page on synthetic data to
+`preview/`, linking the kit.
 
 A short page, whole:
 
@@ -171,8 +179,8 @@ A short page, whole:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Positions</title>
-  <link rel="stylesheet" href="/.meridian/ui/0.1.0/meridian.css">
-  <script src="/.meridian/ui/0.1.0/meridian.js"></script>
+  <link rel="stylesheet" href="/.meridian/ui/0.3.0/meridian.css">
+  <script src="/.meridian/ui/0.3.0/meridian.js"></script>
 </head>
 <body>
   <main class="page">

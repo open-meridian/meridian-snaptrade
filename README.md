@@ -6,13 +6,13 @@ cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role.
 
-It is built on the SDK it pins, `open-meridian==0.6.1`, which carries the
+It is built on the SDK it pins, `open-meridian==0.7.0`, which carries the
 whole account-side contract (spec/the-account-side-fits-every-venue): a
 holding's side, a market value left unset, a currency marked as assumed, a fund
 marked as counted in cash too, buying power on the statement, the sync state
-with holdings and history freshness, the accounts a connection reaches, and
-linking them. The asset class on an ambiguous miss is sent empty until
-sdk-contract/asset-class-is-an-enum rules its names.
+with holdings and history freshness, the accounts a connection reaches,
+linking them, and reading its own links. The asset class on an ambiguous miss
+is sent empty until sdk-contract/asset-class-is-an-enum rules its names.
 
 ## What it does
 
@@ -159,13 +159,13 @@ planned); today there is one, so it draws none. In synthetic mode it says
 every figure is invented.
 
 What cuts it to a reader is which of the deployment's accounts each external
-account is linked to, and the contract gives a plugin no read of its links
-(meridian-design's sdk-contract/a-plugin-reads-its-own-links). So a reader
-sees an account whose link this plugin can name: one linked on the Account
-links tab since the plugin started. Any other account, including every one
-linked before a restart, is shown to deployment admins only, never guessed
-at, until that read exists. Nothing is stored to remember a link: plugins are
-ephemeral.
+account is linked to. The plugin reads its links beside its account scope
+(`plugin.account_scope()`, W4.11): the first delivery comes at once, and is
+held before the pages are served, and another comes whenever a link is made
+or removed, or a linked account is renamed or closed. So a reader sees every
+account linked to one they may read, before a restart and after it. Nothing
+is stored to remember a link: the plugin holds the latest delivery, and
+plugins are ephemeral.
 
 ### The admin pages
 
@@ -212,24 +212,33 @@ dashboard's settings form, and granting access is the dashboard's too.
 
 Each plugin links its own external accounts (kernel/a-plugins-admin-view,
 point 8), and the link is its right to the account: a statement for an account
-nothing links is refused. On the Account links tab an account not linked offers
-**Link to an existing account**, a picker of the deployment's open accounts
-read with `read_accounts_for_linking`, each shown with its custodian and type
-beside its name where the deployment has them, or **Create a new account**,
-named from the SnapTrade account, its custodian pre-filled from the
-connection's brokerage and its type from the account type SnapTrade reports,
-all three editable, which the conductor creates and links in one step (an
-owner and a note are given on the dashboard's Accounts tab); a linked one
-offers **Unlink**. Each is sent with
+nothing links is refused, which the SDK raises as `meridian.NotLinked`, by the
+refusal's code and never its words. The Account links tab draws the kit's
+`om-account-map`: each SnapTrade account beside the deployment's account it is
+linked to, or the forms to link it. An account not linked offers **an
+existing account**, a picker of the deployment's open accounts read with
+`read_accounts_for_linking`, each shown with its custodian and type beside
+its name where the deployment has them, or **a new account**, named from the
+SnapTrade account, its custodian pre-filled from the connection's brokerage
+and its type from the account type SnapTrade reports, all three editable,
+which the conductor creates and links in one step (an owner and a note are
+given on the dashboard's Accounts tab). A linked one names the account it is
+linked to, from the link itself, and offers **Unlink**, and **Link to another
+account**: the conductor keeps one link per external account, so a new link
+replaces the one standing.
+
+Every form posts to one route, `/admin/accounts/link`, saying what it means in
+its `intent` field: `link`, `create` or `unlink`. A form with any other
+intent, or none, is refused and nothing is sent. Each is sent with
 `link_external_account`, acting for the admin viewing the page (their
 `Meridian-Caller` header as `acting_for`), and the sidecar refuses it for
-anybody else; a refusal is shown as the sidecar worded it.
+anybody else; a refusal is shown as the sidecar worded it. The page answering
+the form waits a few seconds at most for the account scope to show the new
+link, so it shows the link as it now stands.
 
-The contract gives a plugin no read of its own links, so the page says what it
-knows and how: a link made or removed from this page since the plugin
-started; otherwise what the last read showed, rows recorded (only a link
-allows that) or refused because nothing links the account; otherwise "not
-known", with both linking and unlinking offered.
+Whether an account is linked, and to what, is only what the account scope
+says: linked, naming the account, or not linked. There is no third state, and
+recorded rows are not taken for a link.
 
 ### Forms and the kit
 
@@ -245,19 +254,20 @@ The pages are built on Open Meridian's plugin UI kit
 ([meridian-ui](https://github.com/open-meridian/meridian-ui);
 spec/plugin-pages-share-one-kit), which the dashboard serves at
 `/.meridian/ui/<version>/` on the plugin's own host: `page.py` links its
-stylesheet and script, uses its classes and its `om-grid` for the accounts and
-each statement's rows, and has no style, colour or theme of its own. The dashboard
-draws the tabs, the plugin's name, the way back and the person, and hands the
-kit the person's colour scheme and light or dark. Where the kit is not served
-the pages still work, unstyled: each table is in the HTML until the kit's grid
-replaces it, and every action is a plain form. Quantities are exact decimal
-strings, as SnapTrade reported them. The kit has no account-mapping component
-yet, so the Account links tab draws one from its classes (a list row per account,
-a badge for its link, and two plain forms).
+stylesheet and script, uses its classes, its `om-grid` for the accounts and
+each statement's rows (as cards where the frame is narrow), its
+`om-account-map` for linking and its `om-moment` for when SnapTrade was last
+read, and has no style, colour, theme or script of its own: each component
+reads the JSON declared inside it. The dashboard draws the tabs, the plugin's
+name, the way back and the person, and hands the kit the person's colour
+scheme and light or dark. Where the kit is not served the pages still work,
+unstyled: each table, and the account map's plain forms, are in the HTML
+inside the component that replaces them, and every action is a plain form.
+Quantities are exact decimal strings, as SnapTrade reported them.
 
 `make preview` writes each page on synthetic data to `preview/`: Connections,
 Account links, and Statements as a reader sees it who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.1.0/`, so serve them
+three accounts. They link the kit at `/.meridian/ui/0.3.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -268,8 +278,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.6.1`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.6.1`.
+The SDK is pinned exactly, `open-meridian==0.7.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.7.0`.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -282,7 +292,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.3.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.4.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 `AGENTS.md` walks any coding agent through that loop, and through
 `meridian plugin check`, which holds the plugin to the framework's rules;

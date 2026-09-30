@@ -10,11 +10,12 @@ path); opened on its own it is the page without the kit, unstyled, which must
 work too.
 
 There is no sidecar here, so nothing is recorded. The Account links tab shows
-one account of each kind of link, as if the last read had recorded the first,
-had the second's rows refused for want of a link, and had not recorded the
-third yet; and the deployment's accounts it offers are invented, like the
-rest. Statements is as a reader sees it who may read the two accounts linked
-from the Account links tab, and not the third.
+the first account linked, as the plugin's account scope would give it, and
+the other two not linked, as if the last read had recorded the first, had the
+second's rows refused for want of a link, and had not recorded the third yet;
+the deployment's accounts it offers are invented, like the rest. Statements
+is as a reader sees it who may read the accounts the first two are linked to,
+and not the third, which nothing links.
 """
 
 from __future__ import annotations
@@ -57,39 +58,42 @@ async def _status() -> Status:
     )
 
 
+def _links(status: Status, scope: meridian.AccountScope) -> dict[str, LinkView]:
+    return {
+        view.account.external_account_id: link_of(scope, view.account.external_account_id)
+        for view in status.accounts
+    }
+
+
 def _linked(status: Status) -> tuple[Status, dict[str, LinkView]]:
-    """The read with the first account's rows recorded and linked from this
-    page, the second's refused for want of a link, and the rest not recorded
-    yet; and each one's link as the page would know it."""
-    first, second, *rest = status.accounts
+    """The read with the first account linked to ACC-1002 and its rows
+    recorded, the second's refused for want of a link, and the third not
+    recorded yet; and each one's link as the account scope gives it."""
+    first, second, *_ = status.accounts
     unlinked = second.account.external_account_id
     rows = [len(view.statement.holdings) if view.statement else 0 for view in (first, second)]
+    refused = meridian.NotLinked(
+        "RecordHolding", f"external account {unlinked} is not linked to an account"
+    )
     outcomes = {
         first.account.external_account_id: Outcome(rows=rows[0], recorded=rows[0]),
-        second.account.external_account_id: Outcome(
-            rows=rows[1],
-            stopped=(
-                f"RecordHolding: refused: external account {unlinked} is not linked to an "
-                "account"
+        unlinked: Outcome(rows=rows[1], stopped=str(refused), unlinked=True),
+    }
+    scope = meridian.AccountScope(
+        links=(
+            meridian.LinkedExternalAccount(
+                first.account.external_account_id, "ACC-1002", "Alpaca margin"
             ),
-            unlinked=True,
-        ),
-    }
-    links = {
-        first.account.external_account_id: link_of("ACC-1002", None),
-        second.account.external_account_id: link_of(
-            None, outcomes[second.account.external_account_id]
-        ),
-        **{view.account.external_account_id: link_of(None, None) for view in rest},
-    }
-    return replace(status, outcomes=outcomes), links
+        )
+    )
+    return replace(status, outcomes=outcomes), _links(status, scope)
 
 
 def _read(status: Status) -> str:
     """Statements for a reader who may read ACC-1001 and ACC-1002, to which
-    the first two accounts were linked from the Account links tab, and whose
-    rows the last read recorded."""
-    first, second, *rest = status.accounts
+    the first two accounts are linked, and whose rows the last read
+    recorded."""
+    first, second, *_ = status.accounts
     outcomes = {
         view.account.external_account_id: Outcome(
             rows=len(view.statement.holdings), recorded=len(view.statement.holdings)
@@ -97,16 +101,21 @@ def _read(status: Status) -> str:
         for view in (first, second)
         if view.statement is not None
     }
-    links = {
-        first.account.external_account_id: link_of("ACC-1001", None),
-        second.account.external_account_id: link_of("ACC-1002", None),
-        **{view.account.external_account_id: link_of(None, None) for view in rest},
-    }
+    scope = meridian.AccountScope(
+        links=(
+            meridian.LinkedExternalAccount(
+                first.account.external_account_id, "ACC-1001", "Household brokerage"
+            ),
+            meridian.LinkedExternalAccount(
+                second.account.external_account_id, "ACC-1002", "Alpaca margin"
+            ),
+        )
+    )
     reader = meridian.Caller(
         "reader", "A Reader", "preview", read=frozenset({"ACC-1001", "ACC-1002"})
     )
     read = replace(status, outcomes=outcomes)
-    return render_statements(read, visible(read, links, reader), everyone=False)
+    return render_statements(read, visible(read, _links(read, scope), reader), everyone=False)
 
 
 def main() -> None:

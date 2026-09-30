@@ -8,7 +8,9 @@ its built-in responses), normalises what it read to the platform's convention
 (normalise.py), and records it through the SDK's typed operations
 (contract.py): each account's sync status, and a holdings statement per
 account. It holds nothing between reads; a restart
-reads again.
+reads again. Which of its external accounts are linked, and to what, it reads
+beside its account scope, holding the first delivery before its pages are
+served and each one after (linking.py).
 
 Everything goes through the sidecar. The SnapTrade credentials arrive as the
 plugin's own secret settings, set by a deployment administrator in the
@@ -22,6 +24,7 @@ import contextlib
 import logging
 import os
 import signal
+from collections.abc import AsyncIterator
 
 import meridian
 
@@ -41,6 +44,21 @@ async def watch_settings(
         syncer.configure(config_from(delivered.values, delivered.missing_required))
         configured.set()
         wake.set()
+
+
+async def watch_links(scopes: AsyncIterator[meridian.AccountScope], links: Links) -> None:
+    """Hold each delivery of the account scope, and so the plugin's links."""
+    async for scope in scopes:
+        await links.hold(scope)
+
+
+async def follow_links(plugin: meridian.Plugin, links: Links) -> asyncio.Task[None]:
+    """Hold the first delivery of the plugin's links, which comes at once, so
+    a page served after this names every link and its account; then hold each
+    one after it in a task, which is returned."""
+    scopes = plugin.account_scope()
+    await links.hold(await anext(scopes))
+    return asyncio.create_task(watch_links(scopes, links))
 
 
 async def poll(syncer: Syncer, configured: asyncio.Event, wake: asyncio.Event) -> None:
@@ -80,9 +98,13 @@ async def run() -> None:
         )
         syncer = Syncer(plugin)
         configured, wake = asyncio.Event(), asyncio.Event()
-        page = serve(syncer, Links(plugin), loop, port, wake)
+        links = Links(plugin)
+        following = await follow_links(plugin, links)
+        log.info("holding %d links to the deployment's accounts", len(links.scope.links))
+        page = serve(syncer, links, loop, port, wake)
         log.info("serving Statements and its admin pages on 127.0.0.1:%d", port)
         tasks = [
+            following,
             asyncio.create_task(watch_settings(plugin, syncer, configured, wake)),
             asyncio.create_task(poll(syncer, configured, wake)),
         ]

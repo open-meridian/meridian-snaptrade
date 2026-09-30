@@ -212,19 +212,29 @@ async def test_a_refused_row_stops_the_statement_and_is_not_retried() -> None:
 
 
 async def test_a_row_refused_for_want_of_a_link_says_so() -> None:
+    # The SDK raises NotLinked by the refusal's code; its words are not read.
     def refuse(name: str, params: Any) -> Exception | None:
         if name == "RecordHolding":
-            return meridian.CallFailed(
-                "RecordHolding",
-                "refused",
-                "external account ALPACA:INST-1 is not linked to an account; a deployment "
-                "admin links it on the plugin's admin page (W6.4)",
-            )
+            return meridian.NotLinked("RecordHolding", "reworded at some release")
         return None
 
     sidecar = Sidecar(refuse=refuse)
     outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     assert outcome.unlinked and outcome.recorded == 0
+    assert "reworded at some release" in outcome.stopped
+
+
+async def test_a_refusal_saying_not_linked_without_the_code_is_not_taken_for_one() -> None:
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "RecordHolding":
+            return meridian.CallFailed(
+                "RecordHolding", "refused", "external account ALPACA:INST-1 is not linked"
+            )
+        return None
+
+    sidecar = Sidecar(refuse=refuse)
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    assert outcome.stopped and not outcome.unlinked
 
 
 async def test_sync_status_carries_a_state_and_both_freshnesses() -> None:

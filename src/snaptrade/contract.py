@@ -47,12 +47,9 @@ _SIDE: dict[Side, meridian.HoldingSide] = {
 
 def refused_unlinked(refused: meridian.MeridianError) -> bool:
     """Whether a row was refused because its external account is not linked
-    (W4.8): the sidecar's refusal names it so, and no code says it."""
-    return (
-        isinstance(refused, meridian.CallFailed)
-        and refused.kind == "refused"
-        and "is not linked" in refused.detail
-    )
+    (W4.8): by the refusal's code, which the SDK raises as `NotLinked`, never
+    by its words."""
+    return isinstance(refused, meridian.NotLinked)
 
 
 @dataclass

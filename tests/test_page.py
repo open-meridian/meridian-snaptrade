@@ -12,7 +12,9 @@ import http.client
 import json
 import re
 import threading
-from collections.abc import Iterator
+import time
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import quote
 
@@ -21,7 +23,9 @@ import pytest
 from meridian.v1 import sidecar_pb2
 
 from snaptrade import synthetic
-from snaptrade.linking import Links, LinkView, Offered, link_of
+from snaptrade.__main__ import follow_links
+from snaptrade.contract import Outcome
+from snaptrade.linking import Link, Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
     AccountView,
     ConnectionView,
@@ -36,6 +40,7 @@ from snaptrade.page import (
     CONNECTIONS,
     DELAYED,
     KIT,
+    LINK,
     REAL_TIME,
     REFRESH_REFUSED,
     STATEMENTS,
@@ -67,6 +72,12 @@ READER = caller_header("person-3", "A Reader", read=("ACC-1",))
 ALPACA = "ALPACA:SYN-ALP-1001"
 IBKR = "INTERACTIVE-BROKERS-FLEX:SYN-IB-2002"
 NAMES = ("Alpaca Margin", "IBKR Individual", "Schwab Brokerage")
+# Links as the deployment holds them before the plugin starts: Alpaca's to
+# ACC-1, which READER may read, and IBKR's to ACC-3, which they may not.
+HELD = (
+    meridian.LinkedExternalAccount(ALPACA, "ACC-1", "Household"),
+    meridian.LinkedExternalAccount(IBKR, "ACC-3", "Spare"),
+)
 
 
 @pytest.fixture
@@ -97,13 +108,41 @@ def woken() -> asyncio.Event:
     return asyncio.Event()
 
 
+@contextmanager
+def serving(
+    syncer: Syncer,
+    sidecar: Sidecar,
+    loop: asyncio.AbstractEventLoop,
+    woken: asyncio.Event | None = None,
+) -> Iterator[int]:
+    """The pages, started as `__main__` starts them: the first delivery of
+    the plugin's links held before anything is served, and each one after."""
+    links = Links(sidecar.plugin())
+    following = asyncio.run_coroutine_threadsafe(
+        follow_links(sidecar.plugin(), links), loop
+    ).result(timeout=10)
+    running = serve(syncer, links, loop, 0, woken or asyncio.Event(), TOKENS)
+    try:
+        yield running.server_address[1]
+    finally:
+        running.shutdown()
+        loop.call_soon_threadsafe(following.cancel)
+
+
 @pytest.fixture
 def server(
     synced: Syncer, sidecar: Sidecar, loop: asyncio.AbstractEventLoop, woken: asyncio.Event
 ) -> Iterator[int]:
-    running = serve(synced, Links(sidecar.plugin()), loop, 0, woken, TOKENS)
-    yield running.server_address[1]
-    running.shutdown()
+    with serving(synced, sidecar, loop, woken) as port:
+        yield port
+
+
+def started_with(
+    links: Iterable[meridian.LinkedExternalAccount], loop: asyncio.AbstractEventLoop
+) -> tuple[Sidecar, Syncer]:
+    """A sidecar holding `links` already, as after a restart, and a read."""
+    sidecar = Sidecar(links=links)
+    return sidecar, read_once(sidecar, loop)
 
 
 def ask(
@@ -196,6 +235,9 @@ def test_the_connections_tab(server: int) -> None:
     ):
         assert shown in body
     assert "om-grid" not in body
+    # When it was last read, as the kit's om-moment, readable without it.
+    moment = '<om-moment label="Last read" value="2026-09-28T15:00:00+00:00">'
+    assert f"{moment}Last read 2026-09-28 15:00 UTC</om-moment>" in body
 
 
 def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
@@ -203,6 +245,9 @@ def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
     assert status == 200
     assert "Link each account" in body and ALPACA in body and "no stable ID" in body
     assert 'om-grid id="accounts"' in body
+    assert (
+        f'<om-account-map action="{LINK}" token-name="csrf" token="{token_of(ADMIN)}"' in body
+    )
     # The deployment's accounts are read for the admin viewing the page.
     (read,) = sidecar.sent("ReadAccountsForLinking")
     assert read.acting_for == assertion(ADMIN)
@@ -216,8 +261,13 @@ def test_holdings_are_no_longer_an_admin_page(server: int) -> None:
 
 
 def link_from_the_page(port: int, external_id: str, account_id: str) -> None:
-    fields = form(csrf=token_of(ADMIN), external_account_id=external_id, account_id=account_id)
-    assert ask(port, "POST", f"{ACCOUNTS}/link", ADMIN, fields)[0] == 200
+    fields = form(
+        csrf=token_of(ADMIN),
+        intent="link",
+        external_account_id=external_id,
+        account_id=account_id,
+    )
+    assert ask(port, "POST", LINK, ADMIN, fields)[0] == 200
 
 
 def statement_of(body: str, external_id: str) -> str:
@@ -237,7 +287,7 @@ def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sid
     assert "Alpaca Margin" in shown and '<span class="badge good">Current</span>' in shown
     assert "Last statement as of 2026-09-28" in shown
     assert 'om-grid id="rows-0"' in shown and "<code>AAPL</code>" in shown
-    # Not ACC-3's, which they may not read, nor one whose link is not known.
+    # Not ACC-3's, which they may not read, nor one nothing links.
     assert IBKR not in body and "IBKR Individual" not in body
     assert "Schwab Brokerage" not in body
     # Nothing to do here: no form, and nothing asked of the sidecar for them.
@@ -246,9 +296,9 @@ def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sid
     assert assertion(READER) not in reads
 
 
-def test_an_account_whose_link_is_not_known_is_not_shown_to_a_reader(server: int) -> None:
-    # Its rows were recorded, so it is linked; but to which account, this
-    # plugin cannot say (sdk-contract/a-plugin-reads-its-own-links).
+def test_an_account_nothing_links_is_not_shown_to_a_reader(server: int) -> None:
+    # Its rows were recorded here, which says nothing of a link: only the
+    # plugin's account scope does, and it names none.
     status, _, body = ask(server, "GET", STATEMENTS, READER)
     assert status == 200 and "No statements yet" in body
     assert "An account appears once it is linked to yours." in body
@@ -260,9 +310,21 @@ def test_an_account_whose_link_is_not_known_is_not_shown_to_a_reader(server: int
 def test_an_account_unlinked_from_the_page_leaves_the_readers_view(server: int) -> None:
     link_from_the_page(server, ALPACA, "ACC-1")
     assert "Alpaca Margin" in ask(server, "GET", STATEMENTS, READER)[2]
-    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
-    assert ask(server, "POST", f"{ACCOUNTS}/unlink", ADMIN, fields)[0] == 200
+    fields = form(csrf=token_of(ADMIN), intent="unlink", external_account_id=ALPACA)
+    assert ask(server, "POST", LINK, ADMIN, fields)[0] == 200
     assert "Alpaca Margin" not in ask(server, "GET", STATEMENTS, READER)[2]
+
+
+def test_after_a_restart_a_reader_sees_the_accounts_linked_before_it(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        status, _, body = ask(port, "GET", STATEMENTS, READER)
+    assert status == 200 and "Alpaca Margin" in statement_of(body, ALPACA)
+    assert IBKR not in body and "Schwab Brokerage" not in body
+    # Known from the first delivery, not linked again.
+    assert links_sent(sidecar) == []
 
 
 def test_a_deployment_admin_sees_every_account(server: int) -> None:
@@ -444,7 +506,7 @@ def test_reading_now_answers_with_the_tab_it_was_asked_from(
     assert woken.is_set()
 
 
-# ── Linking, on the Accounts tab ─────────────────────────────────────────────
+# ── Linking, on the Account links tab ───────────────────────────────────────
 
 
 def links_sent(sidecar: Sidecar) -> list[Any]:
@@ -452,35 +514,99 @@ def links_sent(sidecar: Sidecar) -> list[Any]:
 
 
 def row_of(body: str, external_id: str) -> str:
-    """One account's row in the account mapping."""
+    """One account's row in the plain forms shown without the kit."""
     start = body.index(f'<div class="list-row" data-account="{external_id}">')
     ends = [
         found
         for found in (
             body.find('<div class="list-row"', start + 1),
-            body.find("</section>", start),
+            body.find("</om-account-map>", start),
         )
         if found != -1
     ]
     return body[start : min(ends)]
 
 
+def map_of(body: str) -> dict[str, Any]:
+    """The JSON declared inside om-account-map, which the kit's map reads."""
+    data = re.search(
+        r'<om-account-map [^>]*><script type="application/json">(.*?)</script>', body
+    )
+    assert data is not None
+    parsed: dict[str, Any] = json.loads(data.group(1))
+    return parsed
+
+
 def nothing_linked_or_read(sidecar: Sidecar) -> bool:
     return links_sent(sidecar) == [] and sidecar.sent("ReadAccountsForLinking") == []
 
 
-def test_an_account_the_read_recorded_is_linked_and_offers_unlink(server: int) -> None:
+def post_link(port: int, **fields: str) -> tuple[int, str, str]:
+    """The map's one form route, with the admin's token."""
+    return ask(port, "POST", LINK, ADMIN, form(csrf=token_of(ADMIN), **fields))
+
+
+def test_after_a_restart_every_link_is_named_from_the_first_delivery(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+    assert map_of(body)["links"] == [
+        {"external_account_id": ALPACA, "account_id": "ACC-1", "account_name": "Household"},
+        {"external_account_id": IBKR, "account_id": "ACC-3", "account_name": "Spare"},
+    ]
+    assert "Linked to Household (<code>ACC-1</code>)." in row_of(body, ALPACA)
+    assert "Linked to Spare (<code>ACC-3</code>)." in row_of(body, IBKR)
+    rows = {row["id"]: row for row in grid(body, "accounts")["rows"]}
+    assert rows[ALPACA]["link"] == rows[IBKR]["link"] == "Linked"
+    assert "2 linked, 1 not linked." in body
+    assert links_sent(sidecar) == []
+
+
+def test_a_link_made_elsewhere_reaches_the_page_with_the_next_delivery(
+    server: int, sidecar: Sidecar, loop: asyncio.AbstractEventLoop
+) -> None:
+    assert "Not linked" in row_of(ask(server, "GET", ACCOUNTS, ADMIN)[2], ALPACA)
+    loop.call_soon_threadsafe(sidecar.set_link, ALPACA, "ACC-3", "Spare")
+    for _ in range(100):
+        row = row_of(ask(server, "GET", ACCOUNTS, ADMIN)[2], ALPACA)
+        if "Linked to Spare" in row:
+            break
+        time.sleep(0.02)
+    assert "Linked to Spare" in row and links_sent(sidecar) == []
+
+
+def test_rows_recorded_do_not_make_an_account_linked(server: int) -> None:
+    # The stand-in records every row; only the account scope says a link.
     _, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
     row = row_of(body, ALPACA)
+    assert '<span class="badge warn">Not linked</span>' in row and "Unlink" not in row
+    assert map_of(body)["links"] == []
+    assert "Not known" not in body and "not known" not in body
+
+
+def test_a_linked_account_names_its_account_and_offers_unlink_and_another(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+    row = row_of(body, ALPACA)
     assert '<span class="badge good">Linked</span>' in row
-    assert "Its rows were recorded on the last read." in row
+    assert 'name="intent" value="unlink"' in row and ">Unlink</button>" in row
+    # Linking to another account replaces this link: offered folded, without
+    # the account it is linked to.
+    assert "<details><summary>Link to another account</summary>" in row
+    assert '<option value="ACC-3">Spare</option>' in row
+    assert '<option value="ACC-1">' not in row
 
 
 def unlinked(name: str, params: Any) -> Exception | None:
     """The sidecar's refusal of a row for the Alpaca account, which nothing links."""
     if name == "RecordHolding" and params.external_account_id == ALPACA:
-        return meridian.CallFailed(
-            "RecordHolding", "refused", f"external account {ALPACA} is not linked to an account"
+        return meridian.NotLinked(
+            "RecordHolding", f"external account {ALPACA} is not linked to an account"
         )
     return None
 
@@ -490,37 +616,54 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
 ) -> None:
     refusing = Sidecar(refuse=unlinked)
     syncer = read_once(refusing, loop)
-    running = serve(syncer, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
-    try:
-        _, _, body = ask(running.server_address[1], "GET", ACCOUNTS, ADMIN)
-    finally:
-        running.shutdown()
+    with serving(syncer, refusing, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
     row = row_of(body, ALPACA)
     assert '<span class="badge warn">Not linked</span>' in row
-    assert "refused on the last read" in row
     # The picker holds the deployment's open accounts, and nothing closed,
     # each with its custodian and type beside its name where it has them.
     assert '<option value="ACC-1">Household (Schwab, Brokerage)</option>' in row
     assert '<option value="ACC-3">Spare</option>' in row and "Retired" not in row
-    assert 'action="/admin/accounts/link"' in row and 'name="account_id"' in row
+    assert f'action="{LINK}"' in row and 'name="account_id"' in row
+    assert 'name="intent" value="link"' in row
     # A new account, named from the external one, editable.
-    assert 'action="/admin/accounts/create"' in row
+    assert 'name="intent" value="create"' in row
     assert 'name="new_account_name" value="Alpaca Margin"' in row
     # Its custodian from the connection's brokerage, and its type from the
     # venue's account type, both editable (W6.4).
     assert 'name="new_account_custodian" value="Alpaca" maxlength="200"' in row
     assert 'name="new_account_type" value="margin" maxlength="200"' in row
-    assert "Unlink" not in row
+    assert "Unlink" not in row and "<details>" not in row
     (read,) = refusing.sent("ReadAccountsForLinking")
     assert read.acting_for == assertion(ADMIN)
+    # The same for the kit's map, as its JSON.
+    data = map_of(body)
+    alpaca = next(x for x in data["external_accounts"] if x["external_account_id"] == ALPACA)
+    assert alpaca == {
+        "external_account_id": ALPACA,
+        "name": "Alpaca Margin",
+        "detail": "Alpaca · margin",
+        "custodian": "Alpaca",
+        "account_type": "margin",
+        "note": "",
+    }
+    assert data["accounts"][0] == {
+        "account_id": "ACC-1",
+        "name": "Household",
+        "custodian": "Schwab",
+        "account_type": "Brokerage",
+        "open": True,
+    }
+    assert {a["account_id"]: a["open"] for a in data["accounts"]}["ACC-2"] is False
 
 
 def test_linking_to_an_existing_account_is_sent_for_the_admin(
     server: int, sidecar: Sidecar, woken: asyncio.Event
 ) -> None:
-    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
-    status, _, body = ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)
-    assert status == 200 and "Linked Alpaca Margin." in body
+    status, _, body = post_link(
+        server, intent="link", external_account_id=ALPACA, account_id="ACC-1"
+    )
+    assert status == 200 and "Linked Alpaca Margin to Household." in body
     (sent,) = links_sent(sidecar)
     assert (sent.external_account_id, sent.account_id, sent.new_account_name) == (
         ALPACA,
@@ -528,36 +671,60 @@ def test_linking_to_an_existing_account_is_sent_for_the_admin(
         "",
     )
     assert sent.acting_for == assertion(ADMIN)
-    assert "Linked to Household. Linked from this page." in row_of(body, ALPACA)
+    # The page answering shows the link as the account scope now gives it.
+    assert "Linked to Household" in row_of(body, ALPACA)
+    assert map_of(body)["links"] == [
+        {"external_account_id": ALPACA, "account_id": "ACC-1", "account_name": "Household"}
+    ]
     # A read follows, so the account's rows are recorded.
     assert woken.is_set()
+
+
+def test_linking_a_linked_account_to_another_replaces_the_link(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        status, _, body = post_link(
+            port, intent="link", external_account_id=ALPACA, account_id="ACC-3"
+        )
+    assert status == 200 and "Linked Alpaca Margin to Spare." in body
+    (sent,) = links_sent(sidecar)
+    assert (sent.external_account_id, sent.account_id) == (ALPACA, "ACC-3")
+    assert "Linked to Spare" in row_of(body, ALPACA)
+    assert [
+        link for link in map_of(body)["links"] if link["external_account_id"] == ALPACA
+    ] == [{"external_account_id": ALPACA, "account_id": "ACC-3", "account_name": "Spare"}]
 
 
 def test_creating_a_new_account_names_it_and_links_in_one_step(
     server: int, sidecar: Sidecar
 ) -> None:
-    fields = form(
-        csrf=token_of(ADMIN), external_account_id=ALPACA, new_account_name="  Alpaca margin  "
+    status, _, body = post_link(
+        server,
+        intent="create",
+        external_account_id=ALPACA,
+        new_account_name="  Alpaca margin  ",
     )
-    status, _, body = ask(server, "POST", f"{ACCOUNTS}/create", ADMIN, fields)
     assert status == 200 and "Created Alpaca margin and linked Alpaca Margin to it." in body
     (sent,) = links_sent(sidecar)
     assert (sent.account_id, sent.new_account_name) == ("", "Alpaca margin")
     assert (sent.new_account_custodian, sent.new_account_type) == ("", "")
     assert sent.acting_for == assertion(ADMIN)
+    assert "Linked to Alpaca margin" in row_of(body, ALPACA)
 
 
 def test_a_new_account_is_sent_with_the_custodian_and_type_the_admin_left(
     server: int, sidecar: Sidecar
 ) -> None:
-    fields = form(
-        csrf=token_of(ADMIN),
+    status, _, body = post_link(
+        server,
+        intent="create",
         external_account_id=ALPACA,
         new_account_name="Alpaca margin",
         new_account_custodian=" Alpaca Securities ",
         new_account_type="Margin",
     )
-    status, _, body = ask(server, "POST", f"{ACCOUNTS}/create", ADMIN, fields)
     assert status == 200 and "Created Alpaca margin and linked Alpaca Margin to it." in body
     (sent,) = links_sent(sidecar)
     assert (
@@ -574,26 +741,31 @@ def test_linking_to_an_existing_account_sends_no_custodian_or_type(
 ) -> None:
     # They describe a new account; one that exists is described on the
     # dashboard (W6.3), and the conductor ignores them on a link to it.
-    fields = form(
-        csrf=token_of(ADMIN),
+    status, _, _ = post_link(
+        server,
+        intent="link",
         external_account_id=ALPACA,
         account_id="ACC-1",
+        new_account_name="Ignored",
         new_account_custodian="Alpaca",
         new_account_type="margin",
     )
-    status, _, _ = ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)
     assert status == 200
     (sent,) = links_sent(sidecar)
-    assert (sent.account_id, sent.new_account_custodian, sent.new_account_type) == (
-        "ACC-1",
-        "",
-        "",
-    )
+    assert (
+        sent.account_id,
+        sent.new_account_name,
+        sent.new_account_custodian,
+        sent.new_account_type,
+    ) == ("ACC-1", "", "", "")
 
 
-def test_unlinking_sends_neither_account_nor_name(server: int, sidecar: Sidecar) -> None:
-    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
-    status, _, body = ask(server, "POST", f"{ACCOUNTS}/unlink", ADMIN, fields)
+def test_unlinking_sends_neither_account_nor_name(loop: asyncio.AbstractEventLoop) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        status, _, body = post_link(
+            port, intent="unlink", external_account_id=ALPACA, account_id="ACC-3"
+        )
     assert status == 200 and "Unlinked Alpaca Margin." in body
     (sent,) = links_sent(sidecar)
     assert (sent.external_account_id, sent.account_id, sent.new_account_name) == (
@@ -602,31 +774,49 @@ def test_unlinking_sends_neither_account_nor_name(server: int, sidecar: Sidecar)
         "",
     )
     assert sent.acting_for == assertion(ADMIN)
-    row = row_of(body, ALPACA)
-    assert "Not linked" in row and "Unlinked from this page." in row
+    assert '<span class="badge warn">Not linked</span>' in row_of(body, ALPACA)
+    assert [link["external_account_id"] for link in map_of(body)["links"]] == [IBKR]
 
 
 @pytest.mark.parametrize(
-    ("action", "fields", "said"),
+    ("intent", "fields", "said"),
     [
         ("link", {"account_id": ""}, "Choose the account to link it to."),
         ("create", {"new_account_name": "   "}, "Name the new account."),
     ],
 )
 def test_a_form_missing_its_choice_asks_for_it_and_sends_nothing(
-    server: int, sidecar: Sidecar, action: str, fields: dict[str, str], said: str
+    server: int, sidecar: Sidecar, intent: str, fields: dict[str, str], said: str
 ) -> None:
-    sent = form(csrf=token_of(ADMIN), external_account_id=ALPACA, **fields)
-    status, _, body = ask(server, "POST", f"{ACCOUNTS}/{action}", ADMIN, sent)
+    status, _, body = post_link(server, intent=intent, external_account_id=ALPACA, **fields)
     assert status == 200 and said in body and links_sent(sidecar) == []
+
+
+@pytest.mark.parametrize(
+    "intent",
+    [None, "", "delete", "LINK", " ", "link&intent=unlink"],
+)
+def test_a_bad_or_missing_intent_is_refused_and_links_nothing(
+    server: int, sidecar: Sidecar, intent: str | None
+) -> None:
+    sent = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
+    if intent is not None:
+        sent += f"&intent={intent}"
+    status, _, body = ask(server, "POST", LINK, ADMIN, sent)
+    assert status == 400 and "does not say what to do" in body
+    assert links_sent(sidecar) == []
 
 
 def test_only_an_account_the_read_reached_is_linked(server: int, sidecar: Sidecar) -> None:
     for external_id in ("not-one-of-ours", ""):
-        fields = form(csrf=token_of(ADMIN), external_account_id=external_id, account_id="ACC-1")
-        assert ask(server, "POST", f"{ACCOUNTS}/link", ADMIN, fields)[0] == 404
-    fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA)
-    assert ask(server, "POST", f"{ACCOUNTS}/delete", ADMIN, fields)[0] == 404
+        status, _, _ = post_link(
+            server, intent="link", external_account_id=external_id, account_id="ACC-1"
+        )
+        assert status == 404
+    # The one route: 0.3's per-action paths are gone.
+    for gone in ("create", "unlink", "delete"):
+        fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, new_account_name="N")
+        assert ask(server, "POST", f"{ACCOUNTS}/{gone}", ADMIN, fields)[0] == 404
     assert links_sent(sidecar) == []
 
 
@@ -641,20 +831,16 @@ def test_the_sidecars_refusal_is_shown_plainly(
         return None
 
     refusing = Sidecar(refuse=refuse)
-    running = serve(synced, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
-    try:
-        fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
-        status, _, body = ask(
-            running.server_address[1], "POST", f"{ACCOUNTS}/link", ADMIN, fields
+    with serving(synced, refusing, loop) as port:
+        status, _, body = post_link(
+            port, intent="link", external_account_id=ALPACA, account_id="ACC-1"
         )
-    finally:
-        running.shutdown()
     assert status == 200
     assert (
         f'<div class="notice bad" role="alert">The sidecar refused this: {said}</div>' in body
     )
-    # Still as the last read left it.
-    assert "Its rows were recorded on the last read." in row_of(body, ALPACA)
+    # Still as the account scope gives it.
+    assert '<span class="badge warn">Not linked</span>' in row_of(body, ALPACA)
 
 
 def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
@@ -667,28 +853,28 @@ def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
 
     refusing = Sidecar(refuse=refuse)
     syncer = read_once(refusing, loop)
-    running = serve(syncer, Links(refusing.plugin()), loop, 0, asyncio.Event(), TOKENS)
-    try:
-        _, _, body = ask(running.server_address[1], "GET", ACCOUNTS, ADMIN)
-    finally:
-        running.shutdown()
+    with serving(syncer, refusing, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
     assert "The deployment's accounts could not be read: not an admin" in body
     row = row_of(body, ALPACA)
     assert 'name="account_id"' not in row and 'name="new_account_name"' in row
     assert "none is offered here" in row
+    # The kit's map is told they could not be read.
+    assert map_of(body)["accounts"] is None
 
 
 def test_linking_is_only_for_an_administrator(server: int, sidecar: Sidecar) -> None:
     # Even with a token that is theirs, somebody else is refused before
     # anything is sent.
-    for action in ("link", "create", "unlink"):
+    for intent in ("link", "create", "unlink"):
         fields = form(
             csrf=token_of(PERSON),
+            intent=intent,
             external_account_id=ALPACA,
             account_id="ACC-1",
             new_account_name="Mine",
         )
-        status, _, body = ask(server, "POST", f"{ACCOUNTS}/{action}", PERSON, fields)
+        status, _, body = ask(server, "POST", LINK, PERSON, fields)
         assert status == 403 and "for the deployment's administrators" in body
     assert nothing_linked_or_read(sidecar)
 
@@ -716,16 +902,17 @@ def test_a_post_without_the_right_token_is_refused_and_does_nothing(
 ) -> None:
     known = synced.status.connections[0].connection_id
     rest = f"&external_account_id={quote(ALPACA)}&account_id=ACC-1&new_account_name=N"
-    for path in (
-        "/admin/connect",
-        f"{CONNECTIONS}/{known}/refresh",
-        f"{CONNECTIONS}/{known}/reconnect",
-        "/admin/read",
-        f"{ACCOUNTS}/link",
-        f"{ACCOUNTS}/create",
-        f"{ACCOUNTS}/unlink",
+    for path, intent in (
+        ("/admin/connect", ""),
+        (f"{CONNECTIONS}/{known}/refresh", ""),
+        (f"{CONNECTIONS}/{known}/reconnect", ""),
+        ("/admin/read", ""),
+        # The map's one route, whatever the form says it means.
+        (LINK, "&intent=link"),
+        (LINK, "&intent=create"),
+        (LINK, "&intent=unlink"),
     ):
-        status, _, body = ask(server, "POST", path, ADMIN, (sent or "") + rest)
+        status, _, body = ask(server, "POST", path, ADMIN, (sent or "") + rest + intent)
         assert status == 403 and "expired" in body
     assert recording.asked == [] and nothing_linked_or_read(sidecar)
 
@@ -782,11 +969,13 @@ def synthetic_status() -> Status:
     return asyncio.run(syncer.run_once())
 
 
-def links_for(status: Status) -> dict[str, LinkView]:
+def links_for(
+    status: Status, scope: meridian.AccountScope | None = None
+) -> dict[str, LinkView]:
+    """Each account's link as `scope` gives it: by default, Alpaca's to ACC-1."""
+    held = scope if scope is not None else meridian.AccountScope(links=HELD[:1])
     return {
-        view.account.external_account_id: link_of(
-            None, status.outcomes.get(view.account.external_account_id)
-        )
+        view.account.external_account_id: link_of(held, view.account.external_account_id)
         for view in status.accounts
     }
 
@@ -810,6 +999,13 @@ def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> N
         assert shown.count('rel="stylesheet"') == 1
         assert "<style" not in shown and "style=" not in shown
         assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", shown)
+        # No script of its own: the kit's, and data declared for its components.
+        scripts = re.findall(r"<script[^>]*>", shown)
+        assert set(scripts) <= {
+            f'<script src="{KIT}meridian.js">',
+            '<script type="application/json">',
+        }
+        assert "customElements" not in shown
         # The dashboard draws the tabs, and the frame the rest.
         for chrome in (
             "<nav",
@@ -824,12 +1020,24 @@ def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> N
         assert '<main class="page">' in shown
 
 
-def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, object]]]:
+def test_the_kit_is_the_one_with_the_account_map() -> None:
+    assert KIT == "/.meridian/ui/0.3.0/"
+
+
+def grid_element(shown: str, grid_id: str) -> str:
+    element = re.search(rf'<om-grid id="{grid_id}" [^>]*>(.*?)</om-grid>', shown)
+    assert element is not None
+    return element.group(0)
+
+
+def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, Any]]]:
+    """The columns and rows declared inside a grid, which the kit's grid reads."""
     data = re.search(
-        rf'<script type="application/json" id="{grid_id}-data">(.*?)</script>', shown
+        r'^<om-grid [^>]*><script type="application/json">(.*?)</script>',
+        grid_element(shown, grid_id),
     )
     assert data is not None
-    parsed: dict[str, list[dict[str, object]]] = json.loads(data.group(1))
+    parsed: dict[str, list[dict[str, Any]]] = json.loads(data.group(1))
     return parsed
 
 
@@ -841,22 +1049,63 @@ def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
         (STATEMENTS, "rows-1", "key"),
     ):
         shown = pages[path]
-        element = re.search(
-            rf'<om-grid id="{grid_id}" row-key="{row_key}"[^>]*>(.*?)</om-grid>', shown
-        )
-        assert element is not None and "<table>" in element.group(1)
+        element = grid_element(shown, grid_id)
+        # Cards where it is narrow.
+        assert element.startswith(f'<om-grid id="{grid_id}" row-key="{row_key}" narrow="cards"')
+        assert "<table>" in element
         data = grid(shown, grid_id)
         # As many rows in the table a browser shows as the grid is given.
-        assert element.group(1).count("<tr>") == len(data["rows"]) + 1
+        assert element.count("<tr>") == len(data["rows"]) + 1
         assert len({row[row_key] for row in data["rows"]}) == len(data["rows"])
-        # Set only once the kit has defined the grid.
-        assert 'customElements.whenDefined("om-grid")' in shown
+
+
+def test_the_grids_columns_are_json_the_kit_draws_with_no_script() -> None:
+    columns = {c["key"]: c for c in grid(synthetic_pages()[ACCOUNTS], "accounts")["columns"]}
+    assert columns["account"] == {
+        "key": "account",
+        "label": "Account",
+        "type": "text",
+        "hint": "where",
+        "strong": True,
+    }
+    assert columns["link"]["type"] == "badge" and columns["link"]["tone"] == {
+        "field": "link_tone"
+    }
+    assert columns["state"]["tone"] == {"field": "tone"} and columns["state"]["hint"] == "todo"
+    assert columns["holdings_as_of"]["blank"] == "not reported"
+    assert columns["recorded"]["tone"] == {"field": "recorded_tone"}
+    assert columns["id"]["type"] == "code" and columns["id"]["hint"] == "id_note"
+    # Nothing of 0.3's own grid code: no text class, and no format.
+    for column in columns.values():
+        assert not {"ink", "format"} & set(column)
 
 
 def test_the_accounts_grid_says_each_link() -> None:
-    rows = grid(synthetic_pages()[ACCOUNTS], "accounts")["rows"]
-    assert {row["link"] for row in rows} == {"Linked"}
-    assert {row["link_tone"] for row in rows} == {"good"}
+    shown = synthetic_pages()[ACCOUNTS]
+    rows = {row["id"]: row for row in grid(shown, "accounts")["rows"]}
+    assert (rows[ALPACA]["link"], rows[ALPACA]["link_tone"]) == ("Linked", "good")
+    assert (rows[IBKR]["link"], rows[IBKR]["link_tone"]) == ("Not linked", "warn")
+    # And the table without the kit draws the same badges.
+    table = grid_element(shown, "accounts")
+    assert '<span class="badge good">Linked</span>' in table
+    assert '<span class="badge warn">Not linked</span>' in table
+
+
+def test_a_stopped_statement_is_toned_bad_in_the_grid_and_the_table() -> None:
+    status = synthetic_status()
+    stopped = Outcome(rows=3, recorded=1, stopped="RecordHolding: refused: no")
+    status = Status(
+        mode=status.mode,
+        read_at=status.read_at,
+        connections=status.connections,
+        outcomes={**status.outcomes, ALPACA: stopped},
+    )
+    shown = render_accounts(status, "t", links_for(status), Offered())
+    row = next(r for r in grid(shown, "accounts")["rows"] if r["id"] == ALPACA)
+    assert (row["recorded"], row["recorded_tone"]) == ("Stopped at 1 of 3 rows", "bad")
+    assert '<span class="bad-ink">Stopped at 1 of 3 rows</span>' in grid_element(
+        shown, "accounts"
+    )
 
 
 def test_quantities_are_exact_decimal_strings_as_read() -> None:
@@ -870,7 +1119,7 @@ def test_quantities_are_exact_decimal_strings_as_read() -> None:
     assert '<td class="num">0.012345678</td>' in shown
 
 
-def test_the_grids_data_cannot_close_its_script() -> None:
+def test_the_declared_json_cannot_close_its_script() -> None:
     hostile = "</script><script>alert(1)</script>"
     account = ExternalAccount("broker:1", True, hostile, "", "Broker", "c1", "s1")
     fresh = Freshness(SyncState.CURRENT, None, None, "")
@@ -882,6 +1131,7 @@ def test_the_grids_data_cannot_close_its_script() -> None:
     shown = render_accounts(status, "t", links_for(status), Offered())
     assert "<script>alert" not in shown
     assert grid(shown, "accounts")["rows"][0]["account"] == hostile
+    assert map_of(shown)["external_accounts"][0]["name"] == hostile
 
 
 def test_a_closed_account_is_not_offered() -> None:
@@ -896,16 +1146,15 @@ def test_a_closed_account_is_not_offered() -> None:
     # Read with where each is held and what it is (W6.4).
     household = read.accounts[0]
     assert (household.custodian, household.account_type) == ("Schwab", "Brokerage")
-    unlinked = {key: link_of("", None) for key in links_for(status)}
-    shown = render_accounts(status, "t", unlinked, read)
-    assert "Household" in shown and "Retired" not in shown
+    shown = render_accounts(status, "t", links_for(status, meridian.AccountScope()), read)
+    assert "Household" in shown and '<option value="ACC-2">' not in shown
+    # The kit's map is told it is closed, and offers only open ones.
+    assert {a["account_id"]: a["open"] for a in map_of(shown)["accounts"]}["ACC-2"] is False
 
 
-def test_an_account_whose_link_is_not_known_offers_linking_and_unlinking() -> None:
-    status = synthetic_status()
-    unknown = {key: link_of(None, None) for key in links_for(status)}
-    offered = asyncio.run(Links(Sidecar().plugin()).offered(ADMIN))
-    row = row_of(render_accounts(status, "t", unknown, offered), ALPACA)
-    assert '<span class="badge">Not known</span>' in row
-    assert 'name="account_id"' in row and 'name="new_account_name"' in row
-    assert f'action="{ACCOUNTS}/unlink"' in row and "It may be linked already." in row
+def test_the_links_are_the_account_scopes_and_nothing_else() -> None:
+    # Linked, naming the account, or not linked: there is no third state.
+    scope = meridian.AccountScope(links=HELD)
+    assert link_of(scope, ALPACA) == LinkView(Link.LINKED, "ACC-1", "Household")
+    assert link_of(scope, "broker:other") == LinkView(Link.UNLINKED)
+    assert [state.value for state in Link] == ["linked", "unlinked"]
