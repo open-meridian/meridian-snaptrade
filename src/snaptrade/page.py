@@ -84,7 +84,7 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's; pinning one keeps the pages as they were built.
-KIT = "/.meridian/ui/0.6.0/"
+KIT = "/.meridian/ui/0.7.0/"
 CSRF_FIELD = "csrf"
 # A form here carries a token, an account, and a new account's name, custodian
 # and type at most; anything longer is not one of this page's.
@@ -851,7 +851,10 @@ def _sentence(text: str) -> str:
 def _status_dot(status: Status) -> str:
     """The kit's om-status for how the plugin is reading, with what it shows
     until the kit draws it (or where the kit is not served) inside: the
-    label, the detail and the last read, as plain text."""
+    label, the detail and the last read, as plain text. Marked
+    `data-om-header` (kit 0.7.0): framed, the kit hands it to the dashboard,
+    which draws it beside the plugin's name, so it takes no line under the
+    tabs (the product owner, 2026-09-30)."""
     said = reading(status)
     attributes = [("state", said.state), ("label", said.label)]
     shown = [said.label]
@@ -862,12 +865,15 @@ def _status_dot(status: Status) -> str:
         attributes += [("at", said.at.isoformat()), ("at-label", "Last read")]
         shown.append(f"Last read {_moment(said.at)}")
     marked = "".join(f' {name}="{e(value)}"' for name, value in attributes)
-    return f"<om-status{marked}>{e(' '.join(_sentence(part) for part in shown))}</om-status>"
+    shown_text = e(" ".join(_sentence(part) for part in shown))
+    return f"<om-status data-om-header{marked}>{shown_text}</om-status>"
 
 
 def _head(title: str, status: Status, token: str, back: str) -> str:
     """A page's heading: what it is, how the plugin is reading (a status dot),
-    and Refresh, its one header action."""
+    and Refresh, its one header action. Framed, the dashboard draws all three
+    (kit 0.7.0), and the kit drops the head whole, so the page starts right
+    under the dashboard's tabs."""
     refresh_all = _button(
         "/admin/read", "Refresh", token, fields={"back": back}, header="refresh"
     )

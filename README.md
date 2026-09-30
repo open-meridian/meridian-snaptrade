@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.4.3. How a plugin like it is built is documented at
+0.4.4. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.8.0`, which carries the
@@ -194,7 +194,11 @@ Each page's head shows how the plugin is reading as a status dot (kit
 read succeeded, with when; amber while a read is under way; red when the last
 read failed, with its message (what was asked, the exception's type and the
 HTTP status, never its text), or while settings are missing, naming them.
-Without the kit's script its words show beside the dot as plain text.
+Without the kit's script its words show beside the dot as plain text. In the
+dashboard's admin tabs the dot is marked for the dashboard (`data-om-header`,
+kit 0.7.0), which draws it beside the plugin's name; with the heading and
+Refresh drawn there too, the head has nothing left, so each tab's page starts
+right under the tabs.
 
 Refresh asks SnapTrade to read a connection's brokerage again
 (`refresh_brokerage_authorization`). It is offered only where it means
@@ -322,7 +326,7 @@ Quantities are exact decimal strings, as SnapTrade reported them.
 
 `make preview` writes each page on synthetic data to `preview/`: Connections,
 Account links, and Statements as a reader sees it who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.6.0/`, so serve them
+three accounts. They link the kit at `/.meridian/ui/0.7.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -347,7 +351,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.4.3 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.4.4 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

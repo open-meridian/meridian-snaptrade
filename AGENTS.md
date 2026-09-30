@@ -91,8 +91,8 @@ plain HTML, as `page.py` writes it, and from React, Vue or Svelte alike.
 plugin's own host. The version is the one `page.py`'s `KIT` names:
 
 ```html
-<link rel="stylesheet" href="/.meridian/ui/0.6.0/meridian.css">
-<script src="/.meridian/ui/0.6.0/meridian.js"></script>
+<link rel="stylesheet" href="/.meridian/ui/0.7.0/meridian.css">
+<script src="/.meridian/ui/0.7.0/meridian.js"></script>
 ```
 
 Never copy the kit into the plugin, and never load it, or anything else for
@@ -106,7 +106,7 @@ the page, from another origin or a CDN.
 | A stream: thousands of rows, many changes a second | `<om-grid high-rate>`: only the rows in view are drawn, only changed cells are touched, and they flash up or down; `freeze-sort` stops rows jumping while streaming |
 | Live data from the plugin's server | `<om-live src="events" snapshot="snapshot.json" for="grid-id">`: follows server-sent events in sequence, and reads the snapshot again after a gap or a reconnect, so nothing is missed |
 | The date the figures are as of | `<om-asof>` to choose one; `<om-moment label="…" value="…ISO…">` to read one |
-| How something is doing: read, reading, needs attention or failed | `<om-status state="ok\|busy\|warn\|error" label="…" detail="…" at="…ISO…" at-label="Last read">`: a small coloured dot, a mark per state, its note on hover, focus or a tap; the words inside show without the kit's script |
+| How something is doing: read, reading, needs attention or failed | `<om-status state="ok\|busy\|warn\|error" label="…" detail="…" at="…ISO…" at-label="Last read">`: a small coloured dot, a mark per state, its note on hover, focus or a tap; the words inside show without the kit's script. In the page head, `data-om-header` hands it to the dashboard, which draws it beside the plugin's name when the page is framed |
 | Linking external accounts to the deployment's (W6.4) | `<om-account-map action="…" token-name="csrf" token="…">`: every form posts to `action` with an `intent` field (`link`, `create`, `unlink`); thousands of accounts are searched, filtered, grouped (`group-by`) and paged; with `link-several`, suggested links are sent in one form, `intent` `link-several` and a pair of IDs per link; each account may carry a `status` and `values` (a Status column, filtered by state) |
 | Choosing an instrument | `<om-instrument-picker src="…" asof="…">`, searching through the plugin's own server |
 | A time series | `<om-chart type="line">` (or `bar`), `series` set in script |
@@ -180,8 +180,8 @@ A short page, whole:
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Positions</title>
-  <link rel="stylesheet" href="/.meridian/ui/0.6.0/meridian.css">
-  <script src="/.meridian/ui/0.6.0/meridian.js"></script>
+  <link rel="stylesheet" href="/.meridian/ui/0.7.0/meridian.css">
+  <script src="/.meridian/ui/0.7.0/meridian.js"></script>
 </head>
 <body>
   <main class="page">

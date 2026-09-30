@@ -241,7 +241,8 @@ def test_the_connections_tab(server: int) -> None:
     # How it is reading, as the kit's status dot, readable without it.
     assert head_of(body).count("<om-status ") == 1
     assert (
-        '<om-status state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
+        "<om-status data-om-header "
+        'state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
         'at="2026-09-28T15:00:00+00:00" at-label="Last read">' in body
     )
 
@@ -1279,10 +1280,11 @@ def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> N
         assert '<main class="page">' in shown
 
 
-def test_the_kit_is_the_one_with_the_status_dot() -> None:
-    # 0.6.0: om-status, the head's status dot (0.5.0's map, which scales,
-    # is in it too: a 0.x release only adds).
-    assert KIT == "/.meridian/ui/0.6.0/"
+def test_the_kit_is_the_one_that_hands_the_status_dot_up() -> None:
+    # 0.7.0: a framed page's head status (om-status data-om-header) drawn by
+    # the dashboard beside the plugin's name, and an emptied head dropped
+    # (0.6.0's om-status and 0.5.0's map are in it too: a 0.x release only adds).
+    assert KIT == "/.meridian/ui/0.7.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:
@@ -1471,29 +1473,34 @@ def status_dot(body: str) -> str:
     [
         (
             Status(mode="snaptrade", read_at=READ_AT),
-            '<om-status state="ok" label="SnapTrade read" at="2026-09-30T13:12:00+00:00" '
+            "<om-status data-om-header "
+            'state="ok" label="SnapTrade read" at="2026-09-30T13:12:00+00:00" '
             'at-label="Last read">SnapTrade read. Last read 2026-09-30 13:12 UTC.'
             "</om-status>",
         ),
         (
             Status(mode="synthetic", read_at=READ_AT),
-            '<om-status state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
+            "<om-status data-om-header "
+            'state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
             'at="2026-09-30T13:12:00+00:00" at-label="Last read">Synthetic mode: built-in '
             "responses, not SnapTrade. Last read 2026-09-30 13:12 UTC.</om-status>",
         ),
         (
             Status(mode="snaptrade", read_at=READ_AT, reading=True),
-            '<om-status state="busy" label="Reading SnapTrade" at="2026-09-30T13:12:00+00:00" '
+            "<om-status data-om-header "
+            'state="busy" label="Reading SnapTrade" at="2026-09-30T13:12:00+00:00" '
             'at-label="Last read">Reading SnapTrade. Last read 2026-09-30 13:12 UTC.'
             "</om-status>",
         ),
         (
             Status(mode="snaptrade", reading=True),
-            '<om-status state="busy" label="Reading SnapTrade">Reading SnapTrade.</om-status>',
+            "<om-status data-om-header "
+            'state="busy" label="Reading SnapTrade">Reading SnapTrade.</om-status>',
         ),
         (
             Status(mode="synthetic", reading=True),
-            '<om-status state="busy" label="Synthetic mode: reading built-in responses, '
+            "<om-status data-om-header "
+            'state="busy" label="Synthetic mode: reading built-in responses, '
             'not SnapTrade">Synthetic mode: reading built-in responses, not SnapTrade.'
             "</om-status>",
         ),
@@ -1501,25 +1508,29 @@ def status_dot(body: str) -> str:
             Status(
                 mode="snaptrade", error="listing connections failed: no answer", reading=True
             ),
-            '<om-status state="busy" label="Reading SnapTrade" detail="The last read failed: '
+            "<om-status data-om-header "
+            'state="busy" label="Reading SnapTrade" detail="The last read failed: '
             'listing connections failed: no answer">Reading SnapTrade. The last read failed: '
             "listing connections failed: no answer.</om-status>",
         ),
         (
             Status(mode="snaptrade", error="listing connections failed: HTTPError, HTTP 503"),
-            '<om-status state="error" label="The last read failed" detail="listing connections '
+            "<om-status data-om-header "
+            'state="error" label="The last read failed" detail="listing connections '
             'failed: HTTPError, HTTP 503">The last read failed. listing connections failed: '
             "HTTPError, HTTP 503.</om-status>",
         ),
         (
             Status(mode="waiting", missing=("snaptrade_client_id", "snaptrade_consumer_key")),
-            '<om-status state="error" label="Not reading SnapTrade" detail="Waiting for '
+            "<om-status data-om-header "
+            'state="error" label="Not reading SnapTrade" detail="Waiting for '
             'settings: Client ID, Consumer key.">Not reading SnapTrade. Waiting for settings: '
             "Client ID, Consumer key.</om-status>",
         ),
         (
             Status(),
-            '<om-status state="busy" label="Starting" detail="SnapTrade has not been read '
+            "<om-status data-om-header "
+            'state="busy" label="Starting" detail="SnapTrade has not been read '
             'yet.">Starting. SnapTrade has not been read yet.</om-status>',
         ),
     ],
@@ -1543,6 +1554,28 @@ def test_each_syncer_state_is_the_heads_status_dot(status: Status, dot: str) -> 
         assert status_dot(body) == dot
         assert "Reading SnapTrade." not in head_of(body).replace(dot, "")
         assert "<om-moment" not in head_of(body)
+
+
+def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
+    # Kit 0.7.0, framed: the dashboard draws the heading, the dot (marked
+    # data-om-header) and Refresh (data-om-action), so the head has nothing
+    # left to show and the kit drops it: the page starts right under the tabs
+    # (the product owner, 2026-09-30).
+    status = Status(mode="synthetic", read_at=READ_AT)
+    for body in (render_connections(status, "t"), render_accounts(status, "t", {}, Offered())):
+        head = head_of(body)
+        assert status_dot(body).startswith("<om-status data-om-header ")
+        left = re.sub(r"<h1>[^<]*</h1>", "", head, count=1)
+        left = left.replace(status_dot(body), "", 1)
+        left = re.sub(
+            r'<form method="post" action="/admin/read" class="inline">'
+            r'(?:<input type="hidden" [^>]*>)*<button data-om-action="refresh">Refresh</button>'
+            r"</form>",
+            "",
+            left,
+            count=1,
+        )
+        assert re.sub(r'</?(?:div|p)(?: class="actions")?>', "", left) == "", left
 
 
 def test_the_status_dot_says_an_error_as_text_and_never_a_secret() -> None:
