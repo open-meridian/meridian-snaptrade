@@ -35,7 +35,7 @@ ephemeral.
 Built on the kit (spec/plugin-pages-share-one-kit, requirement 5): the
 dashboard serves Open Meridian's UI kit at /.meridian/ui/<version>/ on this
 plugin's own host, and each page links its stylesheet and script, uses its
-classes and its components (om-grid, om-account-map, om-moment), and has no
+classes and its components (om-grid, om-account-map, om-moment, om-status), and has no
 style, colour, theme code or script of its own.
 
 Each component reads its data from the JSON declared inside it (the kit's
@@ -84,7 +84,7 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's; pinning one keeps the pages as they were built.
-KIT = "/.meridian/ui/0.5.0/"
+KIT = "/.meridian/ui/0.6.0/"
 CSRF_FIELD = "csrf"
 # A form here carries a token, an account, and a new account's name, custodian
 # and type at most; anything longer is not one of this page's.
@@ -351,17 +351,6 @@ def _grid(
     )
 
 
-# Most wanted first, so a narrow frame shows it before the table scrolls.
-_ACCOUNT_COLUMNS = (
-    Column("account", "Account", hint="where", strong=True),
-    Column("link", "Link", type="badge", tone="link_tone"),
-    Column("state", "Sync state", type="badge", tone="tone", hint="todo"),
-    Column("holdings_as_of", "Holdings as of", blank="not reported"),
-    Column("history_as_of", "History as of", blank="not reported"),
-    Column("recorded", "Last statement", tone="recorded_tone", hint="recorded_note"),
-    Column("id", "Account ID", type="code", hint="id_note"),
-)
-
 # A statement's rows, on Statements, one grid per account.
 _ROW_COLUMNS = (
     Column("instrument", "Instrument", type="code", hint="identifiers"),
@@ -396,30 +385,49 @@ def _recorded(view: AccountView, status: Status) -> tuple[str, str, str]:
     return f"{outcome.recorded} rows", "", ", ".join(extra)
 
 
-def _account_row(
-    connection: ConnectionView, view: AccountView, status: Status, link: LinkView
-) -> dict[str, str]:
-    account, fresh = view.account, view.freshness
+# Each sync state as the account map's status dot (kit 0.6.0, om-status):
+# current, and delayed by design (SnapTrade's normal for that brokerage), are
+# ok; stale asks for attention; a sign-in or a disabled connection is an error.
+_STATE_DOT = {
+    SyncState.CURRENT: "ok",
+    SyncState.DELAYED_BY_DESIGN: "ok",
+    SyncState.STALE: "warn",
+    SyncState.NEEDS_SIGN_IN: "error",
+    SyncState.DISABLED: "error",
+}
+
+
+def _todo(view: AccountView) -> str:
+    """What SnapTrade says of the account's freshness, and what to do about it."""
+    fresh = view.freshness
     todo = [fresh.detail] if fresh.detail else []
     if fresh.state is not SyncState.CURRENT:
         todo.append(REMEDY[fresh.state])
-    recorded, tone, note = _recorded(view, status)
-    return {
-        "account": account.name,
-        "where": _where(connection, view),
-        "id": account.external_account_id,
-        "id_note": _unstable(view),
-        "link": _LINK_LABEL[link.state],
-        "link_tone": _LINK_TONE[link.state],
-        "state": _STATE_LABEL[fresh.state],
-        "tone": _STATE_TONE[fresh.state],
-        "todo": " ".join(todo),
-        "holdings_as_of": _moment(fresh.holdings_as_of),
-        "history_as_of": _moment(fresh.history_as_of),
-        "recorded": recorded,
-        "recorded_tone": tone,
-        "recorded_note": note,
+    return " ".join(todo)
+
+
+def _sync_of(view: AccountView, status: Status) -> dict[str, object]:
+    """An account's sync state and last statement, as the account map shows
+    them beside its link: a status (its dot, label and note: what to do, and
+    when its holdings are as of) and values under it."""
+    fresh = view.freshness
+    shown: dict[str, object] = {
+        "state": _STATE_DOT[fresh.state],
+        "label": _STATE_LABEL[fresh.state],
+        "detail": _todo(view),
     }
+    values = []
+    if fresh.holdings_as_of is not None:
+        shown["at"] = fresh.holdings_as_of.isoformat()
+        shown["at_label"] = "Holdings as of"
+    else:
+        values.append({"label": "Holdings as of", "value": "not reported"})
+    history = _moment(fresh.history_as_of) or "not reported"
+    values.append({"label": "History as of", "value": history})
+    recorded, tone, note = _recorded(view, status)
+    last = f"{recorded} ({note})" if note else recorded
+    values.append({"label": "Last statement", "value": last, "tone": tone})
+    return {"status": shown, "values": values}
 
 
 def _unstable(view: AccountView) -> str:
@@ -517,19 +525,20 @@ def _tiles(status: Status) -> str:
 
 # ── The account map ──────────────────────────────────────────────────────────
 #
-# The kit's om-account-map (0.5.0): a dense table of every account the read
-# reached, searched, filtered, grouped by connection and paged, one row's
-# choices opened at a time, with suggestions where a name or a number matches
-# one of the deployment's accounts, from the JSON declared inside it. Its
-# forms all post to LINK, saying what they mean in `intent` (`link`, `create`,
-# `unlink`, or `link-several` with a pair of IDs for each link), with the
-# page's token.
+# The kit's om-account-map (0.5.0; 0.6.0's status column): a dense table of
+# every account the read reached, each with its sync state beside its link
+# (the Account links tab is one page), searched, filtered (by state too),
+# grouped by connection and paged, one row's choices opened at a time, with
+# suggestions where a name or a number matches one of the deployment's
+# accounts, from the JSON declared inside it. Its forms all post to LINK,
+# saying what they mean in `intent` (`link`, `create`, `unlink`, or
+# `link-several` with a pair of IDs for each link), with the page's token.
 #
 # Inside it too, for a browser without the kit, the same as plain forms, in a
-# size that holds for thousands of accounts: a list row per account (its link,
-# and Unlink on a linked one), then one form to link any account to any open
-# account and one to create an account for any, each choosing the account
-# from one list rather than a picker on every row.
+# size that holds for thousands of accounts: a list row per account (its link
+# and sync state, and Unlink on a linked one), then one form to link any
+# account to any open account and one to create an account for any, each
+# choosing the account from one list rather than a picker on every row.
 
 LINK = f"{ACCOUNTS}/link"
 INTENTS = ("link", "create", "unlink")
@@ -561,19 +570,30 @@ def _external_choice(shown: Sequence[Shown]) -> str:
 
 
 def _mapping_row(
-    connection: ConnectionView, view: AccountView, link: LinkView, token: str
+    connection: ConnectionView, view: AccountView, link: LinkView, token: str, status: Status
 ) -> str:
-    """One account, as a list row: shown without the kit."""
-    account = view.account
+    """One account, as a list row, with its link and its sync state: shown
+    without the kit."""
+    account, fresh = view.account, view.freshness
     external_id = account.external_account_id
     note = _unstable(view)
+    todo = _todo(view)
     number = f" · No. {e(account.number)}" if account.number else ""
+    recorded, tone, said = _recorded(view, status)
+    ink = _INK.get(tone, "")
+    last = f'<span class="{ink}">{e(recorded)}</span>' if ink else e(recorded)
     head = (
         '<div class="grow">'
         f'<div class="row"><span class="title">{e(account.name)}</span> '
-        f'<span class="badge {_LINK_TONE[link.state]}">{_LINK_LABEL[link.state]}</span></div>'
+        f'<span class="badge {_LINK_TONE[link.state]}">{_LINK_LABEL[link.state]}</span> '
+        f"{_badge(fresh.state)}</div>"
         f'<div class="meta">{e(_where(connection, view))}{number} · '
         f"<code>{e(external_id)}</code></div>"
+        f'<div class="meta">Holdings as of {_when(fresh.holdings_as_of)} · '
+        f"history as of {_when(fresh.history_as_of)} · last statement: {last}"
+        + (f" ({e(said)})" if said else "")
+        + "</div>"
+        + (f'<span class="hint">{e(todo)}</span>' if todo else "")
         + (
             f'<span class="hint">Linked to {e(link.account_name or link.account_id)} '
             f"(<code>{e(link.account_id)}</code>).</span>"
@@ -669,6 +689,7 @@ def _map_data(
                 "number": view.account.number,
                 "connection": _connection_label(connection),
                 "connection_id": connection.connection_id,
+                **_sync_of(view, status),
             }
             for connection, view in shown
         ],
@@ -698,7 +719,9 @@ def _mapping(
     shown = [(c, view) for c in status.connections for view in c.accounts]
     fallback = (
         "".join(
-            _mapping_row(connection, view, links[view.account.external_account_id], token)
+            _mapping_row(
+                connection, view, links[view.account.external_account_id], token, status
+            )
             for connection, view in shown
         )
         + _fallback_forms(shown, offered, token)
@@ -718,9 +741,11 @@ def _mapping(
         "deployment's account it is linked to, and one nothing links is not recorded. "
         "Link it to an existing account, or create one for it."
         + (f" {e(summary.capitalize())}." if summary else "")
-        + "</p></div>"
+        + " Its sync state says how fresh SnapTrade's data about it is, what to do about "
+        "it, and what the last read recorded.</p></div>"
         f'<om-account-map action="{LINK}" token-name="{CSRF_FIELD}" token="{e(token)}"'
-        f' group-by="connection" link-several empty="{e(empty)}">'
+        f' group-by="connection" link-several status-heading="Sync state"'
+        f' empty="{e(empty)}">'
         f'<script type="application/json">{_script_json(_map_data(status, links, offered))}'
         f"</script>{fallback}</om-account-map>"
         "</section>"
@@ -774,23 +799,82 @@ def _notices(status: Status, notice: Notice | None, portal: str | None) -> str:
     return "".join(parts)
 
 
-def _head(title: str, status: Status, token: str, back: str, primary: str = "") -> str:
-    """A page's heading: what it is, how the plugin is reading, and its actions."""
-    mode = {
-        "synthetic": "Synthetic mode: built-in responses, not SnapTrade.",
-        "snaptrade": "Reading SnapTrade.",
-        "waiting": "Waiting for settings.",
-    }[status.mode]
-    read = f" {_moment_of(status.read_at, 'Last read')}." if status.read_at else ""
+@dataclass(frozen=True)
+class Reading:
+    """How the plugin is reading, as the kit's om-status draws it: `state` is
+    ok, busy or error; `at` the last read that succeeded, if one is held."""
+
+    state: str
+    label: str
+    detail: str = ""
+    at: datetime | None = None
+
+
+def reading(status: Status) -> Reading:
+    """Each of the syncer's states as a status dot (the product owner,
+    2026-09-30: green for a read that succeeded, amber while reading, red for
+    an error), in this order:
+
+    - a read under way (`reading`): busy, saying how the read before it went;
+    - a read that failed (`error`, which is safe to show): error, its message;
+    - waiting for settings (`waiting`, with settings missing): error, naming them;
+    - a read that succeeded (`read_at`): ok, when;
+    - nothing read yet, before the settings first arrive: busy.
+    """
+    if status.reading:
+        said = (
+            "Synthetic mode: reading built-in responses, not SnapTrade"
+            if status.mode == "synthetic"
+            else "Reading SnapTrade"
+        )
+        before = f"The last read failed: {status.error}" if status.error else ""
+        return Reading("busy", said, before, status.read_at)
+    if status.error:
+        return Reading("error", "The last read failed", status.error)
+    if status.mode == "waiting" and status.missing:
+        wanted = ", ".join(label(name) for name in status.missing)
+        return Reading("error", "Not reading SnapTrade", f"Waiting for settings: {wanted}.")
+    if status.read_at is not None:
+        said = (
+            "Synthetic mode: built-in responses, not SnapTrade"
+            if status.mode == "synthetic"
+            else "SnapTrade read"
+        )
+        return Reading("ok", said, at=status.read_at)
+    return Reading("busy", "Starting", "SnapTrade has not been read yet.")
+
+
+def _sentence(text: str) -> str:
+    return text if text.endswith((".", "!", "?")) else f"{text}."
+
+
+def _status_dot(status: Status) -> str:
+    """The kit's om-status for how the plugin is reading, with what it shows
+    until the kit draws it (or where the kit is not served) inside: the
+    label, the detail and the last read, as plain text."""
+    said = reading(status)
+    attributes = [("state", said.state), ("label", said.label)]
+    shown = [said.label]
+    if said.detail:
+        attributes.append(("detail", said.detail))
+        shown.append(said.detail)
+    if said.at is not None:
+        attributes += [("at", said.at.isoformat()), ("at-label", "Last read")]
+        shown.append(f"Last read {_moment(said.at)}")
+    marked = "".join(f' {name}="{e(value)}"' for name, value in attributes)
+    return f"<om-status{marked}>{e(' '.join(_sentence(part) for part in shown))}</om-status>"
+
+
+def _head(title: str, status: Status, token: str, back: str) -> str:
+    """A page's heading: what it is, how the plugin is reading (a status dot),
+    and Refresh, its one header action."""
     refresh_all = _button(
         "/admin/read", "Refresh", token, fields={"back": back}, header="refresh"
     )
     return (
         '<header class="page-head">'
-        f"<div><h1>{e(title)}</h1><p>{e(mode)}{read}</p></div>"
-        '<div class="actions">'
-        f"{refresh_all}"
-        f"{primary}</div></header>"
+        f"<div><h1>{e(title)}</h1><p>{_status_dot(status)}</p></div>"
+        f'<div class="actions">{refresh_all}</div></header>'
     )
 
 
@@ -850,18 +934,16 @@ def render_connections(
         )
         or '<li class="faint">None listed.</li>'
     )
+    # Connecting a brokerage is the Connections card's own action, in its
+    # header (the product owner, 2026-09-30), not the page head's.
+    add = _button("/admin/connect", "+ Add brokerage", token, "primary")
     return _document(
-        _head(
-            "Brokerage connections",
-            status,
-            token,
-            CONNECTIONS,
-            _button("/admin/connect", "Connect a brokerage", token, "primary"),
-        )
+        _head("Brokerage connections", status, token, CONNECTIONS)
         + _notices(status, notice, portal)
         + _tiles(status)
         + '<section class="panel">'
-        '<div class="panel-body"><h2>Connections</h2>'
+        '<div class="panel-body"><div class="row"><h2>Connections</h2>'
+        f'<span class="spacer"></span>{add}</div>'
         '<p class="muted">Each brokerage connected through SnapTrade, and how it is.</p>'
         f"</div>{connections}</section>"
         '<section class="panel padded">'
@@ -884,15 +966,11 @@ def render_accounts(
     offered: Offered,
     notice: Notice | None = None,
 ) -> str:
-    """The Account links tab: each account the connections reach, linked to one of
-    the deployment's here, and its sync state. `links` is each account's link
-    by its external ID; `offered`, the deployment's accounts read for the
-    admin viewing the page."""
-    accounts = [
-        _account_row(connection, view, status, links[view.account.external_account_id])
-        for connection in status.connections
-        for view in connection.accounts
-    ]
+    """The Account links tab, one page (the product owner, 2026-09-30): each
+    account the connections reach, linked to one of the deployment's here, with
+    its sync state beside its link in the one account map. `links` is each
+    account's link by its external ID; `offered`, the deployment's accounts
+    read for the admin viewing the page."""
     refused = (
         '<div class="notice bad" role="alert">The deployment\'s accounts could not be '
         f"read: {e(offered.refused)}</div>"
@@ -904,12 +982,6 @@ def render_accounts(
         + _notices(status, notice, None)
         + refused
         + _mapping(status, links, offered, token)
-        + '<section class="panel">'
-        '<div class="panel-body"><h2>Sync state</h2>'
-        '<p class="muted">How fresh SnapTrade\'s data about each account is, what to '
-        "do about it, and what the last read recorded.</p></div>"
-        + _grid("accounts", "Accounts", "No accounts yet.", "id", _ACCOUNT_COLUMNS, accounts)
-        + "</section>"
     )
 
 

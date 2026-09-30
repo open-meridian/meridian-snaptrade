@@ -16,6 +16,7 @@ import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -28,6 +29,7 @@ from snaptrade.__main__ import follow_links
 from snaptrade.contract import Outcome
 from snaptrade.linking import DeploymentAccount, Link, Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
+    REMEDY,
     AccountView,
     ConnectionView,
     ExternalAccount,
@@ -231,21 +233,28 @@ def test_the_connections_tab(server: int) -> None:
         "Schwab",
         "Delayed by design",
         "Disabled",
-        "Connect a brokerage",
+        "+ Add brokerage",
         "synthetic-user",
     ):
         assert shown in body
     assert "om-grid" not in body
-    # When it was last read, as the kit's om-moment, readable without it.
-    moment = '<om-moment label="Last read" value="2026-09-28T15:00:00+00:00">'
-    assert f"{moment}Last read 2026-09-28 15:00 UTC</om-moment>" in body
+    # How it is reading, as the kit's status dot, readable without it.
+    assert head_of(body).count("<om-status ") == 1
+    assert (
+        '<om-status state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
+        'at="2026-09-28T15:00:00+00:00" at-label="Last read">' in body
+    )
 
 
 def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
     status, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
     assert status == 200
     assert "Link each account" in body and ALPACA in body and "no stable ID" in body
-    assert 'om-grid id="accounts"' in body
+    # One page (the product owner, 2026-09-30): the sync state is in the map,
+    # and the separate grid is gone.
+    assert "om-grid" not in body and "<h2>Sync state</h2>" not in body
+    assert 'status-heading="Sync state"' in body
+    assert all("status" in x for x in map_of(body)["external_accounts"])
     assert (
         f'<om-account-map action="{LINK}" token-name="csrf" token="{token_of(ADMIN)}"' in body
     )
@@ -507,6 +516,12 @@ def test_reading_now_answers_with_the_tab_it_was_asked_from(
     assert woken.is_set()
 
 
+def head_of(body: str) -> str:
+    head = re.search(r'<header class="page-head">(.*?)</header>', body, re.S)
+    assert head is not None
+    return head.group(1)
+
+
 def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     """The head's Refresh: the one form in the page head's actions whose
     button is marked as a header action, its action and its fields."""
@@ -624,8 +639,6 @@ def test_after_a_restart_every_link_is_named_from_the_first_delivery(
     ]
     assert "Linked to Household (<code>ACC-1</code>)." in row_of(body, ALPACA)
     assert "Linked to Spare (<code>ACC-3</code>)." in row_of(body, IBKR)
-    rows = {row["id"]: row for row in grid(body, "accounts")["rows"]}
-    assert rows[ALPACA]["link"] == rows[IBKR]["link"] == "Linked"
     assert "2 linked, 1 not linked." in body
     assert links_sent(sidecar) == []
 
@@ -710,6 +723,8 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
     # The same for the kit's map, as its JSON.
     data = map_of(body)
     alpaca = next(x for x in data["external_accounts"] if x["external_account_id"] == ALPACA)
+    # Its sync state beside it (test_each_accounts_sync_state_is_in_the_map...).
+    assert alpaca.pop("status")["label"] == "Current" and alpaca.pop("values")
     assert alpaca == {
         "external_account_id": ALPACA,
         "name": "Alpaca Margin",
@@ -1264,10 +1279,10 @@ def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> N
         assert '<main class="page">' in shown
 
 
-def test_the_kit_is_the_one_whose_account_map_scales() -> None:
-    # 0.5.0: the map searched, filtered, grouped and paged, with suggestions
-    # and several links in one form.
-    assert KIT == "/.meridian/ui/0.5.0/"
+def test_the_kit_is_the_one_with_the_status_dot() -> None:
+    # 0.6.0: om-status, the head's status dot (0.5.0's map, which scales,
+    # is in it too: a 0.x release only adds).
+    assert KIT == "/.meridian/ui/0.6.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:
@@ -1290,7 +1305,6 @@ def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, Any]]]:
 def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
     pages = synthetic_pages()
     for path, grid_id, row_key in (
-        (ACCOUNTS, "accounts", "id"),
         (STATEMENTS, "rows-0", "key"),
         (STATEMENTS, "rows-1", "key"),
     ):
@@ -1305,39 +1319,71 @@ def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
         assert len({row[row_key] for row in data["rows"]}) == len(data["rows"])
 
 
-def test_the_grids_columns_are_json_the_kit_draws_with_no_script() -> None:
-    columns = {c["key"]: c for c in grid(synthetic_pages()[ACCOUNTS], "accounts")["columns"]}
-    assert columns["account"] == {
-        "key": "account",
-        "label": "Account",
-        "type": "text",
-        "hint": "where",
-        "strong": True,
+def sync_of(shown: str) -> dict[str, dict[str, Any]]:
+    """Each external account's sync state and values, as the map is given them."""
+    return {
+        x["external_account_id"]: {"status": x["status"], "values": x["values"]}
+        for x in map_of(shown)["external_accounts"]
     }
-    assert columns["link"]["type"] == "badge" and columns["link"]["tone"] == {
-        "field": "link_tone"
+
+
+def test_each_accounts_sync_state_is_in_the_map_as_plain_json() -> None:
+    status = synthetic_status()
+    shown = render_accounts(status, "t", links_for(status), Offered())
+    synced = sync_of(shown)
+    alpaca = synced[ALPACA]
+    held = next(v for v in status.accounts if v.account.external_account_id == ALPACA)
+    assert held.freshness.holdings_as_of is not None
+    assert alpaca["status"] == {
+        "state": "ok",
+        "label": "Current",
+        "detail": "",
+        "at": held.freshness.holdings_as_of.isoformat(),
+        "at_label": "Holdings as of",
     }
-    assert columns["state"]["tone"] == {"field": "tone"} and columns["state"]["hint"] == "todo"
-    assert columns["holdings_as_of"]["blank"] == "not reported"
-    assert columns["recorded"]["tone"] == {"field": "recorded_tone"}
-    assert columns["id"]["type"] == "code" and columns["id"]["hint"] == "id_note"
-    # Nothing of 0.3's own grid code: no text class, and no format.
-    for column in columns.values():
-        assert not {"ink", "format"} & set(column)
+    assert [v["label"] for v in alpaca["values"]] == ["History as of", "Last statement"]
+    assert alpaca["values"][1]["value"].endswith("rows") and alpaca["values"][1]["tone"] == ""
+    # Each state as its dot, with what to do in its note.
+    states = {x["status"]["label"]: x["status"]["state"] for x in synced.values()}
+    assert states == {"Current": "ok", "Delayed by design": "ok", "Disabled": "error"}
+    disabled = next(x for x in synced.values() if x["status"]["label"] == "Disabled")
+    assert REMEDY[SyncState.DISABLED] in disabled["status"]["detail"]
+    # And the same without the kit, in each account's plain row.
+    for x in map_of(shown)["external_accounts"]:
+        row = row_of(shown, x["external_account_id"])
+        assert f">{x['status']['label']}</span>" in row
+        assert "Holdings as of" in row and "last statement:" in row
 
 
-def test_the_accounts_grid_says_each_link() -> None:
-    shown = synthetic_pages()[ACCOUNTS]
-    rows = {row["id"]: row for row in grid(shown, "accounts")["rows"]}
-    assert (rows[ALPACA]["link"], rows[ALPACA]["link_tone"]) == ("Linked", "good")
-    assert (rows[IBKR]["link"], rows[IBKR]["link_tone"]) == ("Not linked", "warn")
-    # And the table without the kit draws the same badges.
-    table = grid_element(shown, "accounts")
-    assert '<span class="badge good">Linked</span>' in table
-    assert '<span class="badge warn">Not linked</span>' in table
+@pytest.mark.parametrize(
+    ("state", "dot"),
+    [
+        (SyncState.CURRENT, "ok"),
+        (SyncState.DELAYED_BY_DESIGN, "ok"),
+        (SyncState.STALE, "warn"),
+        (SyncState.NEEDS_SIGN_IN, "error"),
+        (SyncState.DISABLED, "error"),
+    ],
+)
+def test_each_sync_state_maps_to_a_status_dot(state: SyncState, dot: str) -> None:
+    account = ExternalAccount("broker:1", True, "Roth IRA", "", "Broker", "c1", "s1")
+    view = AccountView(account, Freshness(state, None, None, "Said by SnapTrade."), None, "")
+    connection = ConnectionView("c1", "n", "Broker", "read", state, "", None, (view,))
+    status = Status(mode="snaptrade", connections=(connection,))
+    shown = render_accounts(status, "t", {"broker:1": LinkView(Link.UNLINKED)}, Offered())
+    (synced,) = sync_of(shown).values()
+    assert synced["status"]["state"] == dot
+    todo = "Said by SnapTrade." + ("" if state is SyncState.CURRENT else f" {REMEDY[state]}")
+    assert synced["status"]["detail"] == todo
+    # No holdings moment reported: said as a value, never guessed.
+    assert "at" not in synced["status"]
+    assert synced["values"][:2] == [
+        {"label": "Holdings as of", "value": "not reported"},
+        {"label": "History as of", "value": "not reported"},
+    ]
 
 
-def test_a_stopped_statement_is_toned_bad_in_the_grid_and_the_table() -> None:
+def test_a_stopped_statement_is_toned_bad_in_the_map_and_the_plain_row() -> None:
     status = synthetic_status()
     stopped = Outcome(rows=3, recorded=1, stopped="RecordHolding: refused: no")
     status = Status(
@@ -1347,11 +1393,13 @@ def test_a_stopped_statement_is_toned_bad_in_the_grid_and_the_table() -> None:
         outcomes={**status.outcomes, ALPACA: stopped},
     )
     shown = render_accounts(status, "t", links_for(status), Offered())
-    row = next(r for r in grid(shown, "accounts")["rows"] if r["id"] == ALPACA)
-    assert (row["recorded"], row["recorded_tone"]) == ("Stopped at 1 of 3 rows", "bad")
-    assert '<span class="bad-ink">Stopped at 1 of 3 rows</span>' in grid_element(
-        shown, "accounts"
-    )
+    last = sync_of(shown)[ALPACA]["values"][-1]
+    assert last == {
+        "label": "Last statement",
+        "value": "Stopped at 1 of 3 rows (RecordHolding: refused: no)",
+        "tone": "bad",
+    }
+    assert '<span class="bad-ink">Stopped at 1 of 3 rows</span>' in row_of(shown, ALPACA)
 
 
 def test_quantities_are_exact_decimal_strings_as_read() -> None:
@@ -1376,7 +1424,6 @@ def test_the_declared_json_cannot_close_its_script() -> None:
     status = Status(mode="snaptrade", connections=(connection,))
     shown = render_accounts(status, "t", links_for(status), Offered())
     assert "<script>alert" not in shown
-    assert grid(shown, "accounts")["rows"][0]["account"] == hostile
     assert map_of(shown)["external_accounts"][0]["name"] == hostile
 
 
@@ -1404,3 +1451,133 @@ def test_the_links_are_the_account_scopes_and_nothing_else() -> None:
     assert link_of(scope, ALPACA) == LinkView(Link.LINKED, "ACC-1", "Household")
     assert link_of(scope, "broker:other") == LinkView(Link.UNLINKED)
     assert [state.value for state in Link] == ["linked", "unlinked"]
+
+
+# ── The head's status dot, and adding a brokerage ────────────────────────────
+
+READ_AT = datetime(2026, 9, 30, 13, 12, tzinfo=UTC)
+
+
+def status_dot(body: str) -> str:
+    """The head's om-status, whole: its attributes and the words inside it."""
+    found = re.findall(r"<om-status [^>]*>[^<]*</om-status>", head_of(body))
+    assert len(found) == 1, "one status dot, in the head"
+    dot: str = found[0]
+    return dot
+
+
+@pytest.mark.parametrize(
+    ("status", "dot"),
+    [
+        (
+            Status(mode="snaptrade", read_at=READ_AT),
+            '<om-status state="ok" label="SnapTrade read" at="2026-09-30T13:12:00+00:00" '
+            'at-label="Last read">SnapTrade read. Last read 2026-09-30 13:12 UTC.'
+            "</om-status>",
+        ),
+        (
+            Status(mode="synthetic", read_at=READ_AT),
+            '<om-status state="ok" label="Synthetic mode: built-in responses, not SnapTrade" '
+            'at="2026-09-30T13:12:00+00:00" at-label="Last read">Synthetic mode: built-in '
+            "responses, not SnapTrade. Last read 2026-09-30 13:12 UTC.</om-status>",
+        ),
+        (
+            Status(mode="snaptrade", read_at=READ_AT, reading=True),
+            '<om-status state="busy" label="Reading SnapTrade" at="2026-09-30T13:12:00+00:00" '
+            'at-label="Last read">Reading SnapTrade. Last read 2026-09-30 13:12 UTC.'
+            "</om-status>",
+        ),
+        (
+            Status(mode="snaptrade", reading=True),
+            '<om-status state="busy" label="Reading SnapTrade">Reading SnapTrade.</om-status>',
+        ),
+        (
+            Status(mode="synthetic", reading=True),
+            '<om-status state="busy" label="Synthetic mode: reading built-in responses, '
+            'not SnapTrade">Synthetic mode: reading built-in responses, not SnapTrade.'
+            "</om-status>",
+        ),
+        (
+            Status(
+                mode="snaptrade", error="listing connections failed: no answer", reading=True
+            ),
+            '<om-status state="busy" label="Reading SnapTrade" detail="The last read failed: '
+            'listing connections failed: no answer">Reading SnapTrade. The last read failed: '
+            "listing connections failed: no answer.</om-status>",
+        ),
+        (
+            Status(mode="snaptrade", error="listing connections failed: HTTPError, HTTP 503"),
+            '<om-status state="error" label="The last read failed" detail="listing connections '
+            'failed: HTTPError, HTTP 503">The last read failed. listing connections failed: '
+            "HTTPError, HTTP 503.</om-status>",
+        ),
+        (
+            Status(mode="waiting", missing=("snaptrade_client_id", "snaptrade_consumer_key")),
+            '<om-status state="error" label="Not reading SnapTrade" detail="Waiting for '
+            'settings: Client ID, Consumer key.">Not reading SnapTrade. Waiting for settings: '
+            "Client ID, Consumer key.</om-status>",
+        ),
+        (
+            Status(),
+            '<om-status state="busy" label="Starting" detail="SnapTrade has not been read '
+            'yet.">Starting. SnapTrade has not been read yet.</om-status>',
+        ),
+    ],
+    ids=[
+        "read",
+        "read-synthetic",
+        "reading-after-a-read",
+        "reading-first",
+        "reading-synthetic",
+        "reading-after-a-failure",
+        "failed",
+        "waiting-for-settings",
+        "starting",
+    ],
+)
+def test_each_syncer_state_is_the_heads_status_dot(status: Status, dot: str) -> None:
+    for body in (
+        render_connections(status, "t"),
+        render_accounts(status, "t", {}, Offered()),
+    ):
+        assert status_dot(body) == dot
+        assert "Reading SnapTrade." not in head_of(body).replace(dot, "")
+        assert "<om-moment" not in head_of(body)
+
+
+def test_the_status_dot_says_an_error_as_text_and_never_a_secret() -> None:
+    hostile = Status(mode="snaptrade", error='reading "<b>positions</b>" failed & stopped')
+    dot = status_dot(render_connections(hostile, "t"))
+    assert "<b>" not in dot
+    said = "reading &quot;&lt;b&gt;positions&lt;/b&gt;&quot; failed &amp; stopped"
+    assert f'detail="{said}"' in dot
+    # The error a real read keeps is what was asked, the type and the status:
+    # never a credential (test_sync's test_nothing_it_logs_or_reports...).
+    assert "secret" not in dot
+
+
+def test_add_brokerage_is_the_connections_cards_action_with_its_form_and_token(
+    server: int,
+) -> None:
+    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    # Not in the page head, which keeps only Refresh.
+    head = head_of(body)
+    assert 'action="/admin/connect"' not in head and "Add brokerage" not in head
+    assert "Connect a brokerage" not in body
+    actions = re.search(r'<div class="actions">(.*)</div>', head, re.S)
+    assert actions is not None
+    assert re.findall(r"<button[^>]*>([^<]*)</button>", actions.group(1)) == ["Refresh"]
+    # In the Connections card's own header, beside its heading.
+    card = re.search(
+        r'<section class="panel"><div class="panel-body"><div class="row"><h2>Connections</h2>'
+        r'<span class="spacer"></span>(.*?)</div>',
+        body,
+    )
+    assert card is not None
+    assert card.group(1) == (
+        '<form method="post" action="/admin/connect" class="inline">'
+        f'<input type="hidden" name="csrf" value="{token_of(ADMIN)}">'
+        '<button class="primary">+ Add brokerage</button></form>'
+    )
+    # Not a header action: the dashboard draws only Refresh.
+    assert "data-om-action" not in card.group(1)

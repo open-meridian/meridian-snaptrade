@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -122,3 +123,65 @@ async def test_nothing_it_logs_or_reports_carries_a_credential(
     said = caplog.text + repr(sidecar.calls) + repr(sidecar.reports) + repr(running.status)
     for secret in (SECRET, "KEY-not-real", "CLIENT"):
         assert secret not in said
+
+
+class Held:
+    """The synthetic venue, its connections held until `go` is set; `users`
+    fails as nothing the read expects, when asked to."""
+
+    def __init__(self, go: asyncio.Event, stop: bool = False) -> None:
+        self._inner = SyntheticVenue(clock())
+        self._go = go
+        self._stop = stop
+
+    async def connections(self) -> list[dict[str, Any]]:
+        await self._go.wait()
+        return await self._inner.connections()
+
+    async def users(self) -> list[str]:
+        if self._stop:
+            raise RuntimeError("stopped")
+        return await self._inner.users()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
+async def test_a_read_under_way_is_said_beside_the_read_before_it() -> None:
+    sidecar = Sidecar()
+    go = asyncio.Event()
+    running = syncer(sidecar, make_venue=lambda config: Held(go))
+    running.configure(config_from({SYNTHETIC: True}))
+    go.set()
+    first = await running.run_once()
+    assert not first.reading and first.read_at is not None
+
+    go.clear()
+    second = asyncio.create_task(running.run_once())
+    await asyncio.sleep(0)
+    # Reading: what the pages show is still the first read, marked as reading.
+    assert running.status.reading
+    assert running.status.read_at == first.read_at
+    assert running.status.connections == first.connections
+    go.set()
+    done = await second
+    assert not done.reading and running.status is done
+
+
+async def test_a_read_that_stops_leaves_the_read_before_it_not_reading() -> None:
+    sidecar = Sidecar()
+    go = asyncio.Event()
+    go.set()
+    running = syncer(sidecar, make_venue=lambda config: Held(go, stop=True))
+    running.configure(config_from({SYNTHETIC: True}))
+    before = running.status
+    with pytest.raises(RuntimeError):
+        await running.run_once()
+    assert not running.status.reading
+    assert running.status == before
+
+
+async def test_waiting_for_settings_is_never_reading() -> None:
+    running = syncer(Sidecar(), make_venue=lambda config: None)
+    running.configure(config_from({}))
+    assert not (await running.run_once()).reading

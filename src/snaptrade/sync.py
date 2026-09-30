@@ -40,6 +40,8 @@ class Status:
     error: str = ""
     # The required settings not yet given.
     missing: tuple[str, ...] = ()
+    # A read is under way: the rest is the read before it, until it ends.
+    reading: bool = False
 
     @property
     def accounts(self) -> tuple[AccountView, ...]:
@@ -92,6 +94,15 @@ class Syncer:
             log.info(detail)
             return self.status
 
+        self.status = replace(self.status, reading=True)
+        try:
+            return await self._read(config, venue, base)
+        finally:
+            if self.status.reading:
+                # It stopped before it came to anything: the read before it stands.
+                self.status = replace(self.status, reading=False)
+
+    async def _read(self, config: Config, venue: Venue, base: Status) -> Status:
         try:
             snapshot = await read(venue, self._now)
         except VenueError as failed:

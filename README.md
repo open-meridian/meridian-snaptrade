@@ -5,10 +5,10 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.4.2. How a plugin like it is built is documented at
+0.4.3. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.7.0`, which carries the
+It is built on the SDK it pins, `open-meridian==0.8.0`, which carries the
 whole account-side contract (spec/the-account-side-fits-every-venue): a
 holding's side, a market value left unset, a currency marked as assumed, a fund
 marked as counted in cash too, buying power on the statement, the sync state
@@ -178,12 +178,23 @@ at both levels"):
 
 - **Connections** (`/admin/connections`): figures for the last read, each
   brokerage connection with its health, what to do about it, and refreshing
-  or reconnecting it, connecting a brokerage through SnapTrade's Connection
-  Portal (a link that opens outside the dashboard's frame), and the SnapTrade
-  users under the key.
-- **Account links** (`/admin/accounts`): each account the connections reach
-  with its link to one of the deployment's accounts, and each one's sync
-  state, what to do, its freshness and its last statement.
+  or reconnecting it, and the SnapTrade users under the key. **+ Add
+  brokerage**, in the Connections card's header, connects one through
+  SnapTrade's Connection Portal (a link that opens outside the dashboard's
+  frame).
+- **Account links** (`/admin/accounts`), one page: each account the
+  connections reach with its link to one of the deployment's accounts and,
+  beside it in the same map, its sync state (a status dot: what to do and
+  when its holdings are as of in its note), its history's freshness and its
+  last statement, filtered by state so the accounts needing attention are
+  found among thousands.
+
+Each page's head shows how the plugin is reading as a status dot (kit
+0.6.0's `om-status`), its note on hover, focus or a tap: green when the last
+read succeeded, with when; amber while a read is under way; red when the last
+read failed, with its message (what was asked, the exception's type and the
+HTTP status, never its text), or while settings are missing, naming them.
+Without the kit's script its words show beside the dot as plain text.
 
 Refresh asks SnapTrade to read a connection's brokerage again
 (`refresh_brokerage_authorization`). It is offered only where it means
@@ -221,12 +232,19 @@ Each plugin links its own external accounts (kernel/a-plugins-admin-view,
 point 8), and the link is its right to the account: a statement for an account
 nothing links is refused, which the SDK raises as `meridian.NotLinked`, by the
 refusal's code and never its words. The Account links tab draws the kit's
-`om-account-map` (kit 0.5.0), built for an industrial deployment's hundreds or
-thousands of accounts: a dense table, one row per SnapTrade account with its
-link, searched by name, ID, account number, custodian and type, filtered to
-Unlinked (where it opens, while any are), Linked or All, grouped by
-connection, and paged, so the page holds a page of rows however many there
-are.
+`om-account-map` (kit 0.5.0, and 0.6.0's status column), built for an
+industrial deployment's hundreds or thousands of accounts: a dense table, one
+row per SnapTrade account with its link and its sync state, searched by name,
+ID, account number, custodian, type and sync state, filtered to Unlinked
+(where it opens, while any are), Linked or All and by sync state (Needs
+attention, or one state), grouped by connection, and paged, so the page holds
+a page of rows however many there are.
+
+Each sync state is a status dot, its label beside it: Current and Delayed by
+design are green (`ok`), Stale amber (`warn`), Needs sign-in and Disabled red
+(`error`). Its note says what SnapTrade said of it and what to do, and when
+its holdings are as of; under it, when its history is as of and what its last
+statement came to. Without the kit, each account's plain row says the same.
 
 A row's choices open under that row alone. An account not linked is linked
 to **an existing account**, found by typing among the deployment's open
@@ -304,7 +322,7 @@ Quantities are exact decimal strings, as SnapTrade reported them.
 
 `make preview` writes each page on synthetic data to `preview/`: Connections,
 Account links, and Statements as a reader sees it who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.5.0/`, so serve them
+three accounts. They link the kit at `/.meridian/ui/0.6.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -315,8 +333,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.7.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.7.0`.
+The SDK is pinned exactly, `open-meridian==0.8.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.8.0`.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -329,7 +347,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.4.2 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.4.3 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying
