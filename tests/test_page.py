@@ -328,7 +328,7 @@ def test_the_connections_tab(server: int) -> None:
         "Schwab",
         "Delayed by design",
         "Disabled",
-        "+ Add brokerage",
+        ">+ Add</button>",
         "synthetic-user",
     ):
         assert shown in body
@@ -745,11 +745,15 @@ def test_reading_now_answers_with_the_tab_it_was_asked_from(
     _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back=ACCOUNTS))
     assert "Reading SnapTrade now" in body and "Link each account" in body
     _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back="/elsewhere"))
-    assert "Reading SnapTrade now" in body and "+ Add brokerage" in body
+    assert "Reading SnapTrade now" in body and ADD in body
     # Under Manage, never Statements, whatever the form says.
     _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back=STATEMENTS))
-    assert "+ Add brokerage" in body and "No statements yet" not in body
+    assert ADD in body and "No statements yet" not in body
     assert woken.is_set()
+
+
+# The Connections card's + Add, by its accessible name: shown only on Connections.
+ADD = 'aria-label="Add a brokerage connection">+ Add</button>'
 
 
 def head_of(body: str) -> str:
@@ -774,31 +778,68 @@ def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     return action, fields
 
 
-def test_each_admin_tab_marks_refresh_as_a_header_action_for_the_dashboard(
+def connections_card(body: str) -> str:
+    """What the Connections card's header holds beside its heading."""
+    card = re.search(
+        r'<section class="panel"><div class="panel-body"><div class="row"><h2>Connections</h2>'
+        r'<span class="spacer"></span>(.*?)</div>',
+        flat(body),
+    )
+    assert card is not None
+    return card.group(1)
+
+
+def card_refresh_form(body: str) -> tuple[str, dict[str, str]]:
+    """The Connections card's Refresh, beside + Add: its action and fields."""
+    forms = re.findall(
+        r'<form method="post" action="([^"]+)" class="inline">(.*?)</form>',
+        connections_card(body),
+    )
+    refreshes = [(action, inside) for action, inside in forms if ">Refresh</button>" in inside]
+    assert len(refreshes) == 1, "one Refresh in the Connections card"
+    action, inside = refreshes[0]
+    fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', inside))
+    return action, fields
+
+
+def test_account_links_marks_refresh_as_a_header_action_for_the_dashboard(
     server: int,
 ) -> None:
     # The product owner, 2026-09-30: Refresh in the dashboard's header. The
     # kit hands it to the dashboard where it frames the page; the form, its
     # token and its POST stay the page's.
-    for path in ADMIN_TABS:
-        _, _, body = ask(server, "GET", path, MANAGER)
-        assert "Read now" not in body
-        action, fields = refresh_form(body)
-        assert action == READ
-        assert fields == {"csrf": token_of(MANAGER), "back": path}
-    # Only the head's: no other button on a tab is handed to the dashboard.
-    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
+    _, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
+    assert "Read now" not in body
+    action, fields = refresh_form(body)
+    assert action == READ
+    assert fields == {"csrf": token_of(MANAGER), "back": ACCOUNTS}
+    # Only the head's: no other button on the tab is handed to the dashboard.
     assert body.count("data-om-action") == 1
 
 
-def test_the_marked_refresh_still_posts_from_the_page_with_its_token(
+def test_connections_hands_the_dashboard_no_header_action(server: int) -> None:
+    # The product owner, 2026-09-30: Refresh beside + Add in the Connections
+    # card, once on the page, and not in the head or the dashboard's header.
+    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
+    assert "data-om-action" not in body
+    assert '<div class="actions">' not in head_of(body)
+    action, fields = card_refresh_form(body)
+    assert action == READ
+    assert fields == {"csrf": token_of(MANAGER), "back": CONNECTIONS}
+    assert body.count(f'action="{READ}"') == 1
+
+
+def test_each_admin_tabs_refresh_posts_from_the_page_with_its_token(
     server: int, woken: asyncio.Event
 ) -> None:
-    tabs = ((CONNECTIONS, "+ Add brokerage"), (ACCOUNTS, "Link each account"))
-    for path, shown in tabs:
+    tabs = (
+        (CONNECTIONS, card_refresh_form, ADD),
+        (ACCOUNTS, refresh_form, "Link each account"),
+    )
+    for path, found, shown in tabs:
         woken.clear()
         _, _, body = ask(server, "GET", path, MANAGER)
-        action, fields = refresh_form(body)
+        action, fields = found(body)
         # Without the page's token, nothing is read.
         forged = form(**{**fields, "csrf": "0" * len(fields["csrf"])})
         status, _, answer = ask(server, "POST", action, MANAGER, forged)
@@ -1765,9 +1806,10 @@ def test_statements_has_the_dot_without_naming_settings() -> None:
 
 def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
     # Kit 0.7.0, framed: the dashboard draws the heading, the dot (marked
-    # data-om-header) and Refresh (data-om-action), so the head has nothing
-    # left to show and the kit drops it: the page starts right under the tabs
-    # (the product owner, 2026-09-30).
+    # data-om-header) and Refresh (data-om-action) where the head has it, so
+    # the head has nothing left to show and the kit drops it: the page starts
+    # right under the tabs (the product owner, 2026-09-30). Connections keeps
+    # its Refresh in the Connections card, so its head has none.
     status = Status(mode="synthetic", read_at=READ_AT)
     for body in (
         page_for(status, CONNECTIONS),
@@ -1801,28 +1843,25 @@ def test_the_status_dot_says_an_error_as_text_and_never_a_secret() -> None:
     assert "secret" not in dot
 
 
-def test_add_brokerage_is_the_connections_cards_action_with_its_form_and_token(
+def test_add_and_refresh_are_the_connections_cards_actions_with_their_forms_and_token(
     server: int,
 ) -> None:
     _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
-    # Not in the page head, which keeps only Refresh.
+    # Not in the page head, which has no actions.
     head = head_of(body)
-    assert f'action="{CONNECT}"' not in head and "Add brokerage" not in head
-    assert "Connect a brokerage" not in body
-    actions = re.search(r'<div class="actions">(.*)</div>', head, re.S)
-    assert actions is not None
-    assert re.findall(r"<button[^>]*>([^<]*)</button>", actions.group(1)) == ["Refresh"]
-    # In the Connections card's own header, beside its heading.
-    card = re.search(
-        r'<section class="panel"><div class="panel-body"><div class="row"><h2>Connections</h2>'
-        r'<span class="spacer"></span>(.*?)</div>',
-        flat(body),
-    )
-    assert card is not None
-    assert card.group(1) == (
+    assert f'action="{CONNECT}"' not in head and f'action="{READ}"' not in head
+    assert "<button" not in head
+    assert "Connect a brokerage" not in body and "Add brokerage" not in body
+    # Side by side in the Connections card's own header, beside its heading:
+    # Refresh, the kit's plain button, then + Add, its primary one, named for
+    # what it adds.
+    token = token_of(MANAGER)
+    assert connections_card(body) == (
+        f'<form method="post" action="{READ}" class="inline">'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<input type="hidden" name="back" value="{CONNECTIONS}">'
+        '<button aria-label="Refresh everything from SnapTrade">Refresh</button></form>'
         f'<form method="post" action="{CONNECT}" class="inline">'
-        f'<input type="hidden" name="csrf" value="{token_of(MANAGER)}">'
-        '<button class="primary">+ Add brokerage</button></form>'
+        f'<input type="hidden" name="csrf" value="{token}">'
+        f'<button class="primary" {ADD}</form>'
     )
-    # Not a header action: the dashboard draws only Refresh.
-    assert "data-om-action" not in card.group(1)

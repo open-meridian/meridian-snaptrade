@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.5.0. How a plugin like it is built is documented at
+0.5.1. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.10.0`, which declares
@@ -202,10 +202,11 @@ The tests hold every page at `admin` to that with the SDK's
 - **Connections** (`/admin/connections`): figures for the read (connections
   and how many need attention, accounts reached, the last read), each
   brokerage connection with its health, what to do about it, and refreshing
-  or reconnecting it, and the SnapTrade users under the key. **+ Add
-  brokerage**, in the Connections card's header, connects one through
-  SnapTrade's Connection Portal (a link that opens outside the dashboard's
-  frame).
+  or reconnecting it, and the SnapTrade users under the key. **+ Add**
+  (named "Add a brokerage connection" for assistive technology), in the
+  Connections card's header, connects one through SnapTrade's Connection
+  Portal (a link that opens outside the dashboard's frame); **Refresh** sits
+  beside it there (below).
 - **Account links** (`/admin/accounts`): each account the connections reach,
   who it is (its name, brokerage, type, number and SnapTrade's ID) and its
   link to one of the deployment's accounts, in one account map (below).
@@ -218,8 +219,8 @@ while a read is under way; red when the last read failed, with its message
 or while settings are missing, naming them. Without the kit's script its
 words show beside the dot as plain text. Marked for the dashboard
 (`data-om-header`, kit 0.7.0), the dashboard draws it beside the plugin's
-name; with the heading and Refresh drawn there too, the head has nothing
-left, so each page starts right under the dashboard's tabs.
+name; with the heading and any header Refresh drawn there too, the head has
+nothing left, so each page starts right under the dashboard's tabs.
 
 Refresh asks SnapTrade to read a connection's brokerage again
 (`refresh_brokerage_authorization`). It is offered only where it means
@@ -239,8 +240,11 @@ something, by the connection's `data_freshness_mode.snaptrade`:
   other failure is shown as every failed call is: what was asked, the
   exception's type and the HTTP status, never its text.
 
-The head's Refresh, on each page under Manage and on Statements under Open,
-reads SnapTrade now (`/read`). It is marked as a header action
+The page-level Refresh reads SnapTrade now (`/read`). On Connections it sits
+beside + Add in the Connections card's header, the kit's plain button beside
+its primary one, and is that page's only page-level Refresh (each delayed
+connection's own Refresh, above, is another action). On Account links and on
+Statements under Open it is in the head, marked as a header action
 (`data-om-action="refresh"`, kit 0.4.0): where the dashboard frames the page,
 it draws Refresh in its own header, beside the plugin's name, and the kit
 drops the page's copy; pressing it there presses the page's, so the form still
@@ -389,7 +393,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.5.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.5.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

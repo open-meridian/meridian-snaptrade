@@ -11,19 +11,22 @@
 {%- if dot.at %} at="{{ dot.at }}" at-label="Last read"{% endif %}>{{ dot.text }}</om-status>
 {%- endmacro %}
 
-{# A one-button form posting to `action` with the page's token. `header`
-   marks it a header action (kit 0.4.0's data-om-action): framed, the
+{# A one-button form posting to `action` with the page's token. `label` is
+   the button's accessible name where its words alone do not say enough.
+   `header` marks it a header action (kit 0.4.0's data-om-action): framed, the
    dashboard draws the button in its own header and, pressed there, the kit
    presses this one, so the form still posts from the page with its token. #}
-{% macro button(action, said, kind="", fields={}, header="") -%}
+{% macro button(action, said, kind="", fields={}, header="", label="") -%}
 <form method="post" action="{{ action }}" class="inline">{{ csrf_input }}
 {%- for name, value in fields.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor -%}
-<button{% if kind %} class="{{ kind }}"{% endif %}{% if header %} data-om-action="{{ header }}"{% endif %}>{{ said }}</button></form>
+<button{% if kind %} class="{{ kind }}"{% endif %}{% if label %} aria-label="{{ label }}"{% endif %}{% if header %} data-om-action="{{ header }}"{% endif %}>{{ said }}</button></form>
 {%- endmacro %}
 
-{# The head's one header action: read SnapTrade now, answering with `back`. #}
-{% macro refresh(back) -%}
-{{ button(paths.read, "Refresh", fields={"back": back}, header="refresh") }}
+{# Read SnapTrade now, answering with `back`. In the head (`header`), the
+   page's one header action; elsewhere, a plain button where it is put. #}
+{% macro refresh(back, header=true) -%}
+{%- if header %}{{ button(paths.read, "Refresh", fields={"back": back}, header="refresh") }}
+{%- else %}{{ button(paths.read, "Refresh", fields={"back": back}, label="Refresh everything from SnapTrade") }}{% endif %}
 {%- endmacro %}
 
 {% macro badge(shown) -%}

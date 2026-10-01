@@ -4,15 +4,17 @@
 {% extends "meridian/base.html" %}
 {% import "_kit.html" as kit with context %}
 {% block status %}{{ kit.status_dot(dot) }}{% endblock %}
-{% block head_actions %}{{ kit.refresh(back) }}{% endblock %}
 {% block content %}
 {{ kit.notices(notice, portal, waiting, error) }}
 {{ kit.tiles(tiles) }}
 <section class="panel">
 <div class="panel-body"><div class="row"><h2>Connections</h2><span class="spacer"></span>
-{#- Connecting a brokerage is the Connections card's own action, in its
-    header (the product owner, 2026-09-30), not the page head's. -#}
-{{ kit.button(paths.connect, "+ Add brokerage", "primary") }}</div>
+{#- Connecting a brokerage and reading SnapTrade now are the Connections
+    card's own actions, side by side in its header, not the page head's (the
+    product owner, 2026-09-30): so this page hands the dashboard no header
+    action. -#}
+{{ kit.refresh(back, header=false) }}
+{{ kit.button(paths.connect, "+ Add", "primary", label="Add a brokerage connection") }}</div>
 <p class="muted">Each brokerage connected through SnapTrade, and how it is.</p></div>
 {% for connection in connections %}
 <div class="list-row"><div class="grow">

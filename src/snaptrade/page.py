@@ -45,10 +45,11 @@ session's level, which the kit drops when the dashboard frames the page. A
 template's `status` block is the head's status dot (`om-status
 data-om-header`, kit 0.7.0) and its `head_actions` block its header action,
 Refresh (`data-om-action`, kit 0.4.0); framed, the dashboard draws both in its
-own header. Every value is escaped, and each component reads the JSON
-declared inside it; what else is inside it is what a browser shows where the
-kit is not served, so without the kit a page still works, unstyled, and every
-action is a plain form.
+own header. Connections has no header action: its Refresh sits beside + Add in
+the Connections card's header (the product owner, 2026-09-30). Every value is
+escaped, and each component reads the JSON declared inside it; what else is
+inside it is what a browser shows where the kit is not served, so without the
+kit a page still works, unstyled, and every action is a plain form.
 
 Every action is a POST, and the SDK refuses one without this plugin's CSRF
 token before the view runs: each form carries `{{ csrf_input }}`, and the
@@ -1068,14 +1069,15 @@ async def statements(request: meridian.Request) -> meridian.Response:
     return _statements(request.caller)
 
 
-# ── Reading now: Refresh, in the head ───────────────────────────────────────
+# ── Reading now: Refresh ────────────────────────────────────────────────────
 
 
 @pages.route(READ, levels=["admin", "write"], methods=["POST"])
 async def read_now(request: meridian.Request) -> meridian.Response:
-    """Read SnapTrade now: the head's Refresh, on each page at `admin` and on
-    Statements under Open (View acts on nothing). It answers with the page it
-    was asked from, among those of the session's level."""
+    """Read SnapTrade now: Refresh, in the Connections card beside + Add, in
+    the head on Account links, and in the head on Statements under Open (View
+    acts on nothing). It answers with the page it was asked from, among those
+    of the session's level."""
     if (refused := _oversized(request)) is not None:
         return refused
     _now().wake.set()
