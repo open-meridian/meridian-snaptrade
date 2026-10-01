@@ -27,7 +27,7 @@
 {% endif %}
 <section class="panel">
 <div class="panel-body"><h2>Link each account</h2>
-<p class="muted">Each account SnapTrade reaches is recorded against the deployment's account it is linked to, and one nothing links is not recorded.
+<p class="muted">Each account SnapTrade reaches is recorded against the deployment's account it is linked to, and one nothing links is not recorded. Each of the deployment's accounts takes one at most, so one already linked is not offered for another.
 {%- if creates %} Link it to an existing account, or create one for it.{% else %} Link it to an existing account; a deployment admin may also create one for it.{% endif %}
 {%- if summary %} {{ summary }}.{% endif %}</p></div>
 <om-account-map action="{{ paths.link }}" token-name="{{ token_name }}" token="{{ csrf_token }}" group-by="connection" link-several empty="{{ empty }}">
@@ -44,11 +44,11 @@
 {% endfor %}
 {% if rows %}
 <div class="panel-body panel-section"><h3>Link an account</h3>
-<p class="muted">Linking a linked account to another replaces its link.</p>
+<p class="muted">Linking a linked account to another replaces its link. An account already linked is not offered.</p>
 {% if refused %}
 <p class="hint">The deployment's accounts could not be read, so none is offered here.</p>
 {% elif not choices %}
-<p class="hint">The deployment has no open accounts yet{% if creates %}: create one{% endif %}.</p>
+<p class="hint">{% if offered_any %}No open account of the deployment's is free to link{% else %}The deployment has no open accounts yet{% endif %}{% if creates %}: create one{% endif %}.</p>
 {% else %}
 {% call intent_form("link") %}<div class="field-row">{{ external_choice() }}<label class="field"><span>An existing account</span><select name="account_id" required><option value="">Choose an account</option>
 {%- for choice in choices %}<option value="{{ choice.account_id }}">{{ choice.label }}</option>{% endfor -%}

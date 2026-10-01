@@ -3,11 +3,14 @@
 `Sidecar` is the pinned SDK's own generated `Operations` with the transport
 replaced: every call goes through the SDK's real conversion (a Decimal to the
 wire's integer and scale, a float refused, a caller's header to the assertion
-it carries) and is kept as the protobuf message the sidecar would have
-received. It holds the plugin's links as the deployment would, and delivers
-them as the SDK's `account_scope()` does: the first at once, and another on
-every change. A report is kept as the heartbeat the sidecar receives, built
-by `meridian.testing.heartbeat`, with the figures standing as the SDK's do.
+it carries) and the checks the SDK makes before sending (a statement's
+figures), and is kept as the protobuf message the sidecar would have
+received. It holds the plugin's links as the deployment would, one external
+account per account of the deployment's, refusing a second as the conductor
+does (contract v7), and delivers them as the SDK's `account_scope()` does:
+the first at once, and another on every change. A report is kept as the
+heartbeat the sidecar receives, built by `meridian.testing.heartbeat`, with
+the figures standing as the SDK's do.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import meridian
 import pytest
 from meridian.operations import Operations
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.statements import checked
 from meridian.testing import heartbeat
 from meridian.v1 import sidecar_pb2
 
@@ -94,7 +98,8 @@ class Sidecar(Operations):
 
     async def _operate(self, method: Any, params: Any) -> Any:
         name = cast(str, method)
-        refusal = self._refuse(name, params)
+        checked(params)
+        refusal = self._refuse(name, params) or self._held(name, params)
         if refusal is not None:
             raise refusal
         self.calls.append((name, params))
@@ -124,6 +129,30 @@ class Sidecar(Operations):
                 external_account_id=params.external_account_id, account_id=account_id
             )
         return ops.Published(message_id=f"M-{len(self.calls)}")
+
+    def _held(self, name: str, params: Any) -> Exception | None:
+        """The conductor's refusal of a second external account for an account
+        (v7), sent as the sidecar sends a handler's error: in its words."""
+        if name != "LinkExternalAccount" or not params.account_id:
+            return None
+        held = next(
+            (
+                link.external_account_id
+                for link in self.links.values()
+                if link.account_id == params.account_id
+                and link.external_account_id != params.external_account_id
+            ),
+            None,
+        )
+        if held is None:
+            return None
+        return meridian.CallFailed(
+            "LinkExternalAccount",
+            "handler error",
+            f"{params.account_id} already has external account {held} linked "
+            f"(snaptrade); an account has one external account: link "
+            f"{params.external_account_id} to another account, or a new one",
+        )
 
     def scope(self) -> meridian.AccountScope:
         return meridian.AccountScope(links=tuple(self.links.values()))

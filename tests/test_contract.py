@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -15,6 +16,7 @@ from snaptrade.normalise import (
     Freshness,
     Holding,
     Identifier,
+    Lot,
     Side,
     Statement,
     SyncState,
@@ -148,11 +150,50 @@ async def test_a_fund_snaptrade_counts_in_cash_is_marked_so() -> None:
     assert row.also_counted_in_cash
 
 
-async def test_buying_power_in_one_currency_is_on_the_statement() -> None:
+async def test_a_statement_names_its_external_account_and_institution() -> None:
     sidecar = Sidecar()
     await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     (opened,) = sidecar.sent("RecordHoldingsStatement")
-    assert meridian.as_money(opened.buying_power) == meridian.Money(Decimal("3046.90"), "USD")
+    assert opened.external_account_id == "ALPACA:INST-1"
+    assert opened.institution == "Alpaca"
+
+
+async def test_buying_power_in_one_currency_is_the_accounts_one_set_of_figures() -> None:
+    sidecar = Sidecar()
+    await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    (opened,) = sidecar.sent("RecordHoldingsStatement")
+    (figures,) = opened.figures
+    # No segment: the account's figures as a whole. SnapTrade names none.
+    assert figures.segment == ""
+    assert meridian.as_money(figures.buying_power) == meridian.Money(Decimal("3046.90"), "USD")
+    assert not figures.HasField("net_liquidation")
+    # What SnapTrade has no field for is left unset, never derived.
+    for unreported in (
+        "margin_requirement",
+        "maintenance_excess",
+        "initial_margin",
+        "variation_margin",
+    ):
+        assert not figures.HasField(unreported)
+    assert list(figures.collateral) == []
+    # The flat figures a plugin before v7 sent are sent no more.
+    for flat in ("buying_power", "margin_requirement", "maintenance_excess"):
+        assert not opened.HasField(flat)
+
+
+async def test_the_accounts_total_value_is_its_net_liquidation_exactly() -> None:
+    sidecar = Sidecar()
+    total = meridian.Money(Decimal("9876.54"), "USD")
+    await Recorder(sidecar.plugin()).record(
+        ACCOUNT, replace(STATEMENT, net_liquidation=total), ns(NOW)
+    )
+    (figures,) = sidecar.sent("RecordHoldingsStatement")[0].figures
+    assert meridian.as_money(figures.net_liquidation) == total
+    assert (figures.net_liquidation.amount.low, figures.net_liquidation.amount.scale) == (
+        987654,
+        2,
+    )
+    assert meridian.as_money(figures.buying_power) == meridian.Money(Decimal("3046.90"), "USD")
 
 
 async def test_buying_power_in_several_currencies_is_not_summed() -> None:
@@ -163,10 +204,76 @@ async def test_buying_power_in_several_currencies_is_not_summed() -> None:
         ns(NOW),
         (),
         (meridian.Money(Decimal("1"), "USD"), meridian.Money(Decimal("2"), "CAD")),
+        net_liquidation=meridian.Money(Decimal("10"), "USD"),
     )
     await Recorder(sidecar.plugin()).record(ACCOUNT, several, ns(NOW))
     (opened,) = sidecar.sent("RecordHoldingsStatement")
-    assert not opened.HasField("buying_power")
+    (figures,) = opened.figures
+    assert not figures.HasField("buying_power")
+    assert meridian.as_money(figures.net_liquidation) == meridian.Money(Decimal("10"), "USD")
+
+
+async def test_a_statement_with_no_figure_reported_sends_no_set() -> None:
+    sidecar = Sidecar()
+    await Recorder(sidecar.plugin()).record(
+        ACCOUNT, replace(STATEMENT, buying_power=()), ns(NOW)
+    )
+    (opened,) = sidecar.sent("RecordHoldingsStatement")
+    assert list(opened.figures) == []
+
+
+async def test_a_rows_average_cost_and_lots_reach_the_sidecar_as_reported() -> None:
+    sidecar = Sidecar()
+    long = replace(
+        LONG,
+        average_cost=meridian.Money(Decimal("198.10"), "USD"),
+        lots=(
+            Lot(Decimal("10"), meridian.Money(Decimal("1890.00"), "USD"), "2024-03-11"),
+            Lot(Decimal("2.500"), None, ""),
+            Lot(Decimal("0.012345678"), meridian.Money(Decimal("-5.25"), "USD"), ""),
+        ),
+    )
+    short = replace(
+        SHORT, lots=(Lot(Decimal("-40"), meridian.Money(Decimal("160.80"), "USD")),)
+    )
+    statement = replace(STATEMENT, holdings=(long, short, CASH))
+    await Recorder(sidecar.plugin()).record(ACCOUNT, statement, ns(NOW))
+    first, second, cash = sidecar.sent("RecordHolding")
+    # Per unit, as SnapTrade reports it; never multiplied into a total.
+    assert meridian.as_money(first.average_cost) == meridian.Money(Decimal("198.10"), "USD")
+    assert [
+        (
+            meridian.as_decimal(lot.quantity),
+            meridian.as_money(lot.cost) if lot.HasField("cost") else None,
+            lot.acquired_date,
+        )
+        for lot in first.lots
+    ] == [
+        (Decimal("10"), meridian.Money(Decimal("1890.00"), "USD"), "2024-03-11"),
+        (Decimal("2.500"), None, ""),
+        (Decimal("0.012345678"), meridian.Money(Decimal("-5.25"), "USD"), ""),
+    ]
+    # Each lot's scale crosses the wire as written.
+    assert [(lot.quantity.low, lot.quantity.scale) for lot in first.lots][1:] == [
+        (2500, 3),
+        (12345678, 9),
+    ]
+    # A short holding's lots are short.
+    assert [meridian.as_decimal(lot.quantity) for lot in second.lots] == [Decimal("-40")]
+    assert not second.HasField("average_cost")
+    # A cash row has no cost and no lots.
+    assert not cash.HasField("average_cost") and list(cash.lots) == []
+
+
+async def test_a_total_cost_basis_and_a_margin_requirement_are_never_sent() -> None:
+    sidecar = Sidecar()
+    long = replace(LONG, average_cost=meridian.Money(Decimal("198.10"), "USD"))
+    await Recorder(sidecar.plugin()).record(
+        ACCOUNT, replace(STATEMENT, holdings=(long, SHORT, CASH)), ns(NOW)
+    )
+    for row in sidecar.sent("RecordHolding"):
+        assert not row.HasField("cost_basis")
+        assert not row.HasField("margin_requirement")
 
 
 async def test_a_placeholder_is_recorded_against_and_counted() -> None:
@@ -227,8 +334,25 @@ async def test_a_refused_row_stops_the_statement_and_is_not_retried() -> None:
     assert not outcome.unlinked
 
 
+async def test_a_statement_refused_for_want_of_a_link_records_no_row_and_says_so() -> None:
+    # Since v7 the statement names its account, and is refused before any
+    # row. The SDK raises NotLinked by the refusal's code; its words are not
+    # read.
+    def refuse(name: str, params: Any) -> Exception | None:
+        if name == "RecordHoldingsStatement":
+            return meridian.NotLinked("RecordHoldingsStatement", "reworded at some release")
+        return None
+
+    sidecar = Sidecar(refuse=refuse)
+    outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    assert outcome.unlinked and outcome.recorded == 0 and outcome.statement_id == ""
+    assert "reworded at some release" in outcome.stopped
+    assert sidecar.sent("RecordHoldingsStatement") == []
+    assert sidecar.sent("RecordHolding") == []
+
+
 async def test_a_row_refused_for_want_of_a_link_says_so() -> None:
-    # The SDK raises NotLinked by the refusal's code; its words are not read.
+    # A link removed between the statement and its rows.
     def refuse(name: str, params: Any) -> Exception | None:
         if name == "RecordHolding":
             return meridian.NotLinked("RecordHolding", "reworded at some release")
@@ -328,10 +452,14 @@ KNOWN_PARAMETERS = {
         "read_at_ns",
         "expected_rows",
         "acting_for",
+        # Known, and never sent: v7 refuses the flat figures beside `figures`.
         "buying_power",
         "margin_requirement",
         "maintenance_excess",
         "currency_assumed",
+        "external_account_id",
+        "institution",
+        "figures",
     },
     "record_holding": {
         "statement_id",
@@ -345,6 +473,12 @@ KNOWN_PARAMETERS = {
         "settle_date_quantity",
         "currency_assumed",
         "also_counted_in_cash",
+        "average_cost",
+        "lots",
+        # Known, and never sent: SnapTrade reports no total cost basis and no
+        # margin requirement for a holding.
+        "cost_basis",
+        "margin_requirement",
     },
     "resolve_identifier": {"identifiers", "as_of_ns", "exchange_mic", "currency"},
     "report_missing_instrument": {
@@ -370,6 +504,17 @@ KNOWN_PARAMETERS = {
         "acting_for",
     },
     "read_accounts_for_linking": {"acting_for"},
+    # Known, and not used: a custody plugin records the street; it neither
+    # reads nor hears it.
+    "list_custodial_positions": {
+        "account_id",
+        "cursor",
+        "include_unresolved",
+        "page_size",
+        "since",
+    },
+    "list_statements": {"account_id", "as_of_date", "cursor", "page_size", "since"},
+    "receive": {"custodial_position_updated", "seed", "statement_recorded"},
 }
 
 

@@ -26,13 +26,29 @@ a deployment admin approves them.
   holds the plugin's links as `plugin.account_scope()` last delivered them
   (`__main__` holds the first before serving the pages). An account is
   linked, naming its account, or not linked: never guess a third state from
-  what a read recorded, and never store the links. A row refused for want of
-  a link is `meridian.NotLinked`; never match a refusal's words.
+  what a read recorded, and never store the links. A statement names its
+  external account and institution, and one for an account nothing links is
+  refused before any row: `meridian.NotLinked`; never match a refusal's
+  words. Each of the deployment's accounts takes one external account (v7):
+  the Account links tab offers none this plugin's links already name, and
+  shows the conductor's refusal of a second link as it is worded.
 - SnapTrade's vocabulary stops at `normalise.py`, its instrument kinds
   mapped to the platform's asset classes there and nowhere else (unmapped
   kinds get none, never a guess), and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.
+- **Send only what SnapTrade reported, never derive** (the product owner,
+  2026-10-01). A position's `cost_basis` is SnapTrade's average per unit,
+  sent as `average_cost`, never multiplied into a `cost_basis`, which stays
+  unset; a lot is a `tax_lots` entry, its quantity signed as its holding,
+  its cost as reported (sign included), the date part of its purchase date;
+  no `tax_lots` is no lots, and a holding with any lot not read exactly sends
+  none, with a problem said. The account's `balance.total` is the
+  statement's `net_liquidation`, and buying power from exactly one currency
+  is its `buying_power`, both in one `StatementFigures(segment="")`; never
+  the flat figures, never a margin requirement, never a sum across
+  currencies. A number that would not cross the wire exactly (18 places, 38
+  digits) is caught in `normalise.py`, before its statement opens.
 - `make ci-local` before calling anything done. The README says what each
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles

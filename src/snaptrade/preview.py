@@ -98,7 +98,7 @@ def _linked(status: Status) -> tuple[Status, meridian.AccountScope]:
     unlinked = second.account.external_account_id
     rows = [len(view.statement.holdings) if view.statement else 0 for view in (first, second)]
     refused = meridian.NotLinked(
-        "RecordHolding", f"external account {unlinked} is not linked to an account"
+        "RecordHoldingsStatement", f"external account {unlinked} is not linked to an account"
     )
     outcomes = {
         first.account.external_account_id: Outcome(rows=rows[0], recorded=rows[0]),

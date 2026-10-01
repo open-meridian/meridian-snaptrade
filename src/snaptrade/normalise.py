@@ -24,6 +24,20 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 - **Market value only as reported.** SnapTrade reports none for a position,
   and it is never computed from `price`: unset means "not reported". A cash
   row's value is its amount, which is what SnapTrade reported.
+- **Cost as reported, never multiplied out** (the product owner,
+  2026-10-01). SnapTrade's `cost_basis` on a position is an average per unit
+  (per share for an option), so it is the holding's average cost, as
+  written; the holding's total cost basis is left unset, since SnapTrade
+  reports none. A lot is a `tax_lots` entry: its quantity signed as its
+  holding, its cost as reported (the whole lot's, sign included) and the date
+  part of its purchase date as written. No `tax_lots` is no lots, never a
+  made-up one; and where any lot of a holding cannot be read exactly, none of
+  its lots is sent and the account says why, since a partial list would show
+  a difference that is not there.
+- **The account's total value is its net liquidation** (the product owner,
+  2026-10-01): `balance.total` on the account, which SnapTrade has from the
+  brokerage, is the statement's net liquidation; buying power is SnapTrade's
+  per currency, sent where exactly one currency reports it.
 - **An asset class from SnapTrade's instrument kind** (the product owner,
   2026-10-01): stock is equity, etf and mutualfund are fund, bond is debt,
   option is derivative, crypto is crypto_asset; any other kind is left unset
@@ -94,6 +108,16 @@ _ASSET_CLASS = {
 
 _MIC = re.compile(r"^[A-Z0-9]{4}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
+# The calendar date a moment was written on, before any time: SnapTrade's
+# `original_purchase_date` is a date-time, and its date part is taken as
+# written, with no time-zone conversion that could move the day.
+_DATE_PART = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:$|[T ])")
+
+# What the wire carries exactly (decisions/023): at most 18 decimal places and
+# 38 digits. The SDK refuses more, never rounds; a number past either is found
+# here, before its statement opens, rather than in the middle of one.
+MOST_PLACES = 18
+_TOO_MANY_DIGITS = 10**38
 
 
 class SyncState(Enum):
@@ -202,6 +226,18 @@ class Freshness:
 
 
 @dataclass(frozen=True)
+class Lot:
+    """One lot of a holding, as SnapTrade lists it in `tax_lots`."""
+
+    # Signed as its holding: negative on a short one.
+    quantity: Decimal
+    # The whole lot's cost, as reported, sign included; None where none is.
+    cost: meridian.Money | None = None
+    # The date part of its purchase date, as written; "" where none is.
+    acquired_date: str = ""
+
+
+@dataclass(frozen=True)
 class Holding:
     identifiers: tuple[Identifier, ...]
     description: str
@@ -224,6 +260,11 @@ class Holding:
     # The platform's asset class for the kind (`asset_class`), sent with a
     # miss; empty where it is not known, and for cash.
     asset_class: str = ""
+    # SnapTrade's average cost per unit (per share for an option), as
+    # reported; None where it reports none. Never multiplied out into a total.
+    average_cost: meridian.Money | None = None
+    # The venue's lots, in its order; none where it lists none.
+    lots: tuple[Lot, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -236,6 +277,9 @@ class Statement:
     holdings: tuple[Holding, ...]
     # Buying power as SnapTrade reported it, per currency. Never derived.
     buying_power: tuple[meridian.Money, ...] = ()
+    # The account's total value as the brokerage gave it to SnapTrade
+    # (`balance.total`); None where it gave none.
+    net_liquidation: meridian.Money | None = None
 
 
 @dataclass(frozen=True)
@@ -292,6 +336,23 @@ def to_decimal(value: Any, name: str) -> Decimal:
         raise ValueError(f"{name} is not a number: {value!r}")
     if not number.is_finite():
         raise ValueError(f"{name} is not a finite number: {value!r}")
+    return number
+
+
+def wire_decimal(value: Any, name: str) -> Decimal:
+    """`to_decimal`, refused where the wire cannot carry it exactly: more than
+    18 decimal places or 38 digits, which the SDK would refuse once its
+    statement had opened."""
+    number = to_decimal(value, name)
+    _, digits, exponent = number.as_tuple()
+    assert isinstance(exponent, int)  # finite, as to_decimal holds
+    places = max(-exponent, 0)
+    if places > MOST_PLACES:
+        raise ValueError(
+            f"{name} has {places} decimal places; at most {MOST_PLACES} cross the wire"
+        )
+    if int("".join(map(str, digits))) * 10 ** max(exponent, 0) >= _TOO_MANY_DIGITS:
+        raise ValueError(f"{name} has more than 38 digits")
     return number
 
 
@@ -474,8 +535,13 @@ def asset_class(kind: str) -> str:
     return _ASSET_CLASS.get(kind, "")
 
 
-def position_holding(position: Json, fallback_currency: str) -> Holding:
-    """One position from `positions/all`, as a row."""
+def position_holding(
+    position: Json, fallback_currency: str, problems: list[str] | None = None
+) -> Holding:
+    """One position from `positions/all`, as a row. A part of it that cannot
+    be read exactly, its average cost or its lots, is left out and said in
+    `problems`; the row stands without it."""
+    said = problems if problems is not None else []
     instrument = _dict(position.get("instrument"))
     kind = _text(instrument.get("kind"))
     symbol = _text(instrument.get("symbol"))
@@ -489,23 +555,86 @@ def position_holding(position: Json, fallback_currency: str) -> Holding:
         identifiers.append(Identifier("symbol", symbol, SOURCE))
     if not identifiers:
         raise ValueError(f"a {kind or 'position'} with neither FIGI nor symbol")
-    quantity = to_decimal(position.get("units"), f"units of {symbol or figi}")
+    named = symbol or figi
+    quantity = to_decimal(position.get("units"), f"units of {named}")
     exchange = _text(instrument.get("exchange")).upper()
     stated = _currency(position.get("currency"))
     listed = _currency(instrument.get("currency"))
+    currency = stated or listed or fallback_currency
+    side = _side(quantity)
+    average_cost: meridian.Money | None = None
+    if position.get("cost_basis") is not None:
+        try:
+            average_cost = meridian.Money(
+                wire_decimal(position["cost_basis"], f"the average cost of {named}"), currency
+            )
+        except ValueError as refused:
+            said.append(f"{refused}; it is not sent")
+    try:
+        lots = _lots(position.get("tax_lots"), side, currency, named)
+    except ValueError as refused:
+        said.append(f"{refused}; none of {named}'s lots is sent")
+        lots = ()
     return Holding(
         identifiers=tuple(identifiers),
         description=_text(instrument.get("description")) or symbol,
         kind=kind,
-        side=_side(quantity),
+        side=side,
         quantity=quantity,
-        currency=stated or listed or fallback_currency,
+        currency=currency,
         currency_assumed=not stated,
         # SnapTrade reports no market value, and one is never made from `price`.
         market_value=None,
         exchange_mic=exchange if _MIC.match(exchange) else "",
         cash_equivalent=position.get("cash_equivalent") is True,
         asset_class=asset_class(kind),
+        average_cost=average_cost,
+        lots=lots,
+    )
+
+
+def _lots(given: Any, side: Side, currency: str, named: str) -> tuple[Lot, ...]:
+    """A position's `tax_lots`, each read exactly, or ValueError naming the
+    first that cannot be: then none is sent. Absent, null or empty is none."""
+    if given is None:
+        return ()
+    if not isinstance(given, list):
+        raise ValueError(f"{named}'s tax lots are not a list")
+    return tuple(
+        _lot(lot, side, currency, f"lot {i + 1} of {named}") for i, lot in enumerate(given)
+    )
+
+
+def _lot(lot: Any, side: Side, currency: str, named: str) -> Lot:
+    if not isinstance(lot, dict):
+        raise ValueError(f"{named} is not an object")
+    if lot.get("quantity") is None:
+        raise ValueError(f"{named} has no quantity")
+    quantity = wire_decimal(lot["quantity"], f"the quantity of {named}")
+    position_type = _text(lot.get("position_type")).upper()
+    if position_type and position_type != side.name:
+        raise ValueError(f"{named} is {position_type.lower()} on a {side.value} holding")
+    if quantity < 0 and side is Side.LONG:
+        raise ValueError(f"{named} has a negative quantity on a long holding")
+    cost = lot.get("cost_basis")
+    purchased = lot.get("original_purchase_date")
+    acquired = ""
+    if purchased is not None:
+        part = _DATE_PART.match(purchased) if isinstance(purchased, str) else None
+        try:
+            acquired = date.fromisoformat(part.group(1)).isoformat() if part else ""
+        except ValueError:
+            acquired = ""
+        if not acquired:
+            raise ValueError(f"{named} has a purchase date that is not one: {purchased!r}")
+    return Lot(
+        # SnapTrade's magnitude, signed as its holding: a short holding's lots
+        # are short.
+        quantity=-abs(quantity) if side is Side.SHORT else quantity,
+        cost=None
+        if cost is None
+        else meridian.Money(wire_decimal(cost, f"the cost of {named}"), currency),
+        acquired_date=acquired,
     )
 
 
@@ -535,23 +664,39 @@ def cash_holding(balance: Json) -> Holding | None:
     )
 
 
-def _merged(holdings: Iterable[Holding]) -> tuple[Holding, ...]:
+def _merged(holdings: Iterable[Holding]) -> tuple[tuple[Holding, ...], tuple[str, ...]]:
     """One row per instrument and side (W2's invariant under the spec): two
-    rows SnapTrade gave for the same instrument and side are summed."""
+    rows SnapTrade gave for the same instrument and side are summed, and what
+    is said about it. Their lots are both rows' where both list lots, and none
+    otherwise, since part of a list is not the list; two average costs are
+    never combined into one, so the row has none."""
     rows: dict[tuple[tuple[Identifier, ...], Side], Holding] = {}
+    problems: list[str] = []
     for holding in holdings:
         key = (holding.identifiers, holding.side)
         held = rows.get(key)
-        rows[key] = (
-            holding
-            if held is None
-            else replace(
-                held,
-                quantity=held.quantity + holding.quantity,
-                cash_equivalent=held.cash_equivalent or holding.cash_equivalent,
+        if held is None:
+            rows[key] = holding
+            continue
+        named = holding.identifiers[-1].value
+        if held.average_cost is not None or holding.average_cost is not None:
+            problems.append(
+                f"SnapTrade listed {named} {holding.side.value} twice; its two average "
+                "costs are not combined, so none is sent"
             )
+        if bool(held.lots) != bool(holding.lots):
+            problems.append(
+                f"SnapTrade listed {named} {holding.side.value} twice, with lots only "
+                "once; none of its lots is sent"
+            )
+        rows[key] = replace(
+            held,
+            quantity=held.quantity + holding.quantity,
+            cash_equivalent=held.cash_equivalent or holding.cash_equivalent,
+            average_cost=None,
+            lots=held.lots + holding.lots if held.lots and holding.lots else (),
         )
-    return tuple(rows.values())
+    return tuple(rows.values()), tuple(problems)
 
 
 def statement_id(external_account_id: str, read_at: datetime) -> str:
@@ -565,8 +710,10 @@ def statement(
     balances: list[Json],
     read_at: datetime,
     freshness: Freshness,
+    total: Any = None,
 ) -> tuple[Statement, tuple[str, ...]]:
-    """The statement for one account, and what could not be put in it."""
+    """The statement for one account, and what could not be put in it.
+    `total` is the account's `balance.total` as SnapTrade listed it."""
     problems: list[str] = []
     cash: list[Holding] = []
     buying_power: list[meridian.Money] = []
@@ -589,9 +736,16 @@ def statement(
     rows: list[Holding] = []
     for position in positions.get("results") or []:
         try:
-            rows.append(position_holding(_dict(position), fallback))
+            rows.append(position_holding(_dict(position), fallback, problems))
         except ValueError as refused:
             problems.append(str(refused))
+    holdings, merging = _merged(rows + cash)
+    problems.extend(merging)
+    net_liquidation: meridian.Money | None = None
+    try:
+        net_liquidation = _total(total)
+    except ValueError as refused:
+        problems.append(f"{refused}; no net liquidation is sent")
     as_of = (
         _day(_dict(positions.get("data_freshness")).get("as_of"))
         or (freshness.holdings_as_of.date() if freshness.holdings_as_of else None)
@@ -602,11 +756,23 @@ def statement(
             external_statement_id=statement_id(account.external_account_id, read_at),
             as_of_date=as_of.isoformat(),
             read_at_ns=ns(read_at),
-            holdings=_merged(rows + cash),
+            holdings=holdings,
             buying_power=tuple(buying_power),
+            net_liquidation=net_liquidation,
         ),
         tuple(problems),
     )
+
+
+def _total(total: Any) -> meridian.Money | None:
+    """The account's `balance.total`, `{amount, currency}`, as its net
+    liquidation; None where SnapTrade gives no amount."""
+    if not isinstance(total, dict) or total.get("amount") is None:
+        return None
+    code = _currency(total.get("currency"))
+    if not code:
+        raise ValueError("the account's total value names no ISO 4217 currency")
+    return meridian.Money(wire_decimal(total["amount"], f"the account's {code} total"), code)
 
 
 # ── A whole read ─────────────────────────────────────────────────────────────
@@ -633,6 +799,7 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
                 snapshot.balances.get(account.snaptrade_account_id, []),
                 snapshot.read_at,
                 fresh,
+                _dict(raw.get("balance")).get("total"),
             )
         by_connection.setdefault(account.connection_id, []).append(
             AccountView(account, fresh, made, withheld, problems)

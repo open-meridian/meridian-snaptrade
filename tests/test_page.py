@@ -989,7 +989,7 @@ def test_rows_recorded_do_not_make_an_account_linked(server: int) -> None:
 def test_a_linked_account_names_its_account_and_offers_unlink_and_another(
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    sidecar, syncer = started_with(HELD, loop)
+    sidecar, syncer = started_with(HELD[:1], loop)
     with serving(syncer, sidecar, loop) as port:
         _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
     row = row_of(body, ALPACA)
@@ -1004,11 +1004,65 @@ def test_a_linked_account_names_its_account_and_offers_unlink_and_another(
     assert '<option value="ACC-3">Spare</option>' in forms
 
 
+def test_an_account_already_linked_is_offered_for_no_other(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    # One external account per account of the deployment's (v7): Household
+    # holds Alpaca's, so it is offered to none, in the map or without it.
+    sidecar, syncer = started_with(HELD[:1], loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
+    forms = fallback_of(body)
+    assert '<option value="ACC-1">' not in forms
+    assert '<option value="ACC-3">Spare</option>' in forms
+    assert "An account already linked is not offered." in forms
+    offered = {a["account_id"]: a["open"] for a in map_of(body)["accounts"]}
+    # Still named, for the row linked to it; only not offered.
+    assert offered == {"ACC-1": False, "ACC-3": True, "ACC-2": False}
+    assert "Each of the deployment's accounts takes one at most" in body
+
+
+def test_with_every_open_account_linked_none_is_offered(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
+    forms = fallback_of(body)
+    assert 'name="account_id"' not in forms
+    assert "No open account of the deployment's is free to link." in forms
+
+
+def test_a_second_link_to_an_account_is_refused_and_the_reason_shown(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    # The conductor's refusal, for an account the page did not offer (one
+    # another plugin links, say, or one linked since the page was drawn).
+    sidecar, syncer = started_with(HELD[1:], loop)
+    with serving(syncer, sidecar, loop) as port:
+        status, _, body = post_link(
+            port, intent="link", external_account_id=ALPACA, account_id="ACC-3"
+        )
+    assert status == 200
+    assert '<div class="notice bad"' in body
+    assert (
+        escaped(
+            f"The sidecar refused this: ACC-3 already has external account {IBKR} linked "
+            f"(snaptrade); an account has one external account: link {ALPACA} to another "
+            "account, or a new one"
+        )
+        in body
+    )
+    assert links_sent(sidecar) == []
+    assert '<span class="badge warn">Not linked</span>' in row_of(body, ALPACA)
+
+
 def unlinked(name: str, params: Any) -> Exception | None:
-    """The sidecar's refusal of a row for the Alpaca account, which nothing links."""
-    if name == "RecordHolding" and params.external_account_id == ALPACA:
+    """The sidecar's refusal of a statement for the Alpaca account, which
+    nothing links."""
+    if name == "RecordHoldingsStatement" and params.external_account_id == ALPACA:
         return meridian.NotLinked(
-            "RecordHolding", f"external account {ALPACA} is not linked to an account"
+            "RecordHoldingsStatement", f"external account {ALPACA} is not linked to an account"
         )
     return None
 
@@ -1109,7 +1163,7 @@ def test_linking_to_an_existing_account_is_sent_for_the_plugin_admin(
 def test_linking_a_linked_account_to_another_replaces_the_link(
     loop: asyncio.AbstractEventLoop,
 ) -> None:
-    sidecar, syncer = started_with(HELD, loop)
+    sidecar, syncer = started_with(HELD[:1], loop)
     with serving(syncer, sidecar, loop) as port:
         status, _, body = post_link(
             port, intent="link", external_account_id=ALPACA, account_id="ACC-3"

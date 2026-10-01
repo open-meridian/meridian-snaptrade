@@ -6,14 +6,16 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal
 
+import meridian
 from snaptrade_client.model.account import Account
 from snaptrade_client.model.all_account_positions_response import (
     AllAccountPositionsResponse,
 )
 from snaptrade_client.model.balance import Balance
 from snaptrade_client.model.brokerage_authorization import BrokerageAuthorization
+from snaptrade_client.model.tax_lot import TaxLot
 
-from snaptrade.normalise import Serving, Side, SyncState, views
+from snaptrade.normalise import Lot, Serving, Side, SyncState, views
 from snaptrade.synthetic import ALPACA_MARGIN, IBKR_INDIVIDUAL, SCHWAB_BROKERAGE, SyntheticVenue
 from snaptrade.venue import read
 
@@ -28,12 +30,17 @@ async def test_every_response_is_valid_by_snaptrades_own_models() -> None:
         BrokerageAuthorization.from_openapi_data_oapg(connection, _configuration=None)
     for account in await venue.accounts():
         Account.from_openapi_data_oapg(account, _configuration=None)
+    lots = 0
     for account_id in ACCOUNTS:
-        AllAccountPositionsResponse.from_openapi_data_oapg(
-            await venue.positions(account_id), _configuration=None
-        )
+        positions = await venue.positions(account_id)
+        AllAccountPositionsResponse.from_openapi_data_oapg(positions, _configuration=None)
+        for position in positions["results"]:
+            for lot in position.get("tax_lots") or []:
+                TaxLot.from_openapi_data_oapg(lot, _configuration=None)
+                lots += 1
         for balance in await venue.balances(account_id):
             Balance.from_openapi_data_oapg(balance, _configuration=None)
+    assert lots == 6
 
 
 async def test_each_rule_has_something_to_act_on() -> None:
@@ -62,15 +69,37 @@ async def test_each_rule_has_something_to_act_on() -> None:
     btc = next(row for row in alpaca.holdings if row.identifiers[-1].value == "BTC")
     assert btc.quantity == Decimal("0.012345678")
     assert all(row.market_value is None for row in alpaca.holdings if row.kind != "cash")
+    assert by_name["Alpaca Margin"].problems == ()
+    by_symbol = {row.identifiers[-1].value: row for row in alpaca.holdings}
+    assert by_symbol["AAPL"].average_cost == meridian.Money(Decimal("198.10"), "USD")
+    assert by_symbol["AAPL"].lots == (
+        Lot(Decimal("10"), meridian.Money(Decimal("1890.00"), "USD"), "2024-03-11"),
+        Lot(Decimal("2.5"), meridian.Money(Decimal("586.25"), "USD"), "2025-06-02"),
+    )
+    # A short holding's lot is short, though SnapTrade writes it positive.
+    assert by_symbol["ZZTOP"].lots == (
+        Lot(Decimal("-40"), meridian.Money(Decimal("160.80"), "USD"), "2026-08-14"),
+    )
+    # A lot with no cost or date has none, never one made up.
+    assert by_symbol["BTC"].lots == (Lot(Decimal("0.012345678")),)
+    assert by_symbol["SYNXX"].lots == by_symbol["AAPL  261218C00250000"].lots == ()
+    assert alpaca.net_liquidation == meridian.Money(Decimal("9876.54"), "USD")
 
     ibkr = by_name["IBKR Individual"].statement
     assert ibkr is not None
     unstated = next(row for row in ibkr.holdings if row.identifiers[-1].value == "SYNX")
     assert unstated.currency_assumed
+    assert unstated.average_cost is None and unstated.lots == ()
+    sap = next(row for row in ibkr.holdings if row.identifiers[-1].value == "SAP.DE")
+    # Lots adding up to less than the holding are recorded as reported.
+    assert sum(lot.quantity for lot in sap.lots) == Decimal("25") < sap.quantity
+    assert sap.average_cost == meridian.Money(Decimal("180.00"), "EUR")
     usd = next(row for row in ibkr.holdings if row.kind == "cash" and row.currency == "USD")
     assert usd.side is Side.SHORT
 
     schwab = by_name["Schwab Brokerage"]
     assert not schwab.account.stable
+    assert schwab.statement is not None
+    assert all(row.lots == () for row in schwab.statement.holdings)
     assert schwab.freshness.holdings_as_of is not None
     assert NOW - schwab.freshness.holdings_as_of == timedelta(days=5)

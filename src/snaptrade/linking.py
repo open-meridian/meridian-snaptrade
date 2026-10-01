@@ -14,7 +14,11 @@ its holdings, and link to any existing account. A link names an existing
 account, or a new account's name for the conductor to create and link in one
 step, which only a deployment admin may send, or neither, to remove the
 link. A link to another account replaces the one standing: the conductor
-keeps one link per external account.
+keeps one link per external account, and one external account per account
+of the deployment's (contract v7), refusing a second link to an account with
+its reason, which the page shows. So an account one of this plugin's links
+already names is not offered for another; one another plugin's link names,
+which this plugin cannot see, is refused when tried.
 
 What each external account is linked to, and that account's name, this plugin
 reads beside its account scope (W4.11): `__main__` holds the first delivery
@@ -132,6 +136,11 @@ class Links:
     def of(self, external_account_id: str) -> LinkView:
         """One external account's link, as the latest delivery gives it."""
         return link_of(self.scope, external_account_id)
+
+    def taken(self) -> frozenset[str]:
+        """The deployment's accounts this plugin's links already name, as the
+        latest delivery gives them: none of them takes a second link."""
+        return frozenset(link.account_id for link in self.scope.links if link.account_id)
 
     async def offered(self, acting_for: str) -> Offered:
         """The deployment's accounts, for the admin the header names."""

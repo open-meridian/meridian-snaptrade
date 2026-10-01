@@ -4,8 +4,10 @@ Each part of the account-side contract (spec/the-account-side-fits-every-venue)
 as the pinned SDK takes it: a holding's side, its settle-date quantity where
 the venue gives one (SnapTrade gives none), a currency marked as assumed, a
 market value left unset where none was reported, a fund marked as counted in
-cash too, buying power on the statement, the sync state with holdings and
-history freshness, and the accounts a connection reaches (W2.8).
+cash too, its average cost and lots as reported; a statement naming its
+external account and institution, with its figures as the one set for the
+account as a whole; the sync state with holdings and history freshness, and
+the accounts a connection reaches (W2.8).
 """
 
 from __future__ import annotations
@@ -47,9 +49,9 @@ _SIDE: dict[Side, meridian.HoldingSide] = {
 
 
 def refused_unlinked(refused: meridian.MeridianError) -> bool:
-    """Whether a row was refused because its external account is not linked
-    (W4.8): by the refusal's code, which the SDK raises as `NotLinked`, never
-    by its words."""
+    """Whether a statement, or a row, was refused because its external account
+    is not linked (W4.8): by the refusal's code, which the SDK raises as
+    `NotLinked`, never by its words."""
     return isinstance(refused, meridian.NotLinked)
 
 
@@ -146,6 +148,23 @@ class Recorder:
         )
         return {"unresolved_identifiers": identifiers}
 
+    @staticmethod
+    def _figures(statement: Statement) -> list[meridian.StatementFigures]:
+        """The statement's figures: one set, with no segment, the account's as
+        a whole, where SnapTrade reported any; none otherwise. SnapTrade
+        names no margin segment, and a currency is not one: buying power
+        given in several currencies is not summed, and none is sent."""
+        buying_power = statement.buying_power[0] if len(statement.buying_power) == 1 else None
+        if buying_power is None and statement.net_liquidation is None:
+            return []
+        return [
+            meridian.StatementFigures(
+                segment="",
+                buying_power=buying_power,
+                net_liquidation=statement.net_liquidation,
+            )
+        ]
+
     def _row(self, holding: Holding) -> dict[str, Any]:
         return {
             "quantity": holding.quantity,
@@ -158,6 +177,15 @@ class Recorder:
             "also_counted_in_cash": holding.cash_equivalent,
             # None where the venue gives none, as SnapTrade never does.
             "settle_date_quantity": holding.settle_date_quantity,
+            # SnapTrade's average per unit, as reported; its total cost basis
+            # is none it reports, so `cost_basis` is never sent.
+            "average_cost": holding.average_cost,
+            "lots": [
+                meridian.ReportedLot(
+                    quantity=lot.quantity, cost=lot.cost, acquired_date=lot.acquired_date
+                )
+                for lot in holding.lots
+            ],
         }
 
     async def record(
@@ -173,17 +201,17 @@ class Recorder:
                 await self._resolve(holding, as_of_ns, observed_at_ns, outcome)
                 for holding in statement.holdings
             ]
+            # A statement names its account, and one nothing links is refused
+            # here, before any row (v7).
             opened = await self._plugin.record_holdings_statement(
                 source=SOURCE,
                 external_statement_id=statement.external_statement_id,
+                external_account_id=account.external_account_id,
+                institution=account.institution,
                 as_of_date=statement.as_of_date,
                 read_at_ns=statement.read_at_ns,
                 expected_rows=len(statement.holdings),
-                # One figure per statement in the contract; SnapTrade gives one
-                # per currency, and several are not summed into one.
-                buying_power=(
-                    statement.buying_power[0] if len(statement.buying_power) == 1 else None
-                ),
+                figures=self._figures(statement),
             )
             outcome.statement_id = opened.statement_id
             if opened.already_recorded:

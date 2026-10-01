@@ -5,16 +5,19 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.6.2. How a plugin like it is built is documented at
+0.7.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.11.0`, which declares
-contract v6 and carries the whole account-side contract
+It is built on the SDK it pins, `open-meridian==0.12.0`, which declares
+contract v7 and carries the whole account-side contract
 (spec/the-account-side-fits-every-venue): a holding's side, a market value
 left unset, a currency marked as assumed, a fund marked as counted in cash
-too, buying power on the statement, the sync state with holdings and history
-freshness, the accounts a connection reaches, linking them, and reading its
-own links; and the access-by-button model (sdk-contract/a-plugin-has-admins):
+too, a holding's average cost and lots as the venue reports them, a
+statement naming its external account and institution with its figures for
+the account as a whole (buying power and net liquidation), the sync state
+with holdings and history freshness, the accounts a connection reaches,
+linking them, one external account to each of the deployment's accounts,
+and reading its own links; and the access-by-button model (sdk-contract/a-plugin-has-admins):
 its pages, each declared with the levels it serves, opened by the dashboard's
 Manage, Open and View; and the figures a plugin reports on the Summary core
 draws (sdk-contract/a-plugin-reports-its-figures). An ambiguous miss carries
@@ -34,7 +37,9 @@ On start, on every settings change, and every `poll_seconds`, it:
    and records each row (W2.3), resolving each instrument first (W3.1). A row
    nothing matches is recorded against the deployment's placeholder (W3.7); an
    ambiguous one is recorded unresolved and its miss published once (W3.2),
-   with the instrument's asset class where its kind gives one.
+   with the instrument's asset class where its kind gives one. The statement
+   names the external account it was read for and its institution; one for an
+   account nothing links is refused before any row.
    A refusal stops that statement and is shown, never retried.
 
 It holds nothing between reads. A restart reads again.
@@ -53,12 +58,16 @@ meridian-design.
 | position `units` | the trade-date quantity, signed; negative is a short row, positive a long one |
 | (none) | no settle-date quantity: SnapTrade reports none |
 | position `price` | nothing. SnapTrade reports no market value, and one is never made from a price; a cash row's value is its amount |
+| position `cost_basis` | the holding's average cost, per unit (per share for an option), as reported, in the row's currency (the product owner, 2026-10-01); never multiplied out, so the holding's total cost basis is left unset: SnapTrade reports none. Two rows merged into one send none |
+| position `tax_lots[]` | the holding's lots, in SnapTrade's order: `quantity` signed as the holding (a short holding's lots are short), `cost_basis` as the lot's cost, the whole lot's, sign as reported, and the date part of `original_purchase_date` as written. None where SnapTrade lists none (lots come only on some brokerages, and with SnapTrade's paid add-on), never a made-up one; and none for a holding any of whose lots cannot be read exactly (no quantity, a side contradicting the holding's, a number past 18 places, a date that is not one), said in the log. `purchased_price`, `current_value` and `lot_id` are not sent |
 | position `currency` | the row's currency; where SnapTrade states none for the position, the listing's, or the account's only cash currency, or USD, marked as assumed |
 | `instrument.figi_instrument.figi_code` | identifier `{scheme: figi}` |
 | `instrument.symbol` (a ticker, or an option's OCC symbol) | identifier `{scheme: symbol, source: snaptrade}` |
 | `instrument.exchange`, when a MIC | the MIC resolution is qualified by |
 | `instrument.kind` | the asset class an ambiguous miss is reported with (the product owner, 2026-10-01): `stock` is `equity`; `etf` and `mutualfund` are `fund`; `bond` is `debt`; `option` is `derivative`; `crypto` is `crypto_asset`; `adr` is `equity`; `cef` is `fund`; `future`, `future_option` and `cfd` are `derivative`. `tokenized_asset` (its class is what the token stands for), `other`, and any kind SnapTrade adds are sent with no class, for a person to set on the platform; a cash row is `cash` |
-| balance `buying_power` per currency | the statement's buying power, as reported, never derived |
+| balance `buying_power` per currency | the statement's buying power, as reported, never derived, where exactly one currency reports it: buying power in several currencies is not summed, and a currency is not a margin segment |
+| account `balance.total` | the statement's net liquidation, the account's total value as the brokerage gave it (the product owner, 2026-10-01); none where SnapTrade gives none |
+| (the statement's figures) | one set with no segment, the account's as a whole, holding the two above; none where neither is reported. SnapTrade reports no margin requirement, maintenance excess, initial or variation margin, or collateral, so none is sent |
 | `cash_equivalent: true` (money-market funds) | kept as a position and marked; SnapTrade counts it in cash too |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
 | connection `data_freshness_mode.snaptrade` (`realtime` or `delayed`) | how SnapTrade serves the connection: whether the Connections tab offers Refresh (below); unknown when absent |
@@ -130,9 +139,11 @@ each against SnapTrade's own models). It records them through the sidecar like
 real ones, so it can be developed live on a deployment before any key exists.
 Every value is invented. Three connections, chosen so each rule has something
 to act on: Alpaca (current; long and short stock, an option, a money-market
-fund, crypto to nine decimals, cash in two currencies), Interactive Brokers
-(delayed by design; a euro listing, a position with no stated currency,
-negative cash), and Schwab (disabled, with no stable account ID). SnapTrade
+fund, crypto to nine decimals, cash in two currencies; tax lots on Apple,
+the short and Bitcoin, one with no cost or date), Interactive Brokers
+(delayed by design; a euro listing whose lots add up to less than it, a
+position with no stated currency, negative cash), and Schwab (disabled, with
+no stable account ID, and no lots). SnapTrade
 serves Alpaca and Schwab in real time and Interactive Brokers on a delay, so
 only Interactive Brokers is offered Refresh; refreshing it in synthetic mode
 asks nothing of SnapTrade.
@@ -300,6 +311,13 @@ one names the account it is linked to, from the link itself, and offers
 **Unlink**, or another account: the conductor keeps one link per external
 account, so a new link replaces the one standing.
 
+Each of the deployment's accounts takes one external account (contract v7):
+a second link to an account is refused by the conductor, with its reason,
+which the page shows as worded ("ACC-3 already has external account ...
+linked"). An account one of this plugin's links already names is offered for
+no other, in the map or without it; one another plugin links is not known
+here, and its refusal is what says so.
+
 Where an unlinked account's name, or its account number, matches exactly one
 open account of the deployment's that nothing else is linked to, the map
 suggests it in the row; **Link** takes it. The plugin gives the map
@@ -392,8 +410,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.11.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.11.0`.
+The SDK is pinned exactly, `open-meridian==0.12.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.12.0`.
 Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
 meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
 runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
@@ -404,7 +422,12 @@ changed nothing the plugin calls; from it, the pages' body ceiling is
 calls; from it, each read reports its figures (`plugin.report(...,
 figures=...)`), which the tests read as the heartbeat the sidecar receives
 (`meridian.testing.heartbeat`), and the health a read reports stands until
-the next.
+the next. Moving to 0.12.0 (contract v7) ran `meridian plugin migrate`, which
+moved the pins and rewrote the statement's flat `buying_power=` into
+`figures=[StatementFigures(segment="", ...)]`; the statement's
+`external_account_id` and `institution`, the net liquidation, a holding's
+average cost and lots, and one external account per account on Account links
+were done by hand.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -418,8 +441,8 @@ on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `5720c20`, the
-first to carry the harness). That deployment is core's
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `f49dd7f`, contract v7;
+`5720c20` was the first to carry the harness). That deployment is core's
 **plugin harness**, which ships inside the image
 (`/usr/share/meridian/harness/`, with its own README); the target copies it
 out into `.e2e/` and runs it as the compose project `snaptrade-e2e`, with no
@@ -473,7 +496,7 @@ SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.6.2 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.7.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

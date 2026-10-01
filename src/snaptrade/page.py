@@ -550,12 +550,17 @@ def _connection_label(connection: ConnectionView) -> str:
 
 
 def _map_data(
-    shown: Sequence[Shown], links: Mapping[str, LinkView], offered: Offered
+    shown: Sequence[Shown],
+    links: Mapping[str, LinkView],
+    offered: Offered,
+    taken: frozenset[str] = frozenset(),
 ) -> dict[str, object]:
     """What om-account-map takes: the external accounts' identities (with the
     number the map matches on, and the connection it groups by), the
     deployment's accounts (null where they could not be read), and the links
-    standing."""
+    standing. An account in `taken`, already linked to one of this plugin's
+    external accounts, is not offered for another: the map offers only an
+    account marked open, so it is given as not open, and still named."""
     accounts = (
         None
         if offered.refused
@@ -565,7 +570,7 @@ def _map_data(
                 "name": account.name,
                 "custodian": account.custodian,
                 "account_type": account.account_type,
-                "open": account.open,
+                "open": account.open and account.account_id not in taken,
             }
             for account in offered.accounts
         ]
@@ -642,6 +647,9 @@ async def _accounts(
     of the deployment's here, in the one account map."""
     status = _now().syncer.status
     links = _links_of(status)
+    # One external account per account of the deployment's (v7): one this
+    # plugin already links is offered to none of its others.
+    taken = _now().links.taken()
     offered = await _offered_to(request.caller)
     shown = [(c, view) for c in status.connections for view in c.accounts]
     counted = [links[view.account.external_account_id].state for view in status.accounts]
@@ -662,7 +670,7 @@ async def _accounts(
             summary=summary.capitalize(),
             # Only a deployment admin names a new account (W6.4).
             creates=request.caller.deployment_admin,
-            map=_map_data(shown, links, offered),
+            map=_map_data(shown, links, offered, taken),
             rows=[
                 _mapping_row(c, view, links[view.account.external_account_id])
                 for c, view in shown
@@ -677,8 +685,10 @@ async def _accounts(
             choices=[
                 {"account_id": a.account_id, "label": a.label()}
                 for a in offered.accounts
-                if a.open
+                if a.open and a.account_id not in taken
             ],
+            # Open accounts there are, every one linked already.
+            offered_any=any(a.open for a in offered.accounts),
             most_name=_MOST_NAME,
             token_name=CSRF_FIELD,
         )

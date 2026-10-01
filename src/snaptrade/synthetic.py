@@ -11,12 +11,16 @@ Three connections, chosen so each normalising rule has something to act on:
 
 - Alpaca, current and served in real time: long and short stock, an option,
   a money-market fund also counted in cash, crypto to nine decimals, and cash
-  in two currencies.
+  in two currencies. Apple has two tax lots; ZZTOP, short, one, which
+  SnapTrade writes with a positive quantity; Bitcoin one with no cost or
+  date; the option and the fund none.
 - Interactive Brokers, a business day late by design and the one SnapTrade
-  serves on a delay, so the one a refresh applies to: a euro listing, a
-  position whose currency SnapTrade does not state, and negative dollar cash.
+  serves on a delay, so the one a refresh applies to: a euro listing whose
+  lots add up to less than its quantity (recorded as reported), a position
+  whose currency SnapTrade does not state, and negative dollar cash.
 - Schwab, served in real time but disabled five days ago and serving what it
-  last read, with an account SnapTrade gives no institution_account_id for.
+  last read, with an account SnapTrade gives no institution_account_id for,
+  and no tax lots.
 
 The tests hold every response here to SnapTrade's own models.
 """
@@ -159,12 +163,25 @@ _POSITIONS: dict[str, Template] = {
                     "currency": "USD", "exchange": "XNAS",
                     "figi_instrument": {"figi_code": "BBG000B9XRY4",
                                         "figi_share_class": "BBG001S5N8V8"}},
-     "units": "12.5", "price": "231.40", "cost_basis": "198.10", "currency": "USD"},
+     "units": "12.5", "price": "231.40", "cost_basis": "198.10", "currency": "USD",
+     "tax_lots": [
+       {"original_purchase_date": "2024-03-11T14:30:00.000Z", "quantity": "10",
+        "purchased_price": "189.00", "cost_basis": "1890.00", "current_value": "2314.00",
+        "position_type": "LONG", "lot_id": "SYN-LOT-1"},
+       {"original_purchase_date": "2025-06-02T15:00:00.000Z", "quantity": "2.5",
+        "purchased_price": "234.50", "cost_basis": "586.25", "current_value": "578.50",
+        "position_type": "LONG", "lot_id": "SYN-LOT-2"}
+     ]},
     {"instrument": {"kind": "stock", "id": "00000000-0000-4000-8000-00000000d002",
                     "symbol": "ZZTOP", "raw_symbol": "ZZTOP",
                     "description": "Synthetic short, nothing resolves it",
                     "currency": "USD", "exchange": "XNYS", "figi_instrument": null},
-     "units": "-40", "price": "3.15", "cost_basis": "4.02", "currency": "USD"},
+     "units": "-40", "price": "3.15", "cost_basis": "4.02", "currency": "USD",
+     "tax_lots": [
+       {"original_purchase_date": "2026-08-14T13:45:00.000Z", "quantity": "40",
+        "purchased_price": "4.02", "cost_basis": "160.80", "current_value": "126.00",
+        "position_type": "SHORT", "lot_id": "SYN-LOT-3"}
+     ]},
     {"instrument": {"kind": "option", "id": "00000000-0000-4000-8000-00000000d003",
                     "symbol": "AAPL  261218C00250000", "option_type": "CALL",
                     "strike_price": "250", "expiration_date": "2026-12-18",
@@ -183,7 +200,12 @@ _POSITIONS: dict[str, Template] = {
     {"instrument": {"kind": "crypto", "id": "00000000-0000-4000-8000-00000000d005",
                     "symbol": "BTC", "raw_symbol": "BTC", "description": "Bitcoin",
                     "currency": "USD"},
-     "units": "0.012345678", "price": "64210.5", "cost_basis": "58000", "currency": "USD"}
+     "units": "0.012345678", "price": "64210.5", "cost_basis": "58000", "currency": "USD",
+     "tax_lots": [
+       {"original_purchase_date": null, "quantity": "0.012345678",
+        "purchased_price": null, "cost_basis": null, "current_value": null,
+        "position_type": "LONG", "lot_id": null}
+     ]}
   ],
   "data_freshness": {"as_of": "$recent"}
 }"""),
@@ -192,7 +214,15 @@ _POSITIONS: dict[str, Template] = {
     {"instrument": {"kind": "stock", "id": "00000000-0000-4000-8000-00000000d006",
                     "symbol": "SAP.DE", "raw_symbol": "SAP", "description": "SAP SE",
                     "currency": "EUR", "exchange": "XETR"},
-     "units": "30", "price": "212.35", "cost_basis": "180.00", "currency": "EUR"},
+     "units": "30", "price": "212.35", "cost_basis": "180.00", "currency": "EUR",
+     "tax_lots": [
+       {"original_purchase_date": "2023-05-15T09:00:00.000Z", "quantity": "20",
+        "purchased_price": "175.00", "cost_basis": "3500.00", "current_value": "4247.00",
+        "position_type": "LONG", "lot_id": "SYN-LOT-4"},
+       {"original_purchase_date": "2024-11-04T10:30:00.000Z", "quantity": "5",
+        "purchased_price": "190.00", "cost_basis": "950.00", "current_value": "1061.75",
+        "position_type": "LONG", "lot_id": "SYN-LOT-5"}
+     ]},
     {"instrument": {"kind": "other", "id": "00000000-0000-4000-8000-00000000d007",
                     "symbol": "SYNX", "raw_symbol": "SYNX",
                     "description": "A position SnapTrade names no currency for"},

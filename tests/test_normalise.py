@@ -11,6 +11,7 @@ import pytest
 
 from snaptrade.normalise import (
     Identifier,
+    Lot,
     Serving,
     Side,
     SyncState,
@@ -25,6 +26,7 @@ from snaptrade.normalise import (
     statement_id,
     to_decimal,
     views,
+    wire_decimal,
 )
 from snaptrade.venue import Snapshot, parse_exact
 
@@ -113,6 +115,17 @@ def test_json_numbers_are_read_exactly_from_their_text() -> None:
 def test_what_is_not_a_finite_number_is_refused(value: Any) -> None:
     with pytest.raises(ValueError):
         to_decimal(value, "x")
+
+
+def test_what_the_wire_carries_exactly_is_kept_and_what_it_does_not_is_refused() -> None:
+    assert format(wire_decimal("0.000000000000000001", "x"), "f") == "0.000000000000000001"
+    assert wire_decimal("9" * 38, "x") == Decimal("9" * 38)
+    with pytest.raises(ValueError, match="19 decimal places"):
+        wire_decimal("0.0000000000000000001", "x")
+    with pytest.raises(ValueError, match="38 digits"):
+        wire_decimal("1" + "0" * 38, "x")
+    with pytest.raises(ValueError, match="38 digits"):
+        wire_decimal(Decimal("1E+38"), "x")
 
 
 # ── Accounts ─────────────────────────────────────────────────────────────────
@@ -317,7 +330,9 @@ def test_a_balance_with_no_cash_figure_is_no_row() -> None:
 # ── Statements ───────────────────────────────────────────────────────────────
 
 
-def made(positions: list[dict[str, Any]], balances: list[dict[str, Any]]) -> Any:
+def made(
+    positions: list[dict[str, Any]], balances: list[dict[str, Any]], total: Any = None
+) -> Any:
     acct = external_account(account(), connection())
     fresh = freshness(account(), connection(), NOW, STALE_AFTER)
     return statement(
@@ -326,6 +341,7 @@ def made(positions: list[dict[str, Any]], balances: list[dict[str, Any]]) -> Any
         balances,
         NOW,
         fresh,
+        total,
     )
 
 
@@ -392,6 +408,232 @@ def test_the_position_currency_falls_back_to_the_accounts_only_cash_currency() -
     unstated = stock("SYNX", "7", instrument={"currency": None})
     result, _ = made([unstated], [balance("CAD", Decimal("1"))])
     assert (result.holdings[0].currency, result.holdings[0].currency_assumed) == ("CAD", True)
+
+
+# ── Cost and lots ────────────────────────────────────────────────────────────
+
+
+def lot(quantity: Any = "10", **changes: Any) -> dict[str, Any]:
+    """A `tax_lots` entry as SnapTrade's TaxLot model has it."""
+    base: dict[str, Any] = {
+        "original_purchase_date": "2024-03-11T14:30:00.000Z",
+        "quantity": quantity,
+        "purchased_price": "189.00",
+        "cost_basis": "1890.00",
+        "current_value": "2314.00",
+        "position_type": "LONG",
+        "lot_id": "L-1",
+    }
+    return {**base, **changes}
+
+
+def held(position: dict[str, Any], fallback: str = "USD") -> tuple[Any, list[str]]:
+    problems: list[str] = []
+    return position_holding(position, fallback, problems), problems
+
+
+def test_the_average_cost_is_snaptrades_per_unit_figure_as_reported() -> None:
+    row, problems = held(stock("AAPL", "12.5", cost_basis="198.10"))
+    assert row.average_cost == meridian.Money(Decimal("198.10"), "USD")
+    assert str(row.average_cost.amount) == "198.10" and problems == []
+
+
+def test_an_options_average_cost_is_per_share_as_reported_never_multiplied() -> None:
+    option = stock(
+        "AAPL  261218C00250000",
+        "2",
+        cost_basis="8.75",
+        instrument={"kind": "option", "multiplier": "100"},
+    )
+    row, _ = held(option)
+    assert row.average_cost == meridian.Money(Decimal("8.75"), "USD")
+
+
+def test_the_average_cost_is_in_the_rows_currency_assumed_or_not() -> None:
+    row, _ = held(stock("SYNX", "7", cost_basis="3.10", instrument={"currency": None}), "CAD")
+    assert row.average_cost == meridian.Money(Decimal("3.10"), "CAD")
+    assert row.currency_assumed
+
+
+def test_no_average_cost_reported_is_none() -> None:
+    row, problems = held(stock("SYNX", "7", cost_basis=None))
+    assert row.average_cost is None and problems == []
+    assert held(stock("SYNX", "7"))[0].average_cost is None
+
+
+@pytest.mark.parametrize("given", ["abc", "0.0000000000000000001", True])
+def test_an_average_cost_not_read_exactly_is_not_sent_and_said(given: Any) -> None:
+    row, problems = held(stock("AAPL", "12.5", cost_basis=given))
+    assert row.average_cost is None and row.quantity == Decimal("12.5")
+    (problem,) = problems
+    assert "the average cost of AAPL" in problem
+
+
+def test_lots_are_read_exactly_in_snaptrades_order() -> None:
+    row, problems = held(
+        stock(
+            "AAPL",
+            "12.5",
+            tax_lots=[
+                lot("10"),
+                lot(
+                    "2.500",
+                    cost_basis="586.25",
+                    original_purchase_date="2025-06-02T15:00:00.000Z",
+                ),
+                lot("0.012345678", cost_basis=Decimal("1.5")),
+            ],
+        )
+    )
+    assert problems == []
+    assert row.lots == (
+        Lot(Decimal("10"), meridian.Money(Decimal("1890.00"), "USD"), "2024-03-11"),
+        Lot(Decimal("2.500"), meridian.Money(Decimal("586.25"), "USD"), "2025-06-02"),
+        Lot(Decimal("0.012345678"), meridian.Money(Decimal("1.5"), "USD"), "2024-03-11"),
+    )
+    assert [str(each.quantity) for each in row.lots] == ["10", "2.500", "0.012345678"]
+
+
+def test_lots_are_recorded_as_reported_even_when_they_do_not_add_up() -> None:
+    row, problems = held(stock("SAP.DE", "30", tax_lots=[lot("20"), lot("5")]))
+    assert sum(each.quantity for each in row.lots) == Decimal("25") and problems == []
+
+
+def test_a_lots_purchase_date_is_its_date_part_as_written() -> None:
+    # No time-zone conversion, which could move the day.
+    late = lot(original_purchase_date="2024-03-11T23:30:00-05:00")
+    plain = lot(original_purchase_date="2024-03-11")
+    row, _ = held(stock("AAPL", "20", tax_lots=[late, plain]))
+    assert [each.acquired_date for each in row.lots] == ["2024-03-11", "2024-03-11"]
+
+
+def test_a_lots_cost_and_date_not_reported_are_unset_never_made_up() -> None:
+    row, problems = held(
+        stock("BTC", "0.5", tax_lots=[lot("0.5", cost_basis=None, original_purchase_date=None)])
+    )
+    assert row.lots == (Lot(Decimal("0.5"), None, ""),) and problems == []
+
+
+def test_a_lots_cost_keeps_its_sign_as_reported() -> None:
+    row, _ = held(stock("AAPL", "10", tax_lots=[lot("10", cost_basis="-18.25")]))
+    assert row.lots[0].cost == meridian.Money(Decimal("-18.25"), "USD")
+
+
+@pytest.mark.parametrize("quantity", ["40", "-40"])
+def test_a_short_holdings_lots_are_short(quantity: str) -> None:
+    short = lot(quantity, position_type="SHORT", cost_basis="160.80")
+    row, problems = held(stock("ZZTOP", "-40", tax_lots=[short]))
+    assert row.lots == (
+        Lot(Decimal("-40"), meridian.Money(Decimal("160.80"), "USD"), "2024-03-11"),
+    )
+    assert problems == []
+
+
+@pytest.mark.parametrize("given", [None, []])
+def test_no_lots_listed_is_no_lots(given: Any) -> None:
+    row, problems = held(stock("AAPL", "12.5", tax_lots=given))
+    assert row.lots == () and problems == []
+    assert held(stock("AAPL", "12.5"))[0].lots == ()
+
+
+@pytest.mark.parametrize(
+    ("bad", "said"),
+    [
+        (lot(None), "lot 2 of AAPL has no quantity"),
+        (lot("abc"), "the quantity of lot 2 of AAPL is not a number"),
+        (lot("0.0000000000000000001"), "19 decimal places"),
+        (lot("1", cost_basis="abc"), "the cost of lot 2 of AAPL is not a number"),
+        (lot("1", position_type="SHORT"), "lot 2 of AAPL is short on a long holding"),
+        (lot("-1"), "lot 2 of AAPL has a negative quantity on a long holding"),
+        (lot("1", original_purchase_date="last spring"), "a purchase date that is not one"),
+        (lot("1", original_purchase_date="2024-02-30T00:00:00Z"), "not one"),
+        ("a lot", "lot 2 of AAPL is not an object"),
+    ],
+)
+def test_a_lot_not_read_exactly_sends_none_of_the_holdings_lots(bad: Any, said: str) -> None:
+    row, problems = held(stock("AAPL", "12.5", tax_lots=[lot("10"), bad]))
+    # Never part of the list: that would show a difference that is not there.
+    assert row.lots == ()
+    # The row itself stands.
+    assert row.quantity == Decimal("12.5") and row.side is Side.LONG
+    (problem,) = problems
+    assert said in problem and "none of AAPL's lots is sent" in problem
+
+
+def test_lots_that_are_not_a_list_are_none_and_said() -> None:
+    row, problems = held(stock("AAPL", "12.5", tax_lots={"quantity": "1"}))
+    assert row.lots == () and len(problems) == 1
+
+
+def test_a_statement_says_why_a_holding_has_no_lots() -> None:
+    result, problems = made([stock("AAPL", "1", tax_lots=[lot(None)]), stock("MSFT", "1")], [])
+    assert [row.identifiers[-1].value for row in result.holdings] == ["AAPL", "MSFT"]
+    (problem,) = problems
+    assert "AAPL" in problem
+
+
+def test_two_rows_for_one_holding_keep_both_rows_lots_and_no_average_cost() -> None:
+    result, problems = made(
+        [
+            stock("AAPL", "10", cost_basis="190", tax_lots=[lot("10")]),
+            stock("AAPL", "2.5", cost_basis="200", tax_lots=[lot("2.5")]),
+        ],
+        [],
+    )
+    (row,) = result.holdings
+    assert row.quantity == Decimal("12.5")
+    assert [each.quantity for each in row.lots] == [Decimal("10"), Decimal("2.5")]
+    # Two averages are never combined into one.
+    assert row.average_cost is None
+    (problem,) = problems
+    assert "average costs are not combined" in problem
+
+
+def test_two_rows_for_one_holding_with_lots_only_once_send_none() -> None:
+    result, problems = made(
+        [stock("AAPL", "10", tax_lots=[lot("10")]), stock("AAPL", "2.5")], []
+    )
+    assert result.holdings[0].lots == ()
+    assert any("lots only once" in problem for problem in problems)
+
+
+# ── Figures ──────────────────────────────────────────────────────────────────
+
+
+def test_the_accounts_total_value_is_its_net_liquidation_exactly() -> None:
+    total = parse_exact('{"amount": 9876.54, "currency": "USD"}')
+    result, problems = made([], [], total)
+    assert result.net_liquidation == meridian.Money(Decimal("9876.54"), "USD")
+    assert str(result.net_liquidation.amount) == "9876.54" and problems == ()
+
+
+def test_a_total_value_in_whole_units_is_kept_whole() -> None:
+    result, _ = made([], [], {"amount": 1230, "currency": "usd"})
+    assert result.net_liquidation == meridian.Money(Decimal("1230"), "USD")
+
+
+@pytest.mark.parametrize("total", [None, {}, {"amount": None, "currency": "USD"}, "9876.54"])
+def test_no_total_value_is_no_net_liquidation(total: Any) -> None:
+    result, problems = made([], [], total)
+    assert result.net_liquidation is None and problems == ()
+
+
+def test_a_total_value_with_no_currency_is_no_net_liquidation_and_said() -> None:
+    result, problems = made([], [], {"amount": Decimal("10"), "currency": None})
+    assert result.net_liquidation is None
+    (problem,) = problems
+    assert "no ISO 4217 currency" in problem
+
+
+def test_a_read_takes_the_net_liquidation_from_the_accounts_balance() -> None:
+    raw = account(balance={"total": {"amount": Decimal("9876.54"), "currency": "USD"}})
+    snapshot = Snapshot(
+        NOW, [connection()], [raw], {raw["id"]: {"results": []}}, {raw["id"]: []}
+    )
+    (only,) = views(snapshot, STALE_AFTER)
+    (view,) = only.accounts
+    assert view.statement is not None
+    assert view.statement.net_liquidation == meridian.Money(Decimal("9876.54"), "USD")
 
 
 # ── Sync state and freshness ─────────────────────────────────────────────────
