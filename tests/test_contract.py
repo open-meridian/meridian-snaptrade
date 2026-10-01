@@ -41,6 +41,7 @@ LONG = Holding(
     quantity=Decimal("12.50"),
     currency="USD",
     exchange_mic="XNAS",
+    asset_class="equity",
 )
 SHORT = Holding(
     identifiers=(Identifier("symbol", "ZZTOP", "snaptrade"),),
@@ -50,6 +51,7 @@ SHORT = Holding(
     quantity=Decimal("-40"),
     currency="USD",
     currency_assumed=True,
+    asset_class="equity",
 )
 CASH = Holding(
     identifiers=(Identifier("iso4217", "CAD"),),
@@ -188,7 +190,20 @@ async def test_an_ambiguous_row_is_still_recorded_and_its_miss_published_once() 
     ]
     (miss,) = sidecar.sent("ReportMissingInstrument")
     assert miss.reason == ops.MISS_REASON_AMBIGUOUS and miss.source == "snaptrade"
+    assert miss.asset_class == ops.ASSET_CLASS_EQUITY
     assert outcome.ambiguous == 1
+
+
+async def test_a_miss_carries_the_rows_asset_class_and_none_where_it_has_none() -> None:
+    sidecar = Sidecar(resolve=lambda p: ambiguous())
+    await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
+    # The two stocks are equity; the cash, which has no class, is sent none.
+    misses = sidecar.sent("ReportMissingInstrument")
+    assert [ops.AssetClass.Name(miss.asset_class) for miss in misses] == [
+        "ASSET_CLASS_EQUITY",
+        "ASSET_CLASS_EQUITY",
+        "ASSET_CLASS_UNSPECIFIED",
+    ]
 
 
 async def test_a_redelivered_statement_records_no_rows() -> None:

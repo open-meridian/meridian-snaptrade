@@ -24,6 +24,11 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 - **Market value only as reported.** SnapTrade reports none for a position,
   and it is never computed from `price`: unset means "not reported". A cash
   row's value is its amount, which is what SnapTrade reported.
+- **An asset class from SnapTrade's instrument kind** (the product owner,
+  2026-10-01): stock is equity, etf and mutualfund are fund, bond is debt,
+  option is derivative, crypto is crypto_asset; any other kind is left unset
+  for a person to set on the platform. Cash is no instrument SnapTrade
+  reports, and has none.
 - **A stated currency where the venue gives none,** marked as assumed.
 - **Numbers are Decimal.** A float reaching here becomes Decimal(repr(value)).
 - **The statement ID is made from the account and the read time.**
@@ -60,6 +65,20 @@ DELAYED_STALE_AFTER = timedelta(days=4)
 # When a connection carries no data_freshness_mode, the brokerages known to be
 # a business day late through SnapTrade (reference/broker-apis.md).
 _LATE_BY_DESIGN_SLUGS = ("INTERACTIVE-BROKERS",)
+
+# SnapTrade's instrument kinds (`instrument.kind` in `positions/all`) the
+# product owner mapped, 2026-10-01, to the platform's asset class, by
+# meridian.AssetClass's lowercase name. SnapTrade's other kinds -- adr, cef,
+# future, future_option, cfd, tokenized_asset, other -- and any it adds are
+# not here: their class is left for a person to set, never guessed.
+_ASSET_CLASS = {
+    "stock": "equity",
+    "etf": "fund",
+    "mutualfund": "fund",
+    "bond": "debt",
+    "option": "derivative",
+    "crypto": "crypto_asset",
+}
 
 _MIC = re.compile(r"^[A-Z0-9]{4}$")
 _CURRENCY = re.compile(r"^[A-Z]{3}$")
@@ -183,6 +202,9 @@ class Holding:
     exchange_mic: str = ""
     # A money-market fund SnapTrade also counts in the account's cash.
     cash_equivalent: bool = False
+    # The platform's asset class for the kind (`asset_class`), sent with a
+    # miss; empty where it is not known, and for cash.
+    asset_class: str = ""
 
 
 @dataclass(frozen=True)
@@ -426,6 +448,13 @@ def _currency(value: Any) -> str:
     return code if _CURRENCY.match(code) else ""
 
 
+def asset_class(kind: str) -> str:
+    """The platform's asset class for one of SnapTrade's instrument kinds, by
+    meridian.AssetClass's lowercase name; "" for a kind not mapped, cash
+    among them, so the class is left for a person to set."""
+    return _ASSET_CLASS.get(kind, "")
+
+
 def position_holding(position: Json, fallback_currency: str) -> Holding:
     """One position from `positions/all`, as a row."""
     instrument = _dict(position.get("instrument"))
@@ -457,6 +486,7 @@ def position_holding(position: Json, fallback_currency: str) -> Holding:
         market_value=None,
         exchange_mic=exchange if _MIC.match(exchange) else "",
         cash_equivalent=position.get("cash_equivalent") is True,
+        asset_class=asset_class(kind),
     )
 
 

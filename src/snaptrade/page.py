@@ -82,7 +82,20 @@ TITLE = "SnapTrade"
 # deployment's newest 0.x for it; pinning one keeps the pages as they were built.
 KIT = "0.7.0"
 
-pages = meridian.Pages(TITLE, templates=Path(__file__).parent / "templates", kit=KIT)
+# The largest body any request here may carry: the map's several-link form,
+# a pair of IDs for each link, a hundred bytes or so a pair, room for some
+# thousands of accounts. The SDK answers a larger one 413 before a view runs.
+_MOST_LINKS_BODY = 1 << 20
+# Every other form here carries a token, an account, and a new account's name,
+# custodian and type at most; anything longer is not one of this page's.
+_MOST_BODY = 8192
+
+pages = meridian.Pages(
+    TITLE,
+    templates=Path(__file__).parent / "templates",
+    kit=KIT,
+    max_body=_MOST_LINKS_BODY,
+)
 
 # The pages, in the order each button's tab row shows them.
 STATEMENTS = "/"
@@ -105,12 +118,6 @@ pages.environment.globals["paths"] = {
     "link": LINK,
 }
 
-# A form here carries a token, an account, and a new account's name, custodian
-# and type at most; anything longer is not one of this page's.
-_MOST_BODY = 8192
-# But the map's several-link form carries a pair of IDs for each link, a
-# hundred bytes or so a pair: room for some thousands of accounts.
-_MOST_LINKS_BODY = 1 << 20
 # The longest name a new account is given here, and the longest custodian or
 # type the deployment keeps for one (W6.3).
 _MOST_NAME = 200
@@ -247,9 +254,10 @@ def _said(text: str, status: int) -> meridian.Response:
     )
 
 
-def _oversized(request: meridian.Request, most: int = _MOST_BODY) -> meridian.Response | None:
-    """The answer to a form larger than any of this page's, before anything is done."""
-    if len(request.body) <= most:
+def _oversized(request: meridian.Request) -> meridian.Response | None:
+    """The answer to a form larger than any of this page's but the several-link
+    form, before anything is done."""
+    if len(request.body) <= _MOST_BODY:
         return None
     return _said("This form is larger than any of this page's.", 413)
 
@@ -710,8 +718,6 @@ async def link(request: meridian.Request) -> meridian.Response:
     """Link, create and link, or unlink one of the accounts the last read
     reached, as the form's `intent` says, for the admin who sent it (W6.4). A
     link to another account replaces the one standing."""
-    if (refused := _oversized(request, _MOST_LINKS_BODY)) is not None:
-        return refused
     # Read whole, since the several-link form repeats its fields.
     form = parse_qs(request.body.decode("utf-8", errors="replace"))
     intent = _field(form, "intent")

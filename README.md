@@ -5,10 +5,10 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.5.2. How a plugin like it is built is documented at
+0.5.3. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.10.0`, which declares
+It is built on the SDK it pins, `open-meridian==0.10.1`, which declares
 contract v5 and carries the whole account-side contract
 (spec/the-account-side-fits-every-venue): a holding's side, a market value
 left unset, a currency marked as assumed, a fund marked as counted in cash
@@ -16,9 +16,8 @@ too, buying power on the statement, the sync state with holdings and history
 freshness, the accounts a connection reaches, linking them, and reading its
 own links; and the access-by-button model (sdk-contract/a-plugin-has-admins):
 its pages, each declared with the levels it serves, opened by the dashboard's
-Manage, Open and View. The asset class on an ambiguous miss, an enum since
-0.9.0, is still sent empty: SnapTrade's kinds are not mapped to the ruled
-classes yet.
+Manage, Open and View. An ambiguous miss carries the asset class SnapTrade's
+instrument kind maps to, or none where it maps to none.
 
 ## What it does
 
@@ -32,7 +31,8 @@ On start, on every settings change, and every `poll_seconds`, it:
    something to record, opens a holdings statement with its row count (W2.2)
    and records each row (W2.3), resolving each instrument first (W3.1). A row
    nothing matches is recorded against the deployment's placeholder (W3.7); an
-   ambiguous one is recorded unresolved and its miss published once (W3.2).
+   ambiguous one is recorded unresolved and its miss published once (W3.2),
+   with the instrument's asset class where its kind gives one.
    A refusal stops that statement and is shown, never retried.
 
 It holds nothing between reads. A restart reads again.
@@ -55,6 +55,7 @@ meridian-design.
 | `instrument.figi_instrument.figi_code` | identifier `{scheme: figi}` |
 | `instrument.symbol` (a ticker, or an option's OCC symbol) | identifier `{scheme: symbol, source: snaptrade}` |
 | `instrument.exchange`, when a MIC | the MIC resolution is qualified by |
+| `instrument.kind` | the asset class an ambiguous miss is reported with (the product owner, 2026-10-01): `stock` is `equity`; `etf` and `mutualfund` are `fund`; `bond` is `debt`; `option` is `derivative`; `crypto` is `crypto_asset`. Any other kind (`adr`, `cef`, `future`, `future_option`, `cfd`, `tokenized_asset`, `other`, or one SnapTrade adds) is sent with no class, for a person to set on the platform; so is cash, which is no instrument SnapTrade reports |
 | balance `buying_power` per currency | the statement's buying power, as reported, never derived |
 | `cash_equivalent: true` (money-market funds) | kept as a position and marked; SnapTrade counts it in cash too |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
@@ -197,7 +198,8 @@ Manage session holds no account's data, and these pages show none of what the
 plugin read for an account, no holdings, rows, statements or sync state per
 account; only external identities, their links, and how each connection is.
 The tests hold every page at `admin` to that with the SDK's
-`PageClient.assert_no_account_data`.
+`PageClient.assert_no_account_data`, for a plugin admin and for a deployment
+admin (`PageClient(..., deployment_admin=True)`).
 
 - **Connections** (`/admin/connections`): figures for the read (connections
   and how many need attention, accounts reached, the last read), each
@@ -313,9 +315,10 @@ answering says how many were linked, lists each one not linked and why, and
 folds every result below; it waits for the account scope to show every link
 made, a few seconds at most, and for the links themselves at most 55 seconds
 (the SDK's server gives a page 60), after which it says they are still being
-sent and finishes them. It takes a body of up to 1 MB, some thousands of
-pairs; every other form here, 8 KB, and a larger one is refused (413) before
-anything is done.
+sent and finishes them. It takes a body of up to 1 MiB, some thousands of
+pairs, the pages' own ceiling (`Pages(max_body=...)`), over which the SDK
+answers 413 before any view runs; every other form here takes 8 KB, and a
+larger one is refused (413) before anything is done.
 
 Whether an account is linked, and to what, is only what the account scope
 says: linked, naming the account, or not linked. There is no third state, and
@@ -376,12 +379,15 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.10.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.10.0`.
+The SDK is pinned exactly, `open-meridian==0.10.1`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.10.1`.
 Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
 meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
 runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
-`meridian.Pages` with their levels and templates, was done by hand.
+`meridian.Pages` with their levels and templates, was done by hand. 0.10.1
+changed nothing the plugin calls; from it, the pages' body ceiling is
+`Pages(max_body=...)` and the tests ask as a deployment admin with
+`PageClient(..., deployment_admin=True)`.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -394,7 +400,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.5.2 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.5.3 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

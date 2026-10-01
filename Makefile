@@ -11,7 +11,7 @@ DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.10.0
+BASE        ?= ghcr.io/open-meridian/plugin-python:0.10.1
 PLUGIN_CHECK := meridian-snaptrade-plugin-check
 # The meridian check.yaml holds the plugin to, read from there so the two
 # cannot drift.

@@ -25,6 +25,7 @@ from urllib.parse import quote
 
 import meridian
 import pytest
+from meridian.pages import TOO_LARGE
 from meridian.testing import PageClient, caller_header
 from meridian.v1 import sidecar_pb2
 
@@ -72,7 +73,9 @@ ADMIN_TABS = (CONNECTIONS, ACCOUNTS)
 # A plugin admin under Manage, who is no deployment admin: they configure
 # SnapTrade, link to any existing account, and name no new one.
 MANAGER = caller_header("admin", subject="local|manager", display_name="A Manager")
-# A deployment admin under Manage, who may also name a new account (W6.4).
+# A deployment admin under Manage, who may also name a new account (W6.4): the
+# header for the pages served over HTTP. In-process, PageClient asks as one
+# with deployment_admin=True.
 ROOT = caller_header("admin", subject="local|root", display_name="Root", deployment_admin=True)
 # Under View, somebody who may read ACC-1 through the plugin, and nothing else.
 READER = caller_header("read", read=("ACC-1",), subject="person-3", display_name="A Reader")
@@ -210,6 +213,18 @@ class Offering(Links):
         return await super().offered(acting_for)
 
 
+def holding(
+    status: Status, scope: meridian.AccountScope | None, offered: Offered | None
+) -> None:
+    """The pages holding `status` as the last read, the links `scope` holds,
+    and `offered` as the deployment's accounts."""
+    syncer = Syncer(Sidecar().plugin())
+    syncer.status = status
+    links = Offering(offered)
+    asyncio.run(links.hold(scope or meridian.AccountScope()))
+    hold(syncer, links, asyncio.Event())
+
+
 def page_for(
     status: Status,
     path: str = CONNECTIONS,
@@ -219,15 +234,32 @@ def page_for(
 ) -> str:
     """The page at `path` as its view serves `caller`, from `status` and the
     links `scope` holds, with no server."""
-    syncer = Syncer(Sidecar().plugin())
-    syncer.status = status
-    links = Offering(offered)
-    asyncio.run(links.hold(scope or meridian.AccountScope()))
-    hold(syncer, links, asyncio.Event())
+    holding(status, scope, offered)
     request = meridian.Request(
         "GET", path, meridian.Caller.from_header(caller), Sidecar().plugin()
     )
     answer = asyncio.run(pages.dispatch(request))
+    assert answer.status == 200, answer.text
+    return answer.text
+
+
+def deployment_admins_page(
+    status: Status,
+    path: str,
+    scope: meridian.AccountScope | None = None,
+    offered: Offered | None = None,
+) -> str:
+    """The page at `path` under Manage for a deployment admin, as ROOT and as
+    the SDK's PageClient asks it, with no server."""
+    holding(status, scope, offered)
+    client = PageClient(
+        pages,
+        Sidecar().plugin(),
+        subject="local|root",
+        display_name="Root",
+        deployment_admin=True,
+    )
+    answer = client.get(path, "admin")
     assert answer.status == 200, answer.text
     return answer.text
 
@@ -419,9 +451,9 @@ def test_manage_shows_no_accounts_data(synced: Syncer, sidecar: Sidecar) -> None
     assert {"AAPL", "Bitcoin", "0.012345678"} <= held
     PageClient(pages, sidecar.plugin()).assert_no_account_data(*sorted(held))
     # And the same for a deployment admin, who is offered a new account too.
-    for path in ADMIN_TABS:
-        shown = page_for(synced.status, path, ROOT, meridian.AccountScope(links=HELD))
-        assert not [said for said in held if said in shown]
+    PageClient(pages, sidecar.plugin(), deployment_admin=True).assert_no_account_data(
+        *sorted(held)
+    )
 
 
 # ── Statements, under Open and View ─────────────────────────────────────────
@@ -509,15 +541,18 @@ def test_somebody_with_nothing_to_read_is_told_so_plainly(
     assert sidecar.sent("ReadAccountsForLinking") == []
 
 
-def test_a_deployment_admin_reads_no_account_by_being_one(server: int) -> None:
+def test_a_deployment_admin_reads_no_account_by_being_one(
+    synced: Syncer, sidecar: Sidecar
+) -> None:
     # The product owner, 2026-09-30: nobody has implicit data access. Under
     # Manage there is no Statements; under View, they read what their grants give.
-    assert ask(server, "GET", STATEMENTS, ROOT)[0] == 403
-    viewing = caller_header("read", subject="local|root", deployment_admin=True)
-    status, _, body = ask(server, "GET", STATEMENTS, viewing)
-    assert status == 200 and "Nothing here for you" in body
+    hold(synced, Links(sidecar.plugin()), asyncio.Event())
+    client = PageClient(pages, sidecar.plugin(), deployment_admin=True)
+    assert client.get(STATEMENTS, "admin").status == 403
+    viewing = client.get(STATEMENTS, "read")
+    assert viewing.status == 200 and "Nothing here for you" in viewing.text
     for name in NAMES:
-        assert name not in body
+        assert name not in viewing.text
 
 
 def test_an_account_nothing_links_is_not_shown_to_a_reader(server: int) -> None:
@@ -1346,6 +1381,18 @@ def test_several_links_take_a_form_of_thousands_of_pairs(
     assert not woken.is_set() and len(links_sent(sidecar)) == 1
 
 
+def test_a_body_over_the_pages_ceiling_is_refused_before_any_view(
+    server: int, sidecar: Sidecar, woken: asyncio.Event
+) -> None:
+    # The several-link form's ceiling is the pages' own, Pages(max_body=...):
+    # a larger body is answered 413 by the SDK, unread, and nothing is done.
+    woken.clear()
+    padded = f"csrf={quote(token_of(MANAGER))}&intent=link-several&pad={'z' * (1 << 20)}"
+    status, _, body = ask(server, "POST", LINK, MANAGER, padded)
+    assert (status, body) == (413, TOO_LARGE)
+    assert links_sent(sidecar) == [] and not woken.is_set()
+
+
 def test_the_page_without_the_kit_stays_one_list_however_many_accounts() -> None:
     # Each account is a row, and the choices are lists below them, not a
     # picker of every account on every row: the page grows with the accounts
@@ -1367,7 +1414,7 @@ def test_the_page_without_the_kit_stays_one_list_however_many_accounts() -> None
         offered = Offered(
             tuple(DeploymentAccount(f"ACC-{i}", f"Book {i}") for i in range(deployment))
         )
-        return page_for(status, ACCOUNTS, ROOT, offered=offered)
+        return deployment_admins_page(status, ACCOUNTS, offered=offered)
 
     small, large = page_with(10, 10), page_with(1000, 1000)
     for shown in (small, large):
@@ -1511,8 +1558,8 @@ def all_pages() -> dict[str, str]:
     status = synthetic_status()
     scope = meridian.AccountScope(links=HELD)
     return {
-        "connections": page_for(status, CONNECTIONS, ROOT, scope),
-        "accounts": page_for(status, ACCOUNTS, ROOT, scope),
+        "connections": deployment_admins_page(status, CONNECTIONS, scope),
+        "accounts": deployment_admins_page(status, ACCOUNTS, scope),
         "statements-open": page_for(status, STATEMENTS, WRITER, scope),
         "statements-view": page_for(status, STATEMENTS, READER, scope),
         "nothing": page_for(status, STATEMENTS, NOBODY, scope),
@@ -1670,7 +1717,7 @@ def test_a_closed_account_is_not_offered() -> None:
     # Read with where each is held and what it is (W6.4).
     household = read.accounts[0]
     assert (household.custodian, household.account_type) == ("Schwab", "Brokerage")
-    shown = page_for(status, ACCOUNTS, ROOT, offered=read)
+    shown = deployment_admins_page(status, ACCOUNTS, offered=read)
     assert "Household" in shown and '<option value="ACC-2">' not in shown
     # The kit's map is told it is closed, and offers only open ones.
     assert {a["account_id"]: a["open"] for a in map_of(shown)["accounts"]}["ACC-2"] is False

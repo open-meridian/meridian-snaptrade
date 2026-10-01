@@ -28,7 +28,9 @@ a deployment admin approves them.
   linked, naming its account, or not linked: never guess a third state from
   what a read recorded, and never store the links. A row refused for want of
   a link is `meridian.NotLinked`; never match a refusal's words.
-- SnapTrade's vocabulary stops at `normalise.py`, and a number is a `Decimal`
+- SnapTrade's vocabulary stops at `normalise.py`, its instrument kinds
+  mapped to the platform's asset classes there and nowhere else (unmapped
+  kinds get none, never a guess), and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.
 - `make ci-local` before calling anything done. The README says what each
@@ -56,7 +58,8 @@ a deployment admin approves them.
   owner: plugin admins are account agnostic): no holdings, rows, statements
   or sync state of an account, only external identities, their links and how
   each connection is; `PageClient.assert_no_account_data` in the tests holds
-  every page at `admin` to that.
+  every page at `admin` to that, and `PageClient(..., deployment_admin=True)`
+  asks as a deployment admin.
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the

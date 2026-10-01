@@ -14,6 +14,7 @@ from snaptrade.normalise import (
     Serving,
     Side,
     SyncState,
+    asset_class,
     cash_holding,
     external_account,
     freshness,
@@ -214,6 +215,49 @@ def test_an_option_is_named_by_its_occ_symbol_as_snaptrades_own() -> None:
     row = position_holding(option, "USD")
     assert row.identifiers == (Identifier("symbol", "AAPL  261218C00250000", "snaptrade"),)
     assert row.side is Side.SHORT and row.kind == "option"
+
+
+# Every kind SnapTrade documents for `instrument.kind` in `positions/all`
+# (its API spec and SDK 13.0.27's instrument models), and what each is sent as.
+ASSET_CLASSES = [
+    ("stock", "equity"),
+    ("etf", "fund"),
+    ("mutualfund", "fund"),
+    ("bond", "debt"),
+    ("option", "derivative"),
+    ("crypto", "crypto_asset"),
+    # Not mapped by the product owner: left for a person to set.
+    ("adr", ""),
+    ("cef", ""),
+    ("future", ""),
+    ("future_option", ""),
+    ("cfd", ""),
+    ("tokenized_asset", ""),
+    ("other", ""),
+    # A kind SnapTrade does not document, a spelling it does not use, none.
+    ("warrant", ""),
+    ("STOCK", ""),
+    ("", ""),
+]
+
+
+@pytest.mark.parametrize(("kind", "said"), ASSET_CLASSES)
+def test_each_snaptrade_kind_is_the_ruled_asset_class_or_none(kind: str, said: str) -> None:
+    assert asset_class(kind) == said
+    row = position_holding(stock("X", "1", instrument={"kind": kind}), "USD")
+    assert (row.kind, row.asset_class) == (kind, said)
+
+
+def test_each_asset_class_sent_is_one_the_sdk_defines() -> None:
+    for _, said in ASSET_CLASSES:
+        if said:
+            assert meridian.AssetClass.Value(f"ASSET_CLASS_{said.upper()}")
+
+
+def test_cash_is_no_instrument_snaptrade_reports_and_has_no_asset_class() -> None:
+    row = cash_holding(balance("USD", Decimal("1523.45")))
+    assert row is not None and row.kind == "cash" and row.asset_class == ""
+    assert asset_class("cash") == ""
 
 
 def test_a_float_from_an_older_response_is_converted_by_repr() -> None:
