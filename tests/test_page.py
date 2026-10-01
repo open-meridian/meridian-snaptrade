@@ -448,7 +448,8 @@ def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sid
     link_from_the_page(server, IBKR, "ACC-3")
     status, _, body = ask(server, "GET", STATEMENTS, READER)
     assert status == 200 and "<title>Statements · SnapTrade</title>" in body
-    assert "each account you may read" in body
+    # The product owner, 2026-09-30: no intro line above the statements.
+    assert "each account you may read" not in body
     # ACC-1's account: its sync state, its last statement and its rows.
     shown = statement_of(body, ALPACA)
     assert "Alpaca Margin" in shown and '<span class="badge good">Current</span>' in shown
@@ -802,19 +803,12 @@ def card_refresh_form(body: str) -> tuple[str, dict[str, str]]:
     return action, fields
 
 
-def test_account_links_marks_refresh_as_a_header_action_for_the_dashboard(
-    server: int,
-) -> None:
-    # The product owner, 2026-09-30: Refresh in the dashboard's header. The
-    # kit hands it to the dashboard where it frames the page; the form, its
-    # token and its POST stay the page's.
+def test_account_links_offers_no_refresh(server: int) -> None:
+    # The product owner, 2026-09-30: "remove Refresh from Account links";
+    # reading SnapTrade now is the Connections card's, beside + Add.
     _, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
-    assert "Read now" not in body
-    action, fields = refresh_form(body)
-    assert action == READ
-    assert fields == {"csrf": token_of(MANAGER), "back": ACCOUNTS}
-    # Only the head's: no other button on the tab is handed to the dashboard.
-    assert body.count("data-om-action") == 1
+    assert f'action="{READ}"' not in body
+    assert "data-om-action" not in body
 
 
 def test_connections_hands_the_dashboard_no_header_action(server: int) -> None:
@@ -832,10 +826,7 @@ def test_connections_hands_the_dashboard_no_header_action(server: int) -> None:
 def test_each_admin_tabs_refresh_posts_from_the_page_with_its_token(
     server: int, woken: asyncio.Event
 ) -> None:
-    tabs = (
-        (CONNECTIONS, card_refresh_form, ADD),
-        (ACCOUNTS, refresh_form, "Link each account"),
-    )
+    tabs = ((CONNECTIONS, card_refresh_form, ADD),)
     for path, found, shown in tabs:
         woken.clear()
         _, _, body = ask(server, "GET", path, MANAGER)

@@ -112,7 +112,7 @@ version `page.py`'s `KIT` names (`/.meridian/ui/0.7.0/`), and draws the page's
 heading and tab row (the kit drops both when the dashboard frames the page and
 draws its own). A template fills three blocks: `content`, the page itself;
 `head_actions`, buttons marked `data-om-action="<id>"`, which the dashboard
-draws in its header (here Refresh, on Account links and Statements; on
+draws in its header (here Refresh, on Statements under Open; on
 Connections it sits beside + Add in the card's header instead); and `status`,
 an `<om-status data-om-header>` it draws beside the plugin's name (here how
 the plugin is reading). `pages.render("x.html", ...)` renders it, every value escaped, with

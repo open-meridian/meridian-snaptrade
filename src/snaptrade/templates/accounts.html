@@ -20,7 +20,6 @@
 {%- endmacro %}
 
 {% block status %}{{ kit.status_dot(dot) }}{% endblock %}
-{% block head_actions %}{{ kit.refresh(back) }}{% endblock %}
 {% block content %}
 {{ kit.notices(notice, none, waiting, error) }}
 {% if refused %}

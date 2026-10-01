@@ -12,8 +12,7 @@
 <p>This plugin brings brokerage accounts into this deployment through SnapTrade, and you may read none of them. If you should, ask whoever administers this deployment.</p>
 </section>
 {% else %}
-<p class="muted">What the last read of SnapTrade found in each account you may read. Quantities are exact, as SnapTrade reported them.{{ mode }}
-{%- if read_at %} <om-moment label="Last read" value="{{ read_at.isoformat() }}">Last read {{ read_at | moment }}</om-moment>.{% endif %}</p>
+{% if mode %}<div class="notice warn" role="status">{{ mode | trim }}</div>{% endif %}
 {{ kit.notices(notice) }}
 {% if failed %}
 <div class="notice warn" role="status">The last read of SnapTrade failed, so nothing is shown from it.</div>

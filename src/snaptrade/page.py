@@ -1074,10 +1074,10 @@ async def statements(request: meridian.Request) -> meridian.Response:
 
 @pages.route(READ, levels=["admin", "write"], methods=["POST"])
 async def read_now(request: meridian.Request) -> meridian.Response:
-    """Read SnapTrade now: Refresh, in the Connections card beside + Add, in
-    the head on Account links, and in the head on Statements under Open (View
-    acts on nothing). It answers with the page it was asked from, among those
-    of the session's level."""
+    """Read SnapTrade now: Refresh, in the Connections card beside + Add, and
+    in the head on Statements under Open (View acts on nothing; Account
+    links has none, the product owner 2026-09-30). It answers with the page
+    it was asked from, among those of the session's level."""
     if (refused := _oversized(request)) is not None:
         return refused
     _now().wake.set()
