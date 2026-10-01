@@ -1,13 +1,16 @@
-"""The pages: Statements at the root, cut to the accounts each reader may read,
-every account for a deployment admin, and plainly nothing for somebody with
-nothing to read; two admin tabs served to deployment administrators only;
-linking on the Account links tab acting for the admin; built on the kit and
-usable without it; and never a secret."""
+"""The pages, on the SDK's `meridian.Pages`: Connections and Account links at
+`admin` (Manage), showing no account's data; Statements at `write` and `read`
+(Open and View), cut to the accounts each person may read, with Refresh under
+Open alone; each refused at any other level; linking acting for the plugin
+admin, a new account only for a deployment admin; every action behind the
+SDK's CSRF token; built on the kit's base template and usable without it; and
+never a secret."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import http.client
 import json
 import re
@@ -22,6 +25,7 @@ from urllib.parse import quote
 
 import meridian
 import pytest
+from meridian.testing import PageClient, caller_header
 from meridian.v1 import sidecar_pb2
 
 from snaptrade import synthetic
@@ -29,7 +33,6 @@ from snaptrade.__main__ import follow_links
 from snaptrade.contract import Outcome
 from snaptrade.linking import DeploymentAccount, Link, Links, LinkView, Offered, link_of
 from snaptrade.normalise import (
-    REMEDY,
     AccountView,
     ConnectionView,
     ExternalAccount,
@@ -39,38 +42,44 @@ from snaptrade.normalise import (
 )
 from snaptrade.page import (
     ACCOUNTS,
-    ADMIN_PAGES,
+    CONNECT,
     CONNECTIONS,
     DELAYED,
     KIT,
     LINK,
+    ONLY_DEPLOYMENT_ADMINS,
+    READ,
     REAL_TIME,
+    RECONNECT,
+    REFRESH,
     REFRESH_REFUSED,
     STATEMENTS,
-    CsrfTokens,
-    e,
-    render_accounts,
-    render_admins_only,
-    render_connections,
-    render_nothing_here,
-    render_statements,
-    serve,
-    visible,
+    TITLE,
+    hold,
+    pages,
 )
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
 from snaptrade.synthetic import SyntheticVenue
 from snaptrade.venue import VenueError
 
-from conftest import Sidecar, caller_header, clock
+from conftest import Sidecar, clock
 
-TOKENS = CsrfTokens(b"a secret for tests only")
-TABS = (CONNECTIONS, ACCOUNTS)
-ADMIN = caller_header(deployment_admin=True)
-# Somebody who may read nothing through this plugin.
-PERSON = caller_header("person-2", "Not An Admin")
-# Somebody who may read ACC-1 through it, and nothing else.
-READER = caller_header("person-3", "A Reader", read=("ACC-1",))
+ADMIN_LEVEL = sidecar_pb2.ACCESS_LEVEL_ADMIN
+WRITE_LEVEL = sidecar_pb2.ACCESS_LEVEL_WRITE
+READ_LEVEL = sidecar_pb2.ACCESS_LEVEL_READ
+ADMIN_TABS = (CONNECTIONS, ACCOUNTS)
+# A plugin admin under Manage, who is no deployment admin: they configure
+# SnapTrade, link to any existing account, and name no new one.
+MANAGER = caller_header("admin", subject="local|manager", display_name="A Manager")
+# A deployment admin under Manage, who may also name a new account (W6.4).
+ROOT = caller_header("admin", subject="local|root", display_name="Root", deployment_admin=True)
+# Under View, somebody who may read ACC-1 through the plugin, and nothing else.
+READER = caller_header("read", read=("ACC-1",), subject="person-3", display_name="A Reader")
+# Under Open, somebody who may write ACC-1, and so read it.
+WRITER = caller_header("write", write=("ACC-1",), subject="person-4", display_name="A Writer")
+# Under View, somebody who may read nothing through this plugin.
+NOBODY = caller_header("read", subject="person-2", display_name="Not A Reader")
 # The synthetic read's accounts, as the last read reached them.
 ALPACA = "ALPACA:SYN-ALP-1001"
 IBKR = "INTERACTIVE-BROKERS-FLEX:SYN-IB-2002"
@@ -119,17 +128,26 @@ def serving(
     woken: asyncio.Event | None = None,
 ) -> Iterator[int]:
     """The pages, started as `__main__` starts them: the first delivery of
-    the plugin's links held before anything is served, and each one after."""
+    the plugin's links held before anything is served, and each one after;
+    each view run on the plugin's loop, by the SDK's server."""
     links = Links(sidecar.plugin())
     following = asyncio.run_coroutine_threadsafe(
         follow_links(sidecar.plugin(), links), loop
     ).result(timeout=10)
-    running = serve(syncer, links, loop, 0, woken or asyncio.Event(), TOKENS)
+    hold(syncer, links, woken or asyncio.Event())
+    running = pages.serve(sidecar.plugin(), 0, loop=loop)
     try:
         yield running.server_address[1]
     finally:
         running.shutdown()
-        loop.call_soon_threadsafe(following.cancel)
+        running.server_close()
+
+        async def stop() -> None:
+            following.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await following
+
+        asyncio.run_coroutine_threadsafe(stop(), loop).result(timeout=5)
 
 
 @pytest.fixture
@@ -163,7 +181,7 @@ def ask(
 
 
 def token_of(caller: str) -> str:
-    return TOKENS.token(meridian.Caller.from_header(caller))
+    return pages.csrf_token(meridian.Caller.from_header(caller))
 
 
 def form(**fields: str) -> str:
@@ -178,54 +196,131 @@ def assertion(header: str) -> sidecar_pb2.CallerAssertion:
     return decoded
 
 
-# ── Who is served ────────────────────────────────────────────────────────────
+class Offering(Links):
+    """The plugin's links, offering `offered` as the deployment's accounts, or
+    what the sidecar stand-in answers when it is None."""
+
+    def __init__(self, offered: Offered | None = None) -> None:
+        super().__init__(Sidecar().plugin())
+        self._offering = offered
+
+    async def offered(self, acting_for: str) -> Offered:
+        if self._offering is not None:
+            return self._offering
+        return await super().offered(acting_for)
 
 
-def test_the_admin_pages_are_setup_only_connections_and_account_links() -> None:
-    # Holdings moved to Statements, the user side (2026-09-29, step 1).
-    assert [(page.path, page.title) for page in ADMIN_PAGES] == [
-        ("/admin/connections", "Connections"),
-        ("/admin/accounts", "Account links"),
+def page_for(
+    status: Status,
+    path: str = CONNECTIONS,
+    caller: str = MANAGER,
+    scope: meridian.AccountScope | None = None,
+    offered: Offered | None = None,
+) -> str:
+    """The page at `path` as its view serves `caller`, from `status` and the
+    links `scope` holds, with no server."""
+    syncer = Syncer(Sidecar().plugin())
+    syncer.status = status
+    links = Offering(offered)
+    asyncio.run(links.hold(scope or meridian.AccountScope()))
+    hold(syncer, links, asyncio.Event())
+    request = meridian.Request(
+        "GET", path, meridian.Caller.from_header(caller), Sidecar().plugin()
+    )
+    answer = asyncio.run(pages.dispatch(request))
+    assert answer.status == 200, answer.text
+    return answer.text
+
+
+def synthetic_status() -> Status:
+    sidecar = Sidecar()
+    syncer = Syncer(sidecar.plugin(), now=clock())
+    syncer.configure(config_from({SYNTHETIC: True}))
+    return asyncio.run(syncer.run_once())
+
+
+def flat(body: str) -> str:
+    """The page without the line breaks between its tags."""
+    return re.sub(r">\s*\n\s*<", "><", body)
+
+
+# ── Declared, and served at its levels ──────────────────────────────────────
+
+
+def test_each_page_is_declared_once_with_the_levels_it_serves() -> None:
+    # Connections and Account links at admin (Manage); Statements at write and
+    # read (Open and View), one page adapting by the session's level.
+    assert [(page.path, page.title, tuple(page.levels)) for page in pages.declared] == [
+        (CONNECTIONS, "Connections", (ADMIN_LEVEL,)),
+        (ACCOUNTS, "Account links", (ADMIN_LEVEL,)),
+        (STATEMENTS, "Statements", (WRITE_LEVEL, READ_LEVEL)),
     ]
-    declared = meridian.Interface(port=8000, title="SnapTrade", admin_pages=ADMIN_PAGES)
-    assert [page.path for page in declared._declared().admin_pages] == list(TABS)
+    # What registration sends: one list, the actions not among its tabs.
+    declared = meridian.Interface(port=8000, title=TITLE, pages=pages)._declared()
+    assert [(page.path, list(page.levels)) for page in declared.pages] == [
+        (CONNECTIONS, [ADMIN_LEVEL]),
+        (ACCOUNTS, [ADMIN_LEVEL]),
+        (STATEMENTS, [WRITE_LEVEL, READ_LEVEL]),
+    ]
+
+
+def test_each_page_is_served_at_its_levels_and_refused_at_the_others(
+    synced: Syncer, sidecar: Sidecar
+) -> None:
+    hold(synced, Links(sidecar.plugin()), asyncio.Event())
+    client = PageClient(pages, sidecar.plugin(), read={"ACC-1"}, write={"ACC-1"})
+    served = {(r.page.path, r.level): r.response.status for r in client.every_page()}
+    assert served == {
+        (CONNECTIONS, "admin"): 200,
+        (CONNECTIONS, "write"): 403,
+        (CONNECTIONS, "read"): 403,
+        (ACCOUNTS, "admin"): 200,
+        (ACCOUNTS, "write"): 403,
+        (ACCOUNTS, "read"): 403,
+        (STATEMENTS, "admin"): 403,
+        (STATEMENTS, "write"): 200,
+        (STATEMENTS, "read"): 200,
+    }
 
 
 def test_a_request_the_sidecar_did_not_vouch_for_is_refused(server: int) -> None:
-    for path in ("/", "/admin", *TABS):
+    for path in (STATEMENTS, "/admin", *ADMIN_TABS):
         assert ask(server, "GET", path)[0] == 401
 
 
-def test_somebody_with_nothing_to_read_is_told_so_plainly(
+def test_a_session_at_no_level_is_served_nothing(server: int) -> None:
+    nothing = caller_header("", read=("ACC-1",), subject="person-9")
+    for path in (STATEMENTS, "/admin", *ADMIN_TABS):
+        assert ask(server, "GET", path, nothing)[0] == 403
+
+
+def test_the_pages_at_admin_are_refused_under_open_and_view(
     server: int, sidecar: Sidecar
 ) -> None:
-    status, _, body = ask(server, "GET", STATEMENTS, PERSON)
-    assert status == 200 and "Nothing here for you" in body
-    assert "om-grid" not in body and "<table" not in body
-    for name in NAMES:
-        assert name not in body
-    # Nor are the deployment's accounts read for them.
-    assert sidecar.sent("ReadAccountsForLinking") == []
-
-
-def test_the_admin_pages_are_for_administrators_only(server: int, sidecar: Sidecar) -> None:
-    for caller in (PERSON, READER):
-        for path in ("/admin", *TABS):
+    for caller in (READER, WRITER, NOBODY):
+        for path in ("/admin", *ADMIN_TABS):
             status, _, body = ask(server, "GET", path, caller)
-            assert status == 403 and "for the deployment's administrators" in body
+            assert status == 403 and "is not served under" in body
             assert "Alpaca" not in body and ALPACA not in body
     assert sidecar.sent("ReadAccountsForLinking") == []
 
 
-def test_an_administrator_is_sent_to_the_first_admin_tab(server: int) -> None:
-    assert ask(server, "GET", "/admin", ADMIN)[:2] == (303, CONNECTIONS)
+def test_manage_is_sent_to_its_first_tab(server: int) -> None:
+    assert ask(server, "GET", "/admin", MANAGER)[:2] == (303, CONNECTIONS)
     # The frame's theme, on the query, goes along.
-    status, location, _ = ask(server, "GET", "/admin?om-mode=dark", ADMIN)
+    status, location, _ = ask(server, "GET", "/admin?om-mode=dark", MANAGER)
     assert (status, location) == (303, f"{CONNECTIONS}?om-mode=dark")
 
 
+def test_holdings_are_no_admin_page(server: int) -> None:
+    assert ask(server, "GET", "/admin/holdings", MANAGER)[0] == 404
+
+
+# ── Under Manage: configuration, and no account's data ──────────────────────
+
+
 def test_the_connections_tab(server: int) -> None:
-    status, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    status, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
     assert status == 200
     for shown in (
         "Alpaca",
@@ -247,38 +342,99 @@ def test_the_connections_tab(server: int) -> None:
     )
 
 
+def test_the_connections_figures_count_connections_and_accounts_and_no_holdings(
+    server: int,
+) -> None:
+    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
+    tiles = re.findall(r'<div class="tile-label">([^<]*)</div><div class="tile-value">', body)
+    assert tiles == ["Connections", "Accounts reached", "Last read"]
+    # Schwab's connection is disabled.
+    assert '<div class="tile-delta warn-ink">1 needs attention</div>' in body
+    assert "Holdings read" not in body and "statement" not in body
+
+
 def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:
-    status, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    status, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
     assert status == 200
     assert "Link each account" in body and ALPACA in body and "no stable ID" in body
-    # One page (the product owner, 2026-09-30): the sync state is in the map,
-    # and the separate grid is gone.
-    assert "om-grid" not in body and "<h2>Sync state</h2>" not in body
-    assert 'status-heading="Sync state"' in body
-    assert all("status" in x for x in map_of(body)["external_accounts"])
+    assert "om-grid" not in body
     assert (
-        f'<om-account-map action="{LINK}" token-name="csrf" token="{token_of(ADMIN)}"' in body
+        f'<om-account-map action="{LINK}" token-name="csrf" token="{token_of(MANAGER)}"' in body
     )
     # The deployment's accounts are read for the admin viewing the page.
     (read,) = sidecar.sent("ReadAccountsForLinking")
-    assert read.acting_for == assertion(ADMIN)
+    assert read.acting_for == assertion(MANAGER)
 
 
-def test_holdings_are_no_longer_an_admin_page(server: int) -> None:
-    assert ask(server, "GET", "/admin/holdings", ADMIN)[0] == 404
+def test_account_links_shows_identities_and_links_only(
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    # The product owner, 2026-09-30: a plugin admin is account agnostic. The
+    # map is given who each account is and its link, and nothing SnapTrade
+    # read for it: no sync state, statement or rows, so it draws no Status
+    # column; and the plain rows say the same.
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
+    assert "status-heading" not in body
+    for external in map_of(body)["external_accounts"]:
+        assert set(external) == {
+            "external_account_id",
+            "name",
+            "detail",
+            "custodian",
+            "account_type",
+            "note",
+            "number",
+            "connection",
+            "connection_id",
+        }
+    for said in (
+        "Holdings as of",
+        "History as of",
+        "Last statement",
+        "last statement",
+        "Current",
+        "Delayed by design",
+        "Disabled",
+        "Stale",
+        "AAPL",
+    ):
+        assert said not in body, said
 
 
-# ── Statements, the user side ────────────────────────────────────────────────
+def test_manage_shows_no_accounts_data(synced: Syncer, sidecar: Sidecar) -> None:
+    # Every page at admin, under Manage, with two accounts linked, shows none
+    # of what the last read found in an account.
+    links = Links(sidecar.plugin())
+    asyncio.run(links.hold(meridian.AccountScope(links=HELD)))
+    hold(synced, links, asyncio.Event())
+    held: set[str] = {"Holdings as of", "History as of", "Last statement"}
+    for view in synced.status.accounts:
+        for holding in view.statement.holdings if view.statement else ():
+            held.add(holding.description)
+            held.update(i.value for i in holding.identifiers if i.scheme == "symbol")
+            if "." in (quantity := format(holding.quantity, "f")):
+                held.add(quantity)
+    assert {"AAPL", "Bitcoin", "0.012345678"} <= held
+    PageClient(pages, sidecar.plugin()).assert_no_account_data(*sorted(held))
+    # And the same for a deployment admin, who is offered a new account too.
+    for path in ADMIN_TABS:
+        shown = page_for(synced.status, path, ROOT, meridian.AccountScope(links=HELD))
+        assert not [said for said in held if said in shown]
+
+
+# ── Statements, under Open and View ─────────────────────────────────────────
 
 
 def link_from_the_page(port: int, external_id: str, account_id: str) -> None:
     fields = form(
-        csrf=token_of(ADMIN),
+        csrf=token_of(MANAGER),
         intent="link",
         external_account_id=external_id,
         account_id=account_id,
     )
-    assert ask(port, "POST", LINK, ADMIN, fields)[0] == 200
+    assert ask(port, "POST", LINK, MANAGER, fields)[0] == 200
 
 
 def statement_of(body: str, external_id: str) -> str:
@@ -291,7 +447,7 @@ def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sid
     link_from_the_page(server, ALPACA, "ACC-1")
     link_from_the_page(server, IBKR, "ACC-3")
     status, _, body = ask(server, "GET", STATEMENTS, READER)
-    assert status == 200 and "<h1>Statements</h1>" in body
+    assert status == 200 and "<title>Statements · SnapTrade</title>" in body
     assert "each account you may read" in body
     # ACC-1's account: its sync state, its last statement and its rows.
     shown = statement_of(body, ALPACA)
@@ -301,10 +457,66 @@ def test_a_reader_sees_only_the_accounts_they_may_read(server: int, sidecar: Sid
     # Not ACC-3's, which they may not read, nor one nothing links.
     assert IBKR not in body and "IBKR Individual" not in body
     assert "Schwab Brokerage" not in body
-    # Nothing to do here: no form, and nothing asked of the sidecar for them.
+    # View acts on nothing: no form, and nothing asked of the sidecar for them.
     assert "<form" not in body and 'name="csrf"' not in body
+    assert "data-om-action" not in body
     reads = [params.acting_for for params in sidecar.sent("ReadAccountsForLinking")]
     assert assertion(READER) not in reads
+
+
+def test_open_shows_the_same_accounts_and_refresh(server: int) -> None:
+    link_from_the_page(server, ALPACA, "ACC-1")
+    link_from_the_page(server, IBKR, "ACC-3")
+    status, _, body = ask(server, "GET", STATEMENTS, WRITER)
+    assert status == 200 and "Alpaca Margin" in statement_of(body, ALPACA)
+    assert IBKR not in body and "Schwab Brokerage" not in body
+    # Refresh, its one action, handed to the dashboard's header.
+    action, fields = refresh_form(body)
+    assert (action, fields) == (READ, {"csrf": token_of(WRITER), "back": STATEMENTS})
+    assert body.count("data-om-action") == 1
+
+
+def test_refresh_under_open_reads_now_and_answers_with_statements(
+    server: int, woken: asyncio.Event
+) -> None:
+    link_from_the_page(server, ALPACA, "ACC-1")
+    woken.clear()
+    status, _, body = ask(server, "POST", READ, WRITER, form(csrf=token_of(WRITER)))
+    assert status == 200 and "Reading SnapTrade now. Reload in a moment." in body
+    assert "Alpaca Margin" in statement_of(body, ALPACA)
+    assert woken.is_set()
+
+
+def test_view_reads_nothing_now(server: int, woken: asyncio.Event) -> None:
+    status, _, body = ask(server, "POST", READ, READER, form(csrf=token_of(READER)))
+    assert status == 403 and "not served under View" in body
+    assert not woken.is_set()
+
+
+def test_somebody_with_nothing_to_read_is_told_so_plainly(
+    server: int, sidecar: Sidecar
+) -> None:
+    nobody_writes = caller_header("write", subject="person-5")
+    for caller in (NOBODY, nobody_writes):
+        status, _, body = ask(server, "GET", STATEMENTS, caller)
+        assert status == 200 and "Nothing here for you" in body
+        assert "om-grid" not in body and "<table" not in body
+        assert "data-om-action" not in body
+        for name in NAMES:
+            assert name not in body
+    # Nor are the deployment's accounts read for them.
+    assert sidecar.sent("ReadAccountsForLinking") == []
+
+
+def test_a_deployment_admin_reads_no_account_by_being_one(server: int) -> None:
+    # The product owner, 2026-09-30: nobody has implicit data access. Under
+    # Manage there is no Statements; under View, they read what their grants give.
+    assert ask(server, "GET", STATEMENTS, ROOT)[0] == 403
+    viewing = caller_header("read", subject="local|root", deployment_admin=True)
+    status, _, body = ask(server, "GET", STATEMENTS, viewing)
+    assert status == 200 and "Nothing here for you" in body
+    for name in NAMES:
+        assert name not in body
 
 
 def test_an_account_nothing_links_is_not_shown_to_a_reader(server: int) -> None:
@@ -321,8 +533,8 @@ def test_an_account_nothing_links_is_not_shown_to_a_reader(server: int) -> None:
 def test_an_account_unlinked_from_the_page_leaves_the_readers_view(server: int) -> None:
     link_from_the_page(server, ALPACA, "ACC-1")
     assert "Alpaca Margin" in ask(server, "GET", STATEMENTS, READER)[2]
-    fields = form(csrf=token_of(ADMIN), intent="unlink", external_account_id=ALPACA)
-    assert ask(server, "POST", LINK, ADMIN, fields)[0] == 200
+    fields = form(csrf=token_of(MANAGER), intent="unlink", external_account_id=ALPACA)
+    assert ask(server, "POST", LINK, MANAGER, fields)[0] == 200
     assert "Alpaca Margin" not in ask(server, "GET", STATEMENTS, READER)[2]
 
 
@@ -338,19 +550,15 @@ def test_after_a_restart_a_reader_sees_the_accounts_linked_before_it(
     assert links_sent(sidecar) == []
 
 
-def test_a_deployment_admin_sees_every_account(server: int) -> None:
-    status, _, body = ask(server, "GET", STATEMENTS, ADMIN)
-    assert status == 200 and "as a deployment administrator you see them all" in body
-    for name in NAMES:
-        assert name in body
-    assert '<span class="badge bad">Disabled</span>' in body
-    assert '<span class="badge info">Delayed by design</span>' in body
-    # Synthetic data says so, to whoever reads it.
+def test_synthetic_data_says_so_to_whoever_reads_it(loop: asyncio.AbstractEventLoop) -> None:
+    sidecar, syncer = started_with(HELD, loop)
+    with serving(syncer, sidecar, loop) as port:
+        _, _, body = ask(port, "GET", STATEMENTS, READER)
     assert "Synthetic mode: every figure here is invented" in body
 
 
 def test_the_frames_theme_on_the_query_does_not_change_what_is_served(server: int) -> None:
-    status, _, body = ask(server, "GET", f"{STATEMENTS}?om-mode=dark", PERSON)
+    status, _, body = ask(server, "GET", f"{STATEMENTS}?om-mode=dark", NOBODY)
     assert status == 200 and "Nothing here for you" in body
 
 
@@ -360,9 +568,10 @@ def test_the_frames_theme_on_the_query_does_not_change_what_is_served(server: in
 class Recording(SyntheticVenue):
     """Synthetic SnapTrade, keeping what it was asked."""
 
-    def __init__(self) -> None:
+    def __init__(self, portal: str | None = None) -> None:
         super().__init__(clock())
         self.asked: list[str] = []
+        self._portal = portal
 
     async def refresh(self, connection_id: str) -> str:
         self.asked.append(f"refresh {connection_id}")
@@ -370,6 +579,8 @@ class Recording(SyntheticVenue):
 
     async def connection_portal(self, reconnect: str | None = None) -> str:
         self.asked.append(f"portal {reconnect}")
+        if self._portal is not None:
+            return self._portal
         return await super().connection_portal(reconnect)
 
 
@@ -385,34 +596,49 @@ def tokens_on(body: str) -> set[str]:
 
 
 def test_every_form_on_every_tab_carries_the_one_token(server: int) -> None:
-    for path in TABS:
-        _, _, body = ask(server, "GET", path, ADMIN)
-        assert tokens_on(body) == {token_of(ADMIN)}
+    for path in ADMIN_TABS:
+        _, _, body = ask(server, "GET", path, MANAGER)
+        assert tokens_on(body) == {token_of(MANAGER)}
 
 
 def test_the_connections_actions_answer_with_the_pages_token(
     server: int, synced: Syncer, recording: Recording
 ) -> None:
-    token = token_of(ADMIN)
-    status, _, body = ask(server, "POST", "/admin/connect", ADMIN, f"csrf={token}")
+    token = token_of(MANAGER)
+    status, _, body = ask(server, "POST", CONNECT, MANAGER, form(csrf=token))
     assert status == 200 and "Synthetic mode has no Connection Portal" in body
     # The one SnapTrade serves on a delay: a refresh applies to it.
     known = synthetic.IBKR
-    path = f"{CONNECTIONS}/{known}/refresh"
-    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token}")
+    status, _, body = ask(
+        server, "POST", REFRESH, MANAGER, form(csrf=token, connection_id=known)
+    )
     assert status == 200 and "nothing was asked of SnapTrade" in body
-    assert recording.asked == ["portal None", f"refresh {known}"]
+    status, _, body = ask(
+        server, "POST", RECONNECT, MANAGER, form(csrf=token, connection_id=known)
+    )
+    assert status == 200 and "Synthetic mode has no Connection Portal" in body
+    assert recording.asked == ["portal None", f"refresh {known}", f"portal {known}"]
     assert tokens_on(body) == {token}
-    unknown = f"{CONNECTIONS}/not-one-of-ours/refresh"
-    assert ask(server, "POST", unknown, ADMIN, f"csrf={token}")[0] == 404
+    for path in (REFRESH, RECONNECT):
+        for unknown in ("not-one-of-ours", ""):
+            fields = form(csrf=token, connection_id=unknown)
+            assert ask(server, "POST", path, MANAGER, fields)[0] == 404
+    assert len(recording.asked) == 3
 
 
 def refresh_button(connection_id: str) -> str:
-    return f'action="{CONNECTIONS}/{connection_id}/refresh"'
+    return (
+        f'<input type="hidden" name="connection_id" value="{connection_id}">'
+        "<button>Refresh</button>"
+    )
+
+
+def reconnect_button(connection_id: str) -> str:
+    return f'<input type="hidden" name="connection_id" value="{connection_id}"><button'
 
 
 def test_refresh_is_offered_only_where_snaptrade_serves_on_a_delay(server: int) -> None:
-    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
     # Interactive Brokers is served on a delay: Refresh, and that it may be charged.
     assert refresh_button(synthetic.IBKR) in body
     assert DELAYED in body and "may charge for each refresh" in body
@@ -420,13 +646,14 @@ def test_refresh_is_offered_only_where_snaptrade_serves_on_a_delay(server: int) 
     assert refresh_button(synthetic.ALPACA) not in body
     assert refresh_button(synthetic.SCHWAB) not in body
     assert body.count(REAL_TIME) == 2
-    # Reconnecting is offered to each.
-    for key in (synthetic.ALPACA, synthetic.IBKR, synthetic.SCHWAB):
-        assert f'action="{CONNECTIONS}/{key}/reconnect"' in body
+    # Reconnecting is offered to each; it leads where the connection is disabled.
+    for key in (synthetic.ALPACA, synthetic.IBKR):
+        assert f"{reconnect_button(key)}>Reconnect</button>" in body
+    assert f'{reconnect_button(synthetic.SCHWAB)} class="primary">Reconnect</button>' in body
 
 
 @pytest.mark.parametrize(
-    ("serving", "offered", "said"),
+    ("serving_as", "offered", "said"),
     [
         (Serving.REAL_TIME, False, REAL_TIME),
         (Serving.DELAYED, True, DELAYED),
@@ -435,14 +662,14 @@ def test_refresh_is_offered_only_where_snaptrade_serves_on_a_delay(server: int) 
     ],
 )
 def test_the_refresh_button_follows_how_snaptrade_serves_the_connection(
-    serving: Serving, offered: bool, said: str | None
+    serving_as: Serving, offered: bool, said: str | None
 ) -> None:
     connection = ConnectionView(
-        "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, serving=serving
+        "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, serving=serving_as
     )
-    shown = render_connections(Status(mode="snaptrade", connections=(connection,)), "t")
+    shown = page_for(Status(mode="snaptrade", connections=(connection,)))
     assert (refresh_button("c1") in shown) is offered
-    assert 'action="/admin/connections/c1/reconnect"' in shown
+    assert f"{reconnect_button('c1')}>Reconnect</button>" in shown
     for line in (REAL_TIME, DELAYED):
         assert (line in shown) is (line == said)
 
@@ -450,8 +677,8 @@ def test_the_refresh_button_follows_how_snaptrade_serves_the_connection(
 def test_a_real_time_connection_is_not_refreshed_by_a_form_from_an_older_page(
     server: int, recording: Recording, woken: asyncio.Event
 ) -> None:
-    path = f"{CONNECTIONS}/{synthetic.ALPACA}/refresh"
-    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    fields = form(csrf=token_of(MANAGER), connection_id=synthetic.ALPACA)
+    status, _, body = ask(server, "POST", REFRESH, MANAGER, fields)
     assert status == 200 and REAL_TIME in body
     assert recording.asked == [] and not woken.is_set()
 
@@ -477,18 +704,23 @@ class Refusing(Recording):
 
 
 def settle(loop: asyncio.AbstractEventLoop) -> None:
-    """Let the loop run what the page's thread handed it."""
+    """Let the loop run what it was handed."""
     asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=5)
+
+
+def escaped(text: str) -> str:
+    """As the templates write text: an apostrophe as &#39;."""
+    return text.replace("'", "&#39;")
 
 
 def test_snaptrade_refusing_a_refresh_is_said_plainly(
     server: int, synced: Syncer, loop: asyncio.AbstractEventLoop, woken: asyncio.Event
 ) -> None:
     synced.venue = refusing = Refusing(403)
-    path = f"{CONNECTIONS}/{synthetic.IBKR}/refresh"
-    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    fields = form(csrf=token_of(MANAGER), connection_id=synthetic.IBKR)
+    status, _, body = ask(server, "POST", REFRESH, MANAGER, fields)
     assert status == 200 and refusing.asked == [f"refresh {synthetic.IBKR}"]
-    assert f'<div class="notice info" role="status">{e(REFRESH_REFUSED)}</div>' in body
+    assert f'<div class="notice info" role="status">{escaped(REFRESH_REFUSED)}</div>' in body
     assert "Refused" not in body and "HTTP 403" not in body and "secret" not in body
     # Nothing was refreshed, so nothing is read again for it.
     settle(loop)
@@ -497,23 +729,26 @@ def test_snaptrade_refusing_a_refresh_is_said_plainly(
 
 def test_another_refresh_failure_is_shown_as_before(server: int, synced: Syncer) -> None:
     synced.venue = Refusing(500)
-    path = f"{CONNECTIONS}/{synthetic.IBKR}/refresh"
-    status, _, body = ask(server, "POST", path, ADMIN, f"csrf={token_of(ADMIN)}")
+    fields = form(csrf=token_of(MANAGER), connection_id=synthetic.IBKR)
+    status, _, body = ask(server, "POST", REFRESH, MANAGER, fields)
     assert status == 200
     assert "refreshing a connection failed: Refused (HTTP 500)" in body
     assert 'class="notice bad" role="alert"' in body
-    assert e(REFRESH_REFUSED) not in body
+    assert escaped(REFRESH_REFUSED) not in body
     assert "secret" not in body
 
 
 def test_reading_now_answers_with_the_tab_it_was_asked_from(
     server: int, woken: asyncio.Event
 ) -> None:
-    token = token_of(ADMIN)
-    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back=ACCOUNTS))
+    token = token_of(MANAGER)
+    _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back=ACCOUNTS))
     assert "Reading SnapTrade now" in body and "Link each account" in body
-    _, _, body = ask(server, "POST", "/admin/read", ADMIN, form(csrf=token, back="/elsewhere"))
-    assert "Brokerage connections" in body
+    _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back="/elsewhere"))
+    assert "Reading SnapTrade now" in body and "+ Add brokerage" in body
+    # Under Manage, never Statements, whatever the form says.
+    _, _, body = ask(server, "POST", READ, MANAGER, form(csrf=token, back=STATEMENTS))
+    assert "+ Add brokerage" in body and "No statements yet" not in body
     assert woken.is_set()
 
 
@@ -526,9 +761,7 @@ def head_of(body: str) -> str:
 def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     """The head's Refresh: the one form in the page head's actions whose
     button is marked as a header action, its action and its fields."""
-    head = re.search(r'<header class="page-head">(.*?)</header>', body, re.S)
-    assert head is not None
-    actions = re.search(r'<div class="actions">(.*)</div>', head.group(1), re.S)
+    actions = re.search(r'<div class="actions">(.*)</div>', head_of(body), re.S)
     assert actions is not None
     forms = re.findall(
         r'<form method="post" action="([^"]+)" class="inline">(.*?)</form>', actions.group(1)
@@ -544,40 +777,36 @@ def refresh_form(body: str) -> tuple[str, dict[str, str]]:
 def test_each_admin_tab_marks_refresh_as_a_header_action_for_the_dashboard(
     server: int,
 ) -> None:
-    # The product owner, 2026-09-30: "Read now" becomes Refresh in the
-    # dashboard's header. The kit hands it to the dashboard where it frames
-    # the page; the form, its token and its POST stay the page's.
-    for path in TABS:
-        _, _, body = ask(server, "GET", path, ADMIN)
+    # The product owner, 2026-09-30: Refresh in the dashboard's header. The
+    # kit hands it to the dashboard where it frames the page; the form, its
+    # token and its POST stay the page's.
+    for path in ADMIN_TABS:
+        _, _, body = ask(server, "GET", path, MANAGER)
         assert "Read now" not in body
         action, fields = refresh_form(body)
-        assert action == "/admin/read"
-        assert fields == {"csrf": token_of(ADMIN), "back": path}
+        assert action == READ
+        assert fields == {"csrf": token_of(MANAGER), "back": path}
     # Only the head's: no other button on a tab is handed to the dashboard.
-    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
     assert body.count("data-om-action") == 1
 
 
 def test_the_marked_refresh_still_posts_from_the_page_with_its_token(
     server: int, woken: asyncio.Event
 ) -> None:
-    tabs = ((CONNECTIONS, "Brokerage connections"), (ACCOUNTS, "Link each account"))
+    tabs = ((CONNECTIONS, "+ Add brokerage"), (ACCOUNTS, "Link each account"))
     for path, shown in tabs:
-        _, _, body = ask(server, "GET", path, ADMIN)
+        woken.clear()
+        _, _, body = ask(server, "GET", path, MANAGER)
         action, fields = refresh_form(body)
         # Without the page's token, nothing is read.
         forged = form(**{**fields, "csrf": "0" * len(fields["csrf"])})
-        status, _, answer = ask(server, "POST", action, ADMIN, forged)
+        status, _, answer = ask(server, "POST", action, MANAGER, forged)
         assert status == 403 and "Reading SnapTrade now" not in answer
-        status, _, answer = ask(server, "POST", action, ADMIN, form(**fields))
+        assert not woken.is_set()
+        status, _, answer = ask(server, "POST", action, MANAGER, form(**fields))
         assert status == 200 and "Reading SnapTrade now" in answer and shown in answer
-    assert woken.is_set()
-
-
-def test_statements_hands_the_dashboard_no_header_action(server: int) -> None:
-    for caller in (ADMIN, PERSON):
-        _, _, body = ask(server, "GET", STATEMENTS, caller)
-        assert "data-om-action" not in body
+        assert woken.is_set()
 
 
 # ── Linking, on the Account links tab ───────────────────────────────────────
@@ -589,6 +818,7 @@ def links_sent(sidecar: Sidecar) -> list[Any]:
 
 def row_of(body: str, external_id: str) -> str:
     """One account's row in the plain forms shown without the kit."""
+    body = flat(body)
     start = body.index(f'<div class="list-row" data-account="{external_id}">')
     ends = [
         found
@@ -604,7 +834,8 @@ def row_of(body: str, external_id: str) -> str:
 
 def fallback_of(body: str) -> str:
     """The forms under the rows, shown without the kit: one to link any
-    account, and one to create an account for any."""
+    account, and, for a deployment admin, one to create an account for any."""
+    body = flat(body)
     start = body.index('<div class="panel-body panel-section"><h3>Link an account</h3>')
     return body[start : body.index("</om-account-map>", start)]
 
@@ -612,7 +843,7 @@ def fallback_of(body: str) -> str:
 def map_of(body: str) -> dict[str, Any]:
     """The JSON declared inside om-account-map, which the kit's map reads."""
     data = re.search(
-        r'<om-account-map [^>]*><script type="application/json">(.*?)</script>', body
+        r'<om-account-map [^>]*>\s*<script type="application/json">(.*?)</script>', body
     )
     assert data is not None
     parsed: dict[str, Any] = json.loads(data.group(1))
@@ -623,9 +854,9 @@ def nothing_linked_or_read(sidecar: Sidecar) -> bool:
     return links_sent(sidecar) == [] and sidecar.sent("ReadAccountsForLinking") == []
 
 
-def post_link(port: int, **fields: str) -> tuple[int, str, str]:
-    """The map's one form route, with the admin's token."""
-    return ask(port, "POST", LINK, ADMIN, form(csrf=token_of(ADMIN), **fields))
+def post_link(port: int, caller: str = MANAGER, **fields: str) -> tuple[int, str, str]:
+    """The map's one form route, with the caller's token."""
+    return ask(port, "POST", LINK, caller, form(csrf=token_of(caller), **fields))
 
 
 def test_after_a_restart_every_link_is_named_from_the_first_delivery(
@@ -633,7 +864,7 @@ def test_after_a_restart_every_link_is_named_from_the_first_delivery(
 ) -> None:
     sidecar, syncer = started_with(HELD, loop)
     with serving(syncer, sidecar, loop) as port:
-        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+        _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
     assert map_of(body)["links"] == [
         {"external_account_id": ALPACA, "account_id": "ACC-1", "account_name": "Household"},
         {"external_account_id": IBKR, "account_id": "ACC-3", "account_name": "Spare"},
@@ -647,10 +878,10 @@ def test_after_a_restart_every_link_is_named_from_the_first_delivery(
 def test_a_link_made_elsewhere_reaches_the_page_with_the_next_delivery(
     server: int, sidecar: Sidecar, loop: asyncio.AbstractEventLoop
 ) -> None:
-    assert "Not linked" in row_of(ask(server, "GET", ACCOUNTS, ADMIN)[2], ALPACA)
+    assert "Not linked" in row_of(ask(server, "GET", ACCOUNTS, MANAGER)[2], ALPACA)
     loop.call_soon_threadsafe(sidecar.set_link, ALPACA, "ACC-3", "Spare")
     for _ in range(100):
-        row = row_of(ask(server, "GET", ACCOUNTS, ADMIN)[2], ALPACA)
+        row = row_of(ask(server, "GET", ACCOUNTS, MANAGER)[2], ALPACA)
         if "Linked to Spare" in row:
             break
         time.sleep(0.02)
@@ -659,7 +890,7 @@ def test_a_link_made_elsewhere_reaches_the_page_with_the_next_delivery(
 
 def test_rows_recorded_do_not_make_an_account_linked(server: int) -> None:
     # The stand-in records every row; only the account scope says a link.
-    _, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    _, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
     row = row_of(body, ALPACA)
     assert '<span class="badge warn">Not linked</span>' in row and "Unlink" not in row
     assert map_of(body)["links"] == []
@@ -671,7 +902,7 @@ def test_a_linked_account_names_its_account_and_offers_unlink_and_another(
 ) -> None:
     sidecar, syncer = started_with(HELD, loop)
     with serving(syncer, sidecar, loop) as port:
-        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+        _, _, body = ask(port, "GET", ACCOUNTS, MANAGER)
     row = row_of(body, ALPACA)
     assert '<span class="badge good">Linked</span>' in row
     assert 'name="intent" value="unlink"' in row and ">Unlink</button>" in row
@@ -693,13 +924,13 @@ def unlinked(name: str, params: Any) -> Exception | None:
     return None
 
 
-def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
+def test_an_unlinked_account_offers_an_existing_account_and_a_deployment_admin_a_new_one(
     loop: asyncio.AbstractEventLoop,
 ) -> None:
     refusing = Sidecar(refuse=unlinked)
     syncer = read_once(refusing, loop)
     with serving(syncer, refusing, loop) as port:
-        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+        _, _, body = ask(port, "GET", ACCOUNTS, ROOT)
     row = row_of(body, ALPACA)
     assert '<span class="badge warn">Not linked</span>' in row
     assert "Unlink" not in row and "<form" not in row
@@ -712,20 +943,19 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
     assert '<option value="ACC-1">Household (Schwab, Brokerage)</option>' in link
     assert '<option value="ACC-3">Spare</option>' in link and "Retired" not in link
     assert f'<option value="{ALPACA}">Alpaca Margin (Alpaca · margin)</option>' in link
-    # And one creates a new account for any of them, named, held at and of
-    # the type the admin writes (W6.4).
+    # And, for a deployment admin, one creates a new account for any of them,
+    # named, held at and of the type the admin writes (W6.4).
     assert 'name="intent" value="create"' in create
     assert f'<option value="{ALPACA}">' in create
     assert 'name="new_account_name" required maxlength="200"' in create
     assert 'name="new_account_custodian" maxlength="200"' in create
     assert 'name="new_account_type" maxlength="200"' in create
+    assert "Link it to an existing account, or create one for it." in body
     (read,) = refusing.sent("ReadAccountsForLinking")
-    assert read.acting_for == assertion(ADMIN)
+    assert read.acting_for == assertion(ROOT)
     # The same for the kit's map, as its JSON.
     data = map_of(body)
     alpaca = next(x for x in data["external_accounts"] if x["external_account_id"] == ALPACA)
-    # Its sync state beside it (test_each_accounts_sync_state_is_in_the_map...).
-    assert alpaca.pop("status")["label"] == "Current" and alpaca.pop("values")
     assert alpaca == {
         "external_account_id": ALPACA,
         "name": "Alpaca Margin",
@@ -748,7 +978,23 @@ def test_an_unlinked_account_offers_an_existing_account_or_a_new_one(
     assert {a["account_id"]: a["open"] for a in data["accounts"]}["ACC-2"] is False
 
 
-def test_linking_to_an_existing_account_is_sent_for_the_admin(
+def test_a_plugin_admin_is_offered_no_new_account_and_sends_none(
+    server: int, sidecar: Sidecar
+) -> None:
+    # W6.4: a plugin admin links to any existing account; only a deployment
+    # admin names a new one.
+    _, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
+    forms = fallback_of(body)
+    assert 'name="intent" value="create"' not in forms and "new_account_name" not in forms
+    assert "a deployment admin may also create one for it" in body
+    status, _, body = post_link(
+        server, intent="create", external_account_id=ALPACA, new_account_name="Mine"
+    )
+    assert status == 200 and escaped(ONLY_DEPLOYMENT_ADMINS) in body
+    assert links_sent(sidecar) == []
+
+
+def test_linking_to_an_existing_account_is_sent_for_the_plugin_admin(
     server: int, sidecar: Sidecar, woken: asyncio.Event
 ) -> None:
     status, _, body = post_link(
@@ -761,7 +1007,7 @@ def test_linking_to_an_existing_account_is_sent_for_the_admin(
         "ACC-1",
         "",
     )
-    assert sent.acting_for == assertion(ADMIN)
+    assert sent.acting_for == assertion(MANAGER)
     # The page answering shows the link as the account scope now gives it.
     assert "Linked to Household" in row_of(body, ALPACA)
     assert map_of(body)["links"] == [
@@ -788,11 +1034,12 @@ def test_linking_a_linked_account_to_another_replaces_the_link(
     ] == [{"external_account_id": ALPACA, "account_id": "ACC-3", "account_name": "Spare"}]
 
 
-def test_creating_a_new_account_names_it_and_links_in_one_step(
+def test_a_deployment_admin_creates_a_new_account_and_links_it_in_one_step(
     server: int, sidecar: Sidecar
 ) -> None:
     status, _, body = post_link(
         server,
+        ROOT,
         intent="create",
         external_account_id=ALPACA,
         new_account_name="  Alpaca margin  ",
@@ -801,7 +1048,7 @@ def test_creating_a_new_account_names_it_and_links_in_one_step(
     (sent,) = links_sent(sidecar)
     assert (sent.account_id, sent.new_account_name) == ("", "Alpaca margin")
     assert (sent.new_account_custodian, sent.new_account_type) == ("", "")
-    assert sent.acting_for == assertion(ADMIN)
+    assert sent.acting_for == assertion(ROOT)
     assert "Linked to Alpaca margin" in row_of(body, ALPACA)
 
 
@@ -810,6 +1057,7 @@ def test_a_new_account_is_sent_with_the_custodian_and_type_the_admin_left(
 ) -> None:
     status, _, body = post_link(
         server,
+        ROOT,
         intent="create",
         external_account_id=ALPACA,
         new_account_name="Alpaca margin",
@@ -834,6 +1082,7 @@ def test_linking_to_an_existing_account_sends_no_custodian_or_type(
     # dashboard (W6.3), and the conductor ignores them on a link to it.
     status, _, _ = post_link(
         server,
+        ROOT,
         intent="link",
         external_account_id=ALPACA,
         account_id="ACC-1",
@@ -864,7 +1113,7 @@ def test_unlinking_sends_neither_account_nor_name(loop: asyncio.AbstractEventLoo
         "",
         "",
     )
-    assert sent.acting_for == assertion(ADMIN)
+    assert sent.acting_for == assertion(MANAGER)
     assert '<span class="badge warn">Not linked</span>' in row_of(body, ALPACA)
     assert [link["external_account_id"] for link in map_of(body)["links"]] == [IBKR]
 
@@ -879,7 +1128,9 @@ def test_unlinking_sends_neither_account_nor_name(loop: asyncio.AbstractEventLoo
 def test_a_form_missing_its_choice_asks_for_it_and_sends_nothing(
     server: int, sidecar: Sidecar, intent: str, fields: dict[str, str], said: str
 ) -> None:
-    status, _, body = post_link(server, intent=intent, external_account_id=ALPACA, **fields)
+    status, _, body = post_link(
+        server, ROOT, intent=intent, external_account_id=ALPACA, **fields
+    )
     assert status == 200 and said in body and links_sent(sidecar) == []
 
 
@@ -890,10 +1141,10 @@ def test_a_form_missing_its_choice_asks_for_it_and_sends_nothing(
 def test_a_bad_or_missing_intent_is_refused_and_links_nothing(
     server: int, sidecar: Sidecar, intent: str | None
 ) -> None:
-    sent = form(csrf=token_of(ADMIN), external_account_id=ALPACA, account_id="ACC-1")
+    sent = form(csrf=token_of(MANAGER), external_account_id=ALPACA, account_id="ACC-1")
     if intent is not None:
         sent += f"&intent={intent}"
-    status, _, body = ask(server, "POST", LINK, ADMIN, sent)
+    status, _, body = ask(server, "POST", LINK, MANAGER, sent)
     assert status == 400 and "does not say what to do" in body
     assert links_sent(sidecar) == []
 
@@ -906,16 +1157,33 @@ def test_only_an_account_the_read_reached_is_linked(server: int, sidecar: Sideca
         assert status == 404
     # The one route: 0.3's per-action paths are gone.
     for gone in ("create", "unlink", "delete"):
-        fields = form(csrf=token_of(ADMIN), external_account_id=ALPACA, new_account_name="N")
-        assert ask(server, "POST", f"{ACCOUNTS}/{gone}", ADMIN, fields)[0] == 404
+        fields = form(csrf=token_of(MANAGER), external_account_id=ALPACA, new_account_name="N")
+        assert ask(server, "POST", f"{ACCOUNTS}/{gone}", MANAGER, fields)[0] == 404
     assert links_sent(sidecar) == []
+
+
+def test_linking_is_only_under_manage(server: int, sidecar: Sidecar) -> None:
+    # Even with a token that is theirs, a session under Open or View is
+    # refused before anything is sent.
+    for caller in (READER, WRITER):
+        for intent in ("link", "create", "unlink", "link-several"):
+            fields = form(
+                csrf=token_of(caller),
+                intent=intent,
+                external_account_id=ALPACA,
+                account_id="ACC-1",
+                new_account_name="Mine",
+            )
+            status, _, body = ask(server, "POST", LINK, caller, fields)
+            assert status == 403 and "is not served under" in body
+    assert nothing_linked_or_read(sidecar)
 
 
 # ── Several links in one form ────────────────────────────────────────────────
 
 
 def post_several(
-    port: int, pairs: Iterable[tuple[str, str]], caller: str = ADMIN
+    port: int, pairs: Iterable[tuple[str, str]], caller: str = MANAGER
 ) -> tuple[int, str, str]:
     """The map's several-link form: the token, the intent, then a pair of IDs for each link."""
     fields = [f"csrf={quote(token_of(caller))}", "intent=link-several"]
@@ -928,7 +1196,7 @@ def post_several(
 
 
 def test_the_map_offers_several_links_and_groups_by_connection(server: int) -> None:
-    _, _, body = ask(server, "GET", ACCOUNTS, ADMIN)
+    _, _, body = ask(server, "GET", ACCOUNTS, MANAGER)
     element = re.search(r"<om-account-map [^>]*>", body)
     assert element is not None
     assert ' group-by="connection" link-several ' in element.group(0)
@@ -948,7 +1216,7 @@ def test_several_links_are_sent_each_for_the_admin_and_each_reported(
         (ALPACA, "ACC-1", ""),
         (IBKR, "ACC-3", ""),
     ]
-    assert all(s.acting_for == assertion(ADMIN) for s in sent)
+    assert all(s.acting_for == assertion(MANAGER) for s in sent)
     # The page answering shows both, as the account scope now gives them.
     assert "Linked to Household" in row_of(body, ALPACA)
     assert "Linked to Spare" in row_of(body, IBKR)
@@ -1021,13 +1289,15 @@ def test_every_link_refused_is_said_as_none(
 def test_several_links_that_do_not_pair_up_are_refused_whole(
     server: int, sidecar: Sidecar, pairs: str
 ) -> None:
-    sent = f"csrf={quote(token_of(ADMIN))}&intent=link-several{pairs}"
-    status, _, body = ask(server, "POST", LINK, ADMIN, sent)
+    sent = f"csrf={quote(token_of(MANAGER))}&intent=link-several{pairs}"
+    status, _, body = ask(server, "POST", LINK, MANAGER, sent)
     assert status == 400 and "do not pair up" in body
     assert links_sent(sidecar) == []
 
 
-def test_several_links_take_a_form_of_thousands_of_pairs(server: int, sidecar: Sidecar) -> None:
+def test_several_links_take_a_form_of_thousands_of_pairs(
+    server: int, sidecar: Sidecar, woken: asyncio.Event
+) -> None:
     # Far over the 8 KB any other form here may be: pairs for accounts the
     # read did not reach, each said, none sent.
     many = [(f"broker:{n:06d}-{'x' * 36}", f"ACC-{n:06d}-{'y' * 30}") for n in range(3000)]
@@ -1035,22 +1305,17 @@ def test_several_links_take_a_form_of_thousands_of_pairs(server: int, sidecar: S
     assert status == 200
     assert "Linked 1 of 3001 accounts; 3000 not linked:" in body
     assert [s.external_account_id for s in links_sent(sidecar)] == [ALPACA]
-    # Anywhere else, a body that size is no form of this page's.
-    known = "/admin/read"
-    padded = f"csrf={quote(token_of(ADMIN))}&pad={'z' * 9000}"
-    assert ask(server, "POST", known, ADMIN, padded)[0] == 403
+    # Anywhere else, a body that size is no form of this page's, and nothing
+    # is done for it.
+    woken.clear()
+    for path in (READ, CONNECT, REFRESH, RECONNECT, LINK):
+        padded = f"csrf={quote(token_of(MANAGER))}&intent=link&pad={'z' * 9000}"
+        assert ask(server, "POST", path, MANAGER, padded)[0] == 413
+    assert not woken.is_set() and len(links_sent(sidecar)) == 1
 
 
-def test_several_links_are_only_for_an_administrator(server: int, sidecar: Sidecar) -> None:
-    status, _, body = post_several(server, [(ALPACA, "ACC-1")], PERSON)
-    assert status == 403 and "for the deployment's administrators" in body
-    assert nothing_linked_or_read(sidecar)
-
-
-def test_the_page_without_the_kit_stays_one_list_however_many_accounts(
-    loop: asyncio.AbstractEventLoop,
-) -> None:
-    # Each account is a row, and the choices are two lists below them, not a
+def test_the_page_without_the_kit_stays_one_list_however_many_accounts() -> None:
+    # Each account is a row, and the choices are lists below them, not a
     # picker of every account on every row: the page grows with the accounts
     # and the deployment's accounts added, not multiplied.
     connection = synthetic_status().connections[0]
@@ -1070,7 +1335,7 @@ def test_the_page_without_the_kit_stays_one_list_however_many_accounts(
         offered = Offered(
             tuple(DeploymentAccount(f"ACC-{i}", f"Book {i}") for i in range(deployment))
         )
-        return render_accounts(status, "t", links_for(status, meridian.AccountScope()), offered)
+        return page_for(status, ACCOUNTS, ROOT, offered=offered)
 
     small, large = page_with(10, 10), page_with(1000, 1000)
     for shown in (small, large):
@@ -1082,7 +1347,7 @@ def test_the_page_without_the_kit_stays_one_list_however_many_accounts(
 def test_the_sidecars_refusal_is_shown_plainly(
     synced: Syncer, loop: asyncio.AbstractEventLoop
 ) -> None:
-    said = "LinkExternalAccount is admitted only acting for a deployment admin"
+    said = "LinkExternalAccount is admitted only in a session at admin"
 
     def refuse(name: str, params: Any) -> Exception | None:
         if name == "LinkExternalAccount":
@@ -1113,7 +1378,7 @@ def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
     refusing = Sidecar(refuse=refuse)
     syncer = read_once(refusing, loop)
     with serving(syncer, refusing, loop) as port:
-        _, _, body = ask(port, "GET", ACCOUNTS, ADMIN)
+        _, _, body = ask(port, "GET", ACCOUNTS, ROOT)
     assert "The deployment's accounts could not be read: not an admin" in body
     forms = fallback_of(body)
     assert 'name="account_id"' not in forms and 'name="new_account_name"' in forms
@@ -1122,23 +1387,7 @@ def test_when_the_deployments_accounts_cannot_be_read_only_a_new_one_is_offered(
     assert map_of(body)["accounts"] is None
 
 
-def test_linking_is_only_for_an_administrator(server: int, sidecar: Sidecar) -> None:
-    # Even with a token that is theirs, somebody else is refused before
-    # anything is sent.
-    for intent in ("link", "create", "unlink"):
-        fields = form(
-            csrf=token_of(PERSON),
-            intent=intent,
-            external_account_id=ALPACA,
-            account_id="ACC-1",
-            new_account_name="Mine",
-        )
-        status, _, body = ask(server, "POST", LINK, PERSON, fields)
-        assert status == 403 and "for the deployment's administrators" in body
-    assert nothing_linked_or_read(sidecar)
-
-
-# ── The CSRF token ───────────────────────────────────────────────────────────
+# ── The CSRF token, the SDK's ───────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
@@ -1149,42 +1398,52 @@ def test_linking_is_only_for_an_administrator(server: int, sidecar: Sidecar) -> 
         "csrf=",
         "csrf=0123456789abcdef",
         # Another person's token.
-        f"csrf={token_of(caller_header('person-2'))}",
+        f"csrf={token_of(caller_header('admin', subject='person-2'))}",
+        # Their own, from a session at another level.
+        f"csrf={token_of(caller_header('read', subject='local|manager'))}",
         # A token under another secret, as a different process would make.
-        f"csrf={CsrfTokens(b'another').token(meridian.Caller.from_header(ADMIN))}",
-        # The right token twice.
-        f"csrf={token_of(ADMIN)}&csrf={token_of(ADMIN)}",
+        f"csrf={meridian.Pages().csrf_token(meridian.Caller.from_header(MANAGER))}",
     ],
 )
 def test_a_post_without_the_right_token_is_refused_and_does_nothing(
-    server: int, synced: Syncer, sidecar: Sidecar, recording: Recording, sent: str | None
+    server: int,
+    synced: Syncer,
+    sidecar: Sidecar,
+    recording: Recording,
+    woken: asyncio.Event,
+    sent: str | None,
 ) -> None:
     known = synced.status.connections[0].connection_id
-    rest = f"&external_account_id={quote(ALPACA)}&account_id=ACC-1&new_account_name=N"
+    rest = (
+        f"&external_account_id={quote(ALPACA)}&account_id=ACC-1&new_account_name=N"
+        f"&connection_id={quote(known)}"
+    )
     for path, intent in (
-        ("/admin/connect", ""),
-        (f"{CONNECTIONS}/{known}/refresh", ""),
-        (f"{CONNECTIONS}/{known}/reconnect", ""),
-        ("/admin/read", ""),
+        (CONNECT, ""),
+        (REFRESH, ""),
+        (RECONNECT, ""),
+        (READ, ""),
         # The map's one route, whatever the form says it means.
         (LINK, "&intent=link"),
         (LINK, "&intent=create"),
         (LINK, "&intent=unlink"),
         (LINK, "&intent=link-several"),
     ):
-        status, _, body = ask(server, "POST", path, ADMIN, (sent or "") + rest + intent)
+        status, _, body = ask(server, "POST", path, MANAGER, (sent or "") + rest + intent)
         assert status == 403 and "expired" in body
     assert recording.asked == [] and nothing_linked_or_read(sidecar)
+    assert not woken.is_set()
 
 
-def test_a_token_is_the_same_for_one_person_and_differs_between_people() -> None:
-    first = meridian.Caller.from_header(caller_header("person-1"))
-    again = meridian.Caller.from_header(caller_header("person-1", "Renamed"))
-    other = meridian.Caller.from_header(caller_header("person-2"))
-    assert TOKENS.token(first) == TOKENS.token(again) != TOKENS.token(other)
-    assert TOKENS.valid(first, TOKENS.token(again))
-    assert not TOKENS.valid(first, "")
-    assert "secret" not in repr(TOKENS)
+def test_a_token_is_one_persons_in_one_sessions_level() -> None:
+    first = meridian.Caller.from_header(caller_header("admin", subject="person-1"))
+    again = meridian.Caller.from_header(
+        caller_header("admin", subject="person-1", display_name="Renamed")
+    )
+    other = meridian.Caller.from_header(caller_header("admin", subject="person-2"))
+    viewing = meridian.Caller.from_header(caller_header("read", subject="person-1"))
+    assert pages.csrf_token(first) == pages.csrf_token(again)
+    assert len({pages.csrf_token(c) for c in (first, other, viewing)}) == 3
 
 
 # ── What is drawn ────────────────────────────────────────────────────────────
@@ -1194,101 +1453,83 @@ def test_what_snaptrade_says_is_escaped() -> None:
     hostile = ConnectionView(
         "c1", "<script>alert(1)</script>", "Broker & Co", "read", SyncState.CURRENT, "", None
     )
-    shown = render_connections(Status(mode="snaptrade", connections=(hostile,)), "t")
-    assert "<script>" not in shown and "&lt;script&gt;" in shown
+    shown = page_for(Status(mode="snaptrade", connections=(hostile,)))
+    assert "<script>alert" not in shown and "&lt;script&gt;" in shown
     assert "Broker &amp; Co" in shown
 
 
-def test_the_portal_link_opens_outside_the_frame() -> None:
-    shown = render_connections(
-        Status(mode="snaptrade"), "t", portal="https://portal.example/x?a=1&b=2"
-    )
-    assert 'href="https://portal.example/x?a=1&amp;b=2" target="_blank"' in shown
-    assert 'rel="noopener noreferrer"' in shown
+def test_the_portal_link_opens_outside_the_frame(server: int, synced: Syncer) -> None:
+    synced.venue = Recording(portal="https://portal.example/x?a=1&b=2")
+    status, _, body = ask(server, "POST", CONNECT, MANAGER, form(csrf=token_of(MANAGER)))
+    assert status == 200
+    assert 'href="https://portal.example/x?a=1&amp;b=2" target="_blank"' in body
+    assert 'rel="noopener noreferrer"' in body
 
 
 def test_waiting_for_settings_names_them_by_label_without_values() -> None:
     status = Status(mode="waiting", missing=("snaptrade_consumer_key",))
-    shown = render_connections(status, "t")
-    assert "Consumer key" in shown
+    assert "Consumer key" in page_for(status)
     # Statements does not name settings; it says SnapTrade is not read yet.
-    shown = render_statements(status, [], everyone=False)
+    shown = page_for(status, STATEMENTS, READER, meridian.AccountScope(links=HELD))
     assert "Consumer key" not in shown and "SnapTrade is not being read yet." in shown
 
 
-def test_the_refusals_hold_no_account() -> None:
-    for shown in (render_nothing_here(), render_admins_only()):
-        assert "<table" not in shown and "om-grid" not in shown
-        assert f'href="{KIT}meridian.css"' in shown
-
-
-def synthetic_status() -> Status:
-    sidecar = Sidecar()
-    syncer = Syncer(sidecar.plugin(), now=clock())
-    syncer.configure(config_from({SYNTHETIC: True}))
-    return asyncio.run(syncer.run_once())
-
-
-def links_for(
-    status: Status, scope: meridian.AccountScope | None = None
-) -> dict[str, LinkView]:
-    """Each account's link as `scope` gives it: by default, Alpaca's to ACC-1."""
-    held = scope if scope is not None else meridian.AccountScope(links=HELD[:1])
-    return {
-        view.account.external_account_id: link_of(held, view.account.external_account_id)
-        for view in status.accounts
-    }
-
-
-def synthetic_pages() -> dict[str, str]:
+def all_pages() -> dict[str, str]:
+    """Each page, as each of its levels is served it, on the synthetic read."""
     status = synthetic_status()
-    offered = Offered()
-    everyone = visible(status, links_for(status), meridian.Caller.from_header(ADMIN))
+    scope = meridian.AccountScope(links=HELD)
     return {
-        CONNECTIONS: render_connections(status, "t"),
-        ACCOUNTS: render_accounts(status, "t", links_for(status), offered),
-        STATEMENTS: render_statements(status, everyone, everyone=True),
+        "connections": page_for(status, CONNECTIONS, ROOT, scope),
+        "accounts": page_for(status, ACCOUNTS, ROOT, scope),
+        "statements-open": page_for(status, STATEMENTS, WRITER, scope),
+        "statements-view": page_for(status, STATEMENTS, READER, scope),
+        "nothing": page_for(status, STATEMENTS, NOBODY, scope),
     }
 
 
-def test_each_page_is_built_on_the_kit_with_no_style_or_chrome_of_its_own() -> None:
-    for shown in (*synthetic_pages().values(), render_nothing_here(), render_admins_only()):
-        assert f'<link rel="stylesheet" href="{KIT}meridian.css">' in shown
-        assert f'<script src="{KIT}meridian.js"></script>' in shown
+def test_each_page_is_built_on_the_kits_base_template_with_no_style_of_its_own() -> None:
+    for name, shown in all_pages().items():
+        assert f'<link rel="stylesheet" href="/.meridian/ui/{KIT}/meridian.css">' in shown
+        assert f'<script src="/.meridian/ui/{KIT}/meridian.js"></script>' in shown
         # One stylesheet, the kit's; no style, colour or chrome of the page's.
-        assert shown.count('rel="stylesheet"') == 1
-        assert "<style" not in shown and "style=" not in shown
-        assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", shown)
+        assert shown.count('rel="stylesheet"') == 1, name
+        assert "<style" not in shown and "style=" not in shown, name
+        assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", shown), name
         # No script of its own: the kit's, and data declared for its components.
         scripts = re.findall(r"<script[^>]*>", shown)
         assert set(scripts) <= {
-            f'<script src="{KIT}meridian.js">',
+            f'<script src="/.meridian/ui/{KIT}/meridian.js">',
             '<script type="application/json">',
-        }
+        }, name
         assert "customElements" not in shown
-        # The dashboard draws the tabs, and the frame the rest.
-        for chrome in (
-            "<nav",
-            "<img",
-            "<svg",
-            "<footer",
-            'class="tabs"',
-            "data-om-mode",
-            "theme",
-        ):
-            assert chrome not in shown
-        assert '<main class="page">' in shown
+        # The frame draws the rest; the kit drops the base's heading and tabs
+        # when the page is framed.
+        for chrome in ("<img", "<svg", "<footer", "data-om-mode", "theme"):
+            assert chrome not in shown, (name, chrome)
+        assert '<main class="page">' in shown and "<h1>SnapTrade</h1>" in shown
+
+
+def test_the_tab_row_on_its_own_is_the_sessions_levels() -> None:
+    shown = all_pages()
+    tabs = {
+        name: re.findall(r'<a class="tab[^"]*" href="([^"]+)"', page)
+        for name, page in shown.items()
+    }
+    # Under Manage, its two tabs; under Open and View, one page and no tab row.
+    assert tabs["connections"] == tabs["accounts"] == [CONNECTIONS, ACCOUNTS]
+    assert tabs["statements-open"] == tabs["statements-view"] == []
+    assert 'class="tab on" href="/admin/accounts" aria-current="page"' in shown["accounts"]
 
 
 def test_the_kit_is_the_one_that_hands_the_status_dot_up() -> None:
     # 0.7.0: a framed page's head status (om-status data-om-header) drawn by
     # the dashboard beside the plugin's name, and an emptied head dropped
     # (0.6.0's om-status and 0.5.0's map are in it too: a 0.x release only adds).
-    assert KIT == "/.meridian/ui/0.7.0/"
+    assert KIT == "0.7.0" and pages.kit == "/.meridian/ui/0.7.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:
-    element = re.search(rf'<om-grid id="{grid_id}" [^>]*>(.*?)</om-grid>', shown)
+    element = re.search(rf'<om-grid id="{grid_id}" [^>]*>(.*?)</om-grid>', shown, re.S)
     assert element is not None
     return element.group(0)
 
@@ -1296,7 +1537,7 @@ def grid_element(shown: str, grid_id: str) -> str:
 def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, Any]]]:
     """The columns and rows declared inside a grid, which the kit's grid reads."""
     data = re.search(
-        r'^<om-grid [^>]*><script type="application/json">(.*?)</script>',
+        r'^<om-grid [^>]*>\s*<script type="application/json">(.*?)</script>',
         grid_element(shown, grid_id),
     )
     assert data is not None
@@ -1304,108 +1545,64 @@ def grid(shown: str, grid_id: str) -> dict[str, list[dict[str, Any]]]:
     return parsed
 
 
+def statements_of_both() -> str:
+    """Statements for a reader of both accounts the synthetic read records."""
+    status = synthetic_status()
+    both = caller_header("read", read=("ACC-1", "ACC-3"), subject="person-6")
+    return page_for(status, STATEMENTS, both, meridian.AccountScope(links=HELD))
+
+
 def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
-    pages = synthetic_pages()
-    for path, grid_id, row_key in (
-        (STATEMENTS, "rows-0", "key"),
-        (STATEMENTS, "rows-1", "key"),
-    ):
-        shown = pages[path]
+    shown = statements_of_both()
+    for grid_id in ("rows-0", "rows-1"):
         element = grid_element(shown, grid_id)
         # Cards where it is narrow.
-        assert element.startswith(f'<om-grid id="{grid_id}" row-key="{row_key}" narrow="cards"')
+        assert element.startswith(f'<om-grid id="{grid_id}" row-key="key" narrow="cards"')
         assert "<table>" in element
         data = grid(shown, grid_id)
         # As many rows in the table a browser shows as the grid is given.
         assert element.count("<tr>") == len(data["rows"]) + 1
-        assert len({row[row_key] for row in data["rows"]}) == len(data["rows"])
-
-
-def sync_of(shown: str) -> dict[str, dict[str, Any]]:
-    """Each external account's sync state and values, as the map is given them."""
-    return {
-        x["external_account_id"]: {"status": x["status"], "values": x["values"]}
-        for x in map_of(shown)["external_accounts"]
-    }
-
-
-def test_each_accounts_sync_state_is_in_the_map_as_plain_json() -> None:
-    status = synthetic_status()
-    shown = render_accounts(status, "t", links_for(status), Offered())
-    synced = sync_of(shown)
-    alpaca = synced[ALPACA]
-    held = next(v for v in status.accounts if v.account.external_account_id == ALPACA)
-    assert held.freshness.holdings_as_of is not None
-    assert alpaca["status"] == {
-        "state": "ok",
-        "label": "Current",
-        "detail": "",
-        "at": held.freshness.holdings_as_of.isoformat(),
-        "at_label": "Holdings as of",
-    }
-    assert [v["label"] for v in alpaca["values"]] == ["History as of", "Last statement"]
-    assert alpaca["values"][1]["value"].endswith("rows") and alpaca["values"][1]["tone"] == ""
-    # Each state as its dot, with what to do in its note.
-    states = {x["status"]["label"]: x["status"]["state"] for x in synced.values()}
-    assert states == {"Current": "ok", "Delayed by design": "ok", "Disabled": "error"}
-    disabled = next(x for x in synced.values() if x["status"]["label"] == "Disabled")
-    assert REMEDY[SyncState.DISABLED] in disabled["status"]["detail"]
-    # And the same without the kit, in each account's plain row.
-    for x in map_of(shown)["external_accounts"]:
-        row = row_of(shown, x["external_account_id"])
-        assert f">{x['status']['label']}</span>" in row
-        assert "Holdings as of" in row and "last statement:" in row
+        assert len({row["key"] for row in data["rows"]}) == len(data["rows"])
 
 
 @pytest.mark.parametrize(
-    ("state", "dot"),
+    ("state", "badge"),
     [
-        (SyncState.CURRENT, "ok"),
-        (SyncState.DELAYED_BY_DESIGN, "ok"),
-        (SyncState.STALE, "warn"),
-        (SyncState.NEEDS_SIGN_IN, "error"),
-        (SyncState.DISABLED, "error"),
+        (SyncState.CURRENT, '<span class="badge good">Current</span>'),
+        (SyncState.DELAYED_BY_DESIGN, '<span class="badge info">Delayed by design</span>'),
+        (SyncState.STALE, '<span class="badge warn">Stale</span>'),
+        (SyncState.NEEDS_SIGN_IN, '<span class="badge bad">Needs sign-in</span>'),
+        (SyncState.DISABLED, '<span class="badge bad">Disabled</span>'),
     ],
 )
-def test_each_sync_state_maps_to_a_status_dot(state: SyncState, dot: str) -> None:
+def test_each_accounts_sync_state_is_on_statements(state: SyncState, badge: str) -> None:
     account = ExternalAccount("broker:1", True, "Roth IRA", "", "Broker", "c1", "s1")
     view = AccountView(account, Freshness(state, None, None, "Said by SnapTrade."), None, "")
     connection = ConnectionView("c1", "n", "Broker", "read", state, "", None, (view,))
     status = Status(mode="snaptrade", connections=(connection,))
-    shown = render_accounts(status, "t", {"broker:1": LinkView(Link.UNLINKED)}, Offered())
-    (synced,) = sync_of(shown).values()
-    assert synced["status"]["state"] == dot
-    todo = "Said by SnapTrade." + ("" if state is SyncState.CURRENT else f" {REMEDY[state]}")
-    assert synced["status"]["detail"] == todo
-    # No holdings moment reported: said as a value, never guessed.
-    assert "at" not in synced["status"]
-    assert synced["values"][:2] == [
-        {"label": "Holdings as of", "value": "not reported"},
-        {"label": "History as of", "value": "not reported"},
-    ]
+    scope = meridian.AccountScope(
+        links=(meridian.LinkedExternalAccount("broker:1", "ACC-1", "Household"),)
+    )
+    shown = statement_of(page_for(status, STATEMENTS, READER, scope), "broker:1")
+    assert badge in shown and '<span class="hint">Said by SnapTrade.</span>' in shown
+    # No moment reported: said so, never guessed.
+    assert shown.count('<span class="faint">not reported</span>') == 2
+    # Nothing recorded on the last read.
+    assert "No statement on the last read: nothing recorded" in shown
 
 
-def test_a_stopped_statement_is_toned_bad_in_the_map_and_the_plain_row() -> None:
+def test_a_stopped_statement_is_toned_bad_on_statements() -> None:
     status = synthetic_status()
     stopped = Outcome(rows=3, recorded=1, stopped="RecordHolding: refused: no")
-    status = Status(
-        mode=status.mode,
-        read_at=status.read_at,
-        connections=status.connections,
-        outcomes={**status.outcomes, ALPACA: stopped},
-    )
-    shown = render_accounts(status, "t", links_for(status), Offered())
-    last = sync_of(shown)[ALPACA]["values"][-1]
-    assert last == {
-        "label": "Last statement",
-        "value": "Stopped at 1 of 3 rows (RecordHolding: refused: no)",
-        "tone": "bad",
-    }
-    assert '<span class="bad-ink">Stopped at 1 of 3 rows</span>' in row_of(shown, ALPACA)
+    status = replace(status, outcomes={**status.outcomes, ALPACA: stopped})
+    shown = page_for(status, STATEMENTS, READER, meridian.AccountScope(links=HELD))
+    alpaca = statement_of(shown, ALPACA)
+    assert '<span class="bad-ink">Stopped at 1 of 3 rows</span>' in alpaca
+    assert '<span class="hint">RecordHolding: refused: no.</span>' in alpaca
 
 
 def test_quantities_are_exact_decimal_strings_as_read() -> None:
-    shown = synthetic_pages()[STATEMENTS]
+    shown = statements_of_both()
     rows = [row for index in range(2) for row in grid(shown, f"rows-{index}")["rows"]]
     quantities = {row["instrument"]: row["quantity"] for row in rows}
     assert all(isinstance(quantity, str) for quantity in quantities.values())
@@ -1424,7 +1621,7 @@ def test_the_declared_json_cannot_close_its_script() -> None:
         "c1", "n", "Broker", "read", SyncState.CURRENT, "", None, (view,)
     )
     status = Status(mode="snaptrade", connections=(connection,))
-    shown = render_accounts(status, "t", links_for(status), Offered())
+    shown = page_for(status, ACCOUNTS)
     assert "<script>alert" not in shown
     assert map_of(shown)["external_accounts"][0]["name"] == hostile
 
@@ -1432,7 +1629,7 @@ def test_the_declared_json_cannot_close_its_script() -> None:
 def test_a_closed_account_is_not_offered() -> None:
     status = synthetic_status()
     offered = Links(Sidecar().plugin())
-    read = asyncio.run(offered.offered(ADMIN))
+    read = asyncio.run(offered.offered(MANAGER))
     assert [(a.account_id, a.open) for a in read.accounts] == [
         ("ACC-1", True),
         ("ACC-3", True),
@@ -1441,7 +1638,7 @@ def test_a_closed_account_is_not_offered() -> None:
     # Read with where each is held and what it is (W6.4).
     household = read.accounts[0]
     assert (household.custodian, household.account_type) == ("Schwab", "Brokerage")
-    shown = render_accounts(status, "t", links_for(status, meridian.AccountScope()), read)
+    shown = page_for(status, ACCOUNTS, ROOT, offered=read)
     assert "Household" in shown and '<option value="ACC-2">' not in shown
     # The kit's map is told it is closed, and offers only open ones.
     assert {a["account_id"]: a["open"] for a in map_of(shown)["accounts"]}["ACC-2"] is False
@@ -1547,13 +1744,23 @@ def status_dot(body: str) -> str:
     ],
 )
 def test_each_syncer_state_is_the_heads_status_dot(status: Status, dot: str) -> None:
-    for body in (
-        render_connections(status, "t"),
-        render_accounts(status, "t", {}, Offered()),
-    ):
+    for body in (page_for(status, CONNECTIONS), page_for(status, ACCOUNTS)):
         assert status_dot(body) == dot
         assert "Reading SnapTrade." not in head_of(body).replace(dot, "")
         assert "<om-moment" not in head_of(body)
+
+
+def test_statements_has_the_dot_without_naming_settings() -> None:
+    waiting = Status(mode="waiting", missing=("snaptrade_client_id",))
+    assert status_dot(page_for(waiting, STATEMENTS, READER)) == (
+        "<om-status data-om-header "
+        'state="error" label="Not reading SnapTrade" detail="SnapTrade is not being read '
+        'yet.">Not reading SnapTrade. SnapTrade is not being read yet.</om-status>'
+    )
+    read = Status(mode="snaptrade", read_at=READ_AT)
+    assert status_dot(page_for(read, STATEMENTS, WRITER)).startswith(
+        '<om-status data-om-header state="ok" label="SnapTrade read"'
+    )
 
 
 def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
@@ -1562,27 +1769,32 @@ def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
     # left to show and the kit drops it: the page starts right under the tabs
     # (the product owner, 2026-09-30).
     status = Status(mode="synthetic", read_at=READ_AT)
-    for body in (render_connections(status, "t"), render_accounts(status, "t", {}, Offered())):
+    for body in (
+        page_for(status, CONNECTIONS),
+        page_for(status, ACCOUNTS),
+        page_for(status, STATEMENTS, WRITER),
+        page_for(status, STATEMENTS, READER),
+    ):
         head = head_of(body)
         assert status_dot(body).startswith("<om-status data-om-header ")
-        left = re.sub(r"<h1>[^<]*</h1>", "", head, count=1)
+        left = re.sub(r"<div><h1>[^<]*</h1></div>", "", head, count=1)
         left = left.replace(status_dot(body), "", 1)
         left = re.sub(
-            r'<form method="post" action="/admin/read" class="inline">'
+            r'<div class="actions"><form method="post" action="/read" class="inline">'
             r'(?:<input type="hidden" [^>]*>)*<button data-om-action="refresh">Refresh</button>'
-            r"</form>",
+            r"</form></div>",
             "",
             left,
             count=1,
         )
-        assert re.sub(r'</?(?:div|p)(?: class="actions")?>', "", left) == "", left
+        assert left.strip() == "", left
 
 
 def test_the_status_dot_says_an_error_as_text_and_never_a_secret() -> None:
     hostile = Status(mode="snaptrade", error='reading "<b>positions</b>" failed & stopped')
-    dot = status_dot(render_connections(hostile, "t"))
+    dot = status_dot(page_for(hostile))
     assert "<b>" not in dot
-    said = "reading &quot;&lt;b&gt;positions&lt;/b&gt;&quot; failed &amp; stopped"
+    said = "reading &#34;&lt;b&gt;positions&lt;/b&gt;&#34; failed &amp; stopped"
     assert f'detail="{said}"' in dot
     # The error a real read keeps is what was asked, the type and the status:
     # never a credential (test_sync's test_nothing_it_logs_or_reports...).
@@ -1592,10 +1804,10 @@ def test_the_status_dot_says_an_error_as_text_and_never_a_secret() -> None:
 def test_add_brokerage_is_the_connections_cards_action_with_its_form_and_token(
     server: int,
 ) -> None:
-    _, _, body = ask(server, "GET", CONNECTIONS, ADMIN)
+    _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
     # Not in the page head, which keeps only Refresh.
     head = head_of(body)
-    assert 'action="/admin/connect"' not in head and "Add brokerage" not in head
+    assert f'action="{CONNECT}"' not in head and "Add brokerage" not in head
     assert "Connect a brokerage" not in body
     actions = re.search(r'<div class="actions">(.*)</div>', head, re.S)
     assert actions is not None
@@ -1604,12 +1816,12 @@ def test_add_brokerage_is_the_connections_cards_action_with_its_form_and_token(
     card = re.search(
         r'<section class="panel"><div class="panel-body"><div class="row"><h2>Connections</h2>'
         r'<span class="spacer"></span>(.*?)</div>',
-        body,
+        flat(body),
     )
     assert card is not None
     assert card.group(1) == (
-        '<form method="post" action="/admin/connect" class="inline">'
-        f'<input type="hidden" name="csrf" value="{token_of(ADMIN)}">'
+        f'<form method="post" action="{CONNECT}" class="inline">'
+        f'<input type="hidden" name="csrf" value="{token_of(MANAGER)}">'
         '<button class="primary">+ Add brokerage</button></form>'
     )
     # Not a header action: the dashboard draws only Refresh.

@@ -135,9 +135,9 @@ class Recorder:
         outcome.ambiguous += 1
         await self._plugin.report_missing_instrument(
             source=SOURCE,
-            # Asset classes are being made an enum
-            # (sdk-contract/asset-class-is-an-enum); unset until its names are
-            # ruled.
+            # An enum since SDK 0.9.0 (sdk-contract/asset-class-is-an-enum),
+            # and still sent unset: SnapTrade's own kinds are not mapped to
+            # the ruled classes yet, and no class is better than a guessed one.
             asset_class="",
             identifiers=identifiers,
             as_of_ns=as_of_ns,

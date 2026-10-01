@@ -2,19 +2,19 @@
 Meridian deployment, through SnapTrade (plans/proving-the-plugin-system, step 1).
 
 It connects to the sidecar it is launched beside, declares its settings and
-its admin pages, serves those and Statements, its user side, and then, on
-every poll and every settings change, reads SnapTrade (or, in synthetic mode,
-its built-in responses), normalises what it read to the platform's convention
-(normalise.py), and records it through the SDK's typed operations
-(contract.py): each account's sync status, and a holdings statement per
-account. It holds nothing between reads; a restart
-reads again. Which of its external accounts are linked, and to what, it reads
-beside its account scope, holding the first delivery before its pages are
-served and each one after (linking.py).
+its pages (page.py: Connections and Account links under Manage, Statements
+under Open and View), serves them, and then, on every poll and every settings
+change, reads SnapTrade (or, in synthetic mode, its built-in responses),
+normalises what it read to the platform's convention (normalise.py), and
+records it through the SDK's typed operations (contract.py): each account's
+sync status, and a holdings statement per account. It holds nothing between
+reads; a restart reads again. Which of its external accounts are linked, and
+to what, it reads beside its account scope, holding the first delivery before
+its pages are served and each one after (linking.py).
 
 Everything goes through the sidecar. The SnapTrade credentials arrive as the
-plugin's own secret settings, set by a deployment administrator in the
-dashboard, and are never logged, shown or sent anywhere but SnapTrade.
+plugin's own secret settings, set by an admin of the plugin in the dashboard,
+and are never logged, shown or sent anywhere but SnapTrade.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from collections.abc import AsyncIterator
 import meridian
 
 from .linking import Links
-from .page import ADMIN_PAGES, TITLE, serve
+from .page import TITLE, pages, serve
 from .settings import DECLARED, config_from
 from .sync import Syncer
 
@@ -84,11 +84,13 @@ async def run() -> None:
 
     port = int(os.environ.get("SNAPTRADE_PAGE_PORT", "8000"))
     async with await meridian.connect(
-        # Shown as tabs in the dashboard's admin view of the instance.
-        interface=meridian.Interface(port=port, title=TITLE, admin_pages=ADMIN_PAGES),
+        # Each page with the levels it serves: the dashboard shows it under
+        # those buttons, Manage, Open and View, and the SDK refuses it to a
+        # session at any other level.
+        interface=meridian.Interface(port=port, title=TITLE, pages=pages),
         settings=DECLARED,
-        # It names accounts by SnapTrade's identifiers, which a deployment
-        # admin links to accounts (W6.4).
+        # It names accounts by SnapTrade's identifiers, which an admin of the
+        # plugin links to the deployment's accounts (W6.4).
         reads_external_accounts=True,
     ) as plugin:
         log.info(
@@ -101,8 +103,8 @@ async def run() -> None:
         links = Links(plugin)
         following = await follow_links(plugin, links)
         log.info("holding %d links to the deployment's accounts", len(links.scope.links))
-        page = serve(syncer, links, loop, port, wake)
-        log.info("serving Statements and its admin pages on 127.0.0.1:%d", port)
+        page = serve(plugin, syncer, links, wake, port)
+        log.info("serving its pages on 127.0.0.1:%d", port)
         tasks = [
             following,
             asyncio.create_task(watch_settings(plugin, syncer, configured, wake)),

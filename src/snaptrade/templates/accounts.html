@@ -1,0 +1,68 @@
+{#- Account links, at admin: each account the connections reach, linked to one
+    of the deployment's here. Under Manage, an account's identity and its link
+    only: nothing SnapTrade read for it, no sync state, statement or rows. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% set empty = "No accounts yet: they appear here once SnapTrade is read." %}
+
+{#- A plain form for the map's `intent`, posted to the map's one route with the
+    page's token: what a browser without the kit shows. -#}
+{% macro intent_form(intent, external_id="", kind="") -%}
+<form method="post" action="{{ paths.link }}"{% if kind %} class="{{ kind }}"{% endif %}>{{ csrf_input }}<input type="hidden" name="intent" value="{{ intent }}">
+{%- if external_id %}<input type="hidden" name="external_account_id" value="{{ external_id }}">{% endif %}{{ caller() }}</form>
+{%- endmacro %}
+
+{#- A list of every account the read reached, to choose the one a form is for. -#}
+{% macro external_choice() -%}
+<label class="field"><span>The account</span><select name="external_account_id" required><option value="">Choose one</option>
+{%- for external in externals %}<option value="{{ external.external_account_id }}">{{ external.label }}</option>{% endfor -%}
+</select></label>
+{%- endmacro %}
+
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block head_actions %}{{ kit.refresh(back) }}{% endblock %}
+{% block content %}
+{{ kit.notices(notice, none, waiting, error) }}
+{% if refused %}
+<div class="notice bad" role="alert">The deployment's accounts could not be read: {{ refused }}</div>
+{% endif %}
+<section class="panel">
+<div class="panel-body"><h2>Link each account</h2>
+<p class="muted">Each account SnapTrade reaches is recorded against the deployment's account it is linked to, and one nothing links is not recorded.
+{%- if creates %} Link it to an existing account, or create one for it.{% else %} Link it to an existing account; a deployment admin may also create one for it.{% endif %}
+{%- if summary %} {{ summary }}.{% endif %}</p></div>
+<om-account-map action="{{ paths.link }}" token-name="{{ token_name }}" token="{{ csrf_token }}" group-by="connection" link-several empty="{{ empty }}">
+<script type="application/json">{{ map | tojson }}</script>
+{% for row in rows %}
+<div class="list-row" data-account="{{ row.external_account_id }}"><div class="grow">
+<div class="row"><span class="title">{{ row.name }}</span> {{ kit.badge(row.link) }}</div>
+<div class="meta">{{ row.where }}{% if row.number %} · No. {{ row.number }}{% endif %} · <code>{{ row.external_account_id }}</code></div>
+{% if row.linked %}<span class="hint">Linked to {{ row.account_name }} (<code>{{ row.account_id }}</code>).</span>{% endif %}
+{% if row.note %}<span class="hint">{{ row.note }}</span>{% endif %}
+</div>
+{% if row.linked %}{% call intent_form("unlink", row.external_account_id, "inline") %}<button class="danger">Unlink</button>{% endcall %}{% endif %}
+</div>
+{% endfor %}
+{% if rows %}
+<div class="panel-body panel-section"><h3>Link an account</h3>
+<p class="muted">Linking a linked account to another replaces its link.</p>
+{% if refused %}
+<p class="hint">The deployment's accounts could not be read, so none is offered here.</p>
+{% elif not choices %}
+<p class="hint">The deployment has no open accounts yet{% if creates %}: create one{% endif %}.</p>
+{% else %}
+{% call intent_form("link") %}<div class="field-row">{{ external_choice() }}<label class="field"><span>An existing account</span><select name="account_id" required><option value="">Choose an account</option>
+{%- for choice in choices %}<option value="{{ choice.account_id }}">{{ choice.label }}</option>{% endfor -%}
+</select></label><button>Link</button></div>{% endcall %}
+{% endif %}
+{% if creates %}
+<h3>Create an account for one, and link it</h3>
+{% call intent_form("create") %}<div class="field-row">{{ external_choice() }}<label class="field"><span>A new account</span><input type="text" name="new_account_name" required maxlength="{{ most_name }}"></label><label class="field"><span>Custodian</span><input type="text" name="new_account_custodian" maxlength="{{ most_name }}"></label><label class="field"><span>Type</span><input type="text" name="new_account_type" maxlength="{{ most_name }}"></label><button class="primary">Create and link</button></div>{% endcall %}
+{% endif %}
+</div>
+{% else %}
+<div class="empty-state"><strong>{{ empty }}</strong></div>
+{% endif %}
+</om-account-map>
+</section>
+{% endblock %}

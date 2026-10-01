@@ -8,24 +8,26 @@ the roles `pyproject.toml` declares under `[tool.meridian]` (`custody`), once
 a deployment admin approves them.
 
 - `src/snaptrade/__main__.py` connects to the sidecar, declares the settings
-  (`settings.py`) and serves the pages (`page.py`, built on the plugin UI kit
-  the dashboard serves: its classes and components, never a colour, spacing
-  or font of its own, and usable without the kit; below). Statements, at `/`,
-  is the user side: each account a person may read (`caller.may_read`), every
-  account for a deployment admin, and "nothing here for you" for anybody
-  else. The admin pages, which the dashboard shows as tabs, are setup only:
-  Connections and Account links. Daily work goes on the user side, setup on
-  the admin pages (intent/a-custody-plugin-serves-its-statement-receivers).
-  `venue.py` is SnapTrade behind a small interface and the only module
-  importing its SDK; `synthetic.py` stands in for it. `normalise.py` turns
-  SnapTrade's shapes into the platform's convention; `contract.py` sends them
-  through the SDK; `sync.py` carries one read through; `linking.py` links an
-  account to one of the deployment's, acting for the admin on the Account
-  links tab, and holds the plugin's links as `plugin.account_scope()` last
-  delivered them (`__main__` holds the first before serving the pages). An
-  account is linked, naming its account, or not linked: never guess a third
-  state from what a read recorded, and never store the links. A row refused
-  for want of a link is `meridian.NotLinked`; never match a refusal's words.
+  (`settings.py`) and the pages, and serves them. `page.py` declares each page
+  on the SDK's `meridian.Pages`, a view function and a Jinja2 template under
+  `templates/` (built on the plugin UI kit the dashboard serves: its classes
+  and components, never a colour, spacing or font of its own, and usable
+  without the kit; below). Connections and Account links, at `admin`
+  (Manage), are setup only; Statements, at `/`, at `write` and `read` (Open
+  and View), is daily work: each account linked to one the person may read
+  (`caller.may_read`), Refresh under Open alone, and "nothing here for you"
+  for somebody who may read none
+  (intent/a-custody-plugin-serves-its-statement-receivers). `venue.py` is
+  SnapTrade behind a small interface and the only module importing its SDK;
+  `synthetic.py` stands in for it. `normalise.py` turns SnapTrade's shapes
+  into the platform's convention; `contract.py` sends them through the SDK;
+  `sync.py` carries one read through; `linking.py` links an account to one of
+  the deployment's, acting for the plugin admin on the Account links tab, and
+  holds the plugin's links as `plugin.account_scope()` last delivered them
+  (`__main__` holds the first before serving the pages). An account is
+  linked, naming its account, or not linked: never guess a third state from
+  what a read recorded, and never store the links. A row refused for want of
+  a link is `meridian.NotLinked`; never match a refusal's words.
 - SnapTrade's vocabulary stops at `normalise.py`, and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.
@@ -33,12 +35,28 @@ a deployment admin approves them.
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles
   and dependencies take a new version, which a person approves.
-- Who may use it is not the plugin's to say (decisions/026). A person's
-  access to a plugin is `read` or `write`, granted in the deployment's access
-  groups, the same for every plugin; `meridian.Caller` tells the page what
-  the person asking may read (`caller.read`, `caller.may_read`) and write
-  (`caller.write`, `caller.may_write`). Declare no `tags`: a plugin has none,
-  and `meridian plugin upload` refuses a `pyproject.toml` that names them.
+- Who may use it is not the plugin's to say (decisions/026, 027). A person
+  holds `admin`, `read` or `write` on a plugin, or `admin` and one of the
+  others, granted in the deployment's access groups, the same for every
+  plugin, and opens it from the dashboard's home by Manage (`admin`), Open
+  (`write`) or View (`read`). A session carries the one level chosen, and
+  `request.caller` tells a view that level (`caller.level`, `caller.admin`)
+  and the accounts it reaches: what the person may read (`caller.read`,
+  `caller.may_read`) and write (`caller.write`, `caller.may_write`), both
+  under Open, read alone under View, and none under Manage. Being a
+  deployment admin opens no page and reaches no account;
+  `caller.deployment_admin` is read only to offer a new account when linking
+  (W6.4). Declare no `tags`: a plugin has none, and `meridian plugin upload`
+  refuses a `pyproject.toml` that names them.
+- **Declare each page with the levels it serves**, where its view is:
+  `@pages.page(path, title, levels=[...])` for a tab, `@pages.route(path,
+  levels=[...])` for anything else. The dashboard shows a page under the
+  buttons of its levels, and the SDK refuses any other session before the
+  view runs. **A page at `admin` shows no account's data** (the product
+  owner: plugin admins are account agnostic): no holdings, rows, statements
+  or sync state of an account, only external identities, their links and how
+  each connection is; `PageClient.assert_no_account_data` in the tests holds
+  every page at `admin` to that.
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the
@@ -85,15 +103,25 @@ Build every page with Open Meridian's plugin UI kit, and nothing else for its
 look. Then it looks like the rest of the platform, follows each person's
 colour scheme, light or dark, and their market-direction convention, and
 needs no design work. The kit is plain CSS and web components: it works from
-plain HTML, as `page.py` writes it, and from React, Vue or Svelte alike.
+plain HTML, as the templates write it, and from React, Vue or Svelte alike.
 
-**Link it**, in `<head>`, from the path the dashboard serves it at on this
-plugin's own host. The version is the one `page.py`'s `KIT` names:
-
-```html
-<link rel="stylesheet" href="/.meridian/ui/0.7.0/meridian.css">
-<script src="/.meridian/ui/0.7.0/meridian.js"></script>
-```
+**It is linked for you.** Each page's template, under `templates/`, extends
+the SDK's base template, `{% extends "meridian/base.html" %}`, which links the
+kit from the path the dashboard serves it at on this plugin's own host, at the
+version `page.py`'s `KIT` names (`/.meridian/ui/0.7.0/`), and draws the page's
+heading and tab row (the kit drops both when the dashboard frames the page and
+draws its own). A template fills three blocks: `content`, the page itself;
+`head_actions`, buttons marked `data-om-action="<id>"`, which the dashboard
+draws in its header (here Refresh); and `status`, an `<om-status
+data-om-header>` it draws beside the plugin's name (here how the plugin is
+reading). `pages.render("x.html", ...)` renders it, every value escaped, with
+`caller` and `level` (admin, write or read) in it; a template adapts by `{% if
+level == "write" %}`, and `templates/_kit.html`'s macros (the status dot, a
+one-button form, a grid with its plain table, notices, tiles) are shared
+between pages. A form that posts puts `{{ csrf_input }}` inside it (a script
+sends `request.csrf_token` as `X-CSRF-Token`): every request but GET and HEAD
+without this plugin's token is refused before the view runs, so another
+site's page cannot act here as the person. A GET changes nothing.
 
 Never copy the kit into the plugin, and never load it, or anything else for
 the page, from another origin or a CDN.
@@ -107,16 +135,16 @@ the page, from another origin or a CDN.
 | Live data from the plugin's server | `<om-live src="events" snapshot="snapshot.json" for="grid-id">`: follows server-sent events in sequence, and reads the snapshot again after a gap or a reconnect, so nothing is missed |
 | The date the figures are as of | `<om-asof>` to choose one; `<om-moment label="…" value="…ISO…">` to read one |
 | How something is doing: read, reading, needs attention or failed | `<om-status state="ok\|busy\|warn\|error" label="…" detail="…" at="…ISO…" at-label="Last read">`: a small coloured dot, a mark per state, its note on hover, focus or a tap; the words inside show without the kit's script. In the page head, `data-om-header` hands it to the dashboard, which draws it beside the plugin's name when the page is framed |
-| Linking external accounts to the deployment's (W6.4) | `<om-account-map action="…" token-name="csrf" token="…">`: every form posts to `action` with an `intent` field (`link`, `create`, `unlink`); thousands of accounts are searched, filtered, grouped (`group-by`) and paged; with `link-several`, suggested links are sent in one form, `intent` `link-several` and a pair of IDs per link; each account may carry a `status` and `values` (a Status column, filtered by state) |
+| Linking external accounts to the deployment's (W6.4) | `<om-account-map action="…" token-name="csrf" token="{{ csrf_token }}">`: every form posts to `action` with an `intent` field (`link`, `create`, `unlink`); thousands of accounts are searched, filtered, grouped (`group-by`) and paged; with `link-several`, suggested links are sent in one form, `intent` `link-several` and a pair of IDs per link. An account may carry a `status` and `values` (a Status column), but not here: the map is on a page at `admin`, and those are an account's data |
 | Choosing an instrument | `<om-instrument-picker src="…" asof="…">`, searching through the plugin's own server |
 | A time series | `<om-chart type="line">` (or `bar`), `series` set in script |
 | Several views on one page, resizable and rearrangeable | `<om-panels layout-id="…">`, a `data-panel` child per view; each person's arrangement is remembered |
 | Everything else | The kit's classes: `.page`, `.page-head`, `.panel` and `.panel-body`, `.tiles`, `.tabs`, `.field`, `.filters`, `.notice`, `.badge`, `button.primary` and `.danger`, `table` and `.num`, `.empty-state` |
 
 Give a component its data as JSON declared inside it, a
-`<script type="application/json">` child, as `page.py` does for `om-grid` and
-`om-account-map` (write `<`, `>` and `&` in its strings as `\u003c`,
-`\u003e` and `\u0026`); or set it as properties (`columns`, `rows`,
+`<script type="application/json">` child, as the templates do for `om-grid`
+and `om-account-map` with `{{ data | tojson }}`, which writes `<`, `>` and `&`
+in its strings as `\u003c`, `\u003e` and `\u0026`; or set it as properties (`columns`, `rows`,
 `series`, `data`) in a `customElements.whenDefined(...)` callback. The kit's
 README (open-meridian/meridian-ui) documents every component, attribute and
 event.
@@ -145,8 +173,9 @@ Spacing, radii, shadows and type are the kit's too: `var(--space-1)` to
 
 **No chrome, no theme code.** The dashboard frames the page and draws the
 plugin's name, the way back to the dashboard and the person. The page draws
-only its content, inside `<main class="page">`: no header bar, navigation,
-logo, sign-in or sign-out, and no light and dark switch. The kit applies the
+only its content, in the base template's `content` block: no header bar,
+navigation, logo, sign-in or sign-out of its own, and no light and dark
+switch. The kit applies the
 person's theme, which the frame hands it, with no code of the page's.
 
 **Money is exact.** Send prices and quantities to the page as decimal strings
@@ -158,55 +187,52 @@ page reaches only its own origin, the plugin's server, which proxies anything
 further; figures are strings, never floats.
 
 **Where the kit is not served.** Until every dashboard serves `/.meridian/ui/`,
-build pages that work without it, as `page.py` does: put a plain `<table>`
+build pages that work without it, as the templates do: put a plain `<table>`
 inside `<om-grid>` and plain forms inside `<om-account-map>` (a browser shows
 them as they are, and the kit's component replaces them), and make actions
 plain forms. Without the kit the page is unstyled, but everything on it works.
 
-**This plugin's pages.** Every action is a plain POST whose form carries the
-CSRF token `page.py` makes, checked before anything is done (the README's
+**This plugin's pages.** Every action is a plain POST, declared with
+`@pages.route` at the levels it serves, whose form carries the SDK's CSRF
+token (`{{ csrf_input }}`), checked before the view runs (the README's
 "Forms and the kit"); a new form carries it too. The Account links tab is
 the kit's `om-account-map`, whose forms all post to `/admin/accounts/link`
 with an `intent`; the page has no grid code of its own, since the grid's rich
 cells are declared JSON. `make preview` writes each page on synthetic data to
 `preview/`, linking the kit.
 
-A short page, whole:
+A short page, whole: the view, in `page.py`,
 
-```html
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Positions</title>
-  <link rel="stylesheet" href="/.meridian/ui/0.7.0/meridian.css">
-  <script src="/.meridian/ui/0.7.0/meridian.js"></script>
-</head>
-<body>
-  <main class="page">
-    <header class="page-head">
-      <div><h1>Positions</h1><p>Every account you may read here.</p></div>
-      <div class="actions"><om-live src="events" snapshot="positions.json" for="positions"></om-live></div>
-    </header>
-    <section class="panel">
-      <om-grid id="positions" row-key="position_id" high-rate sort="market_value:desc" caption="Positions">
-        <table><tr><th>Instrument</th><th>Quantity</th><th>Market value</th></tr></table>
-      </om-grid>
-    </section>
-  </main>
-  <script type="module">
-    customElements.whenDefined("om-grid").then(() => {
-      document.getElementById("positions").columns = [
-        { key: "symbol", label: "Instrument" },
-        { key: "quantity", label: "Quantity", type: "decimal", group: true },
-        { key: "market_value", label: "Market value", type: "decimal", group: true },
-        { key: "day_pnl", label: "Day P&L", type: "decimal", group: true, tone: "sign" },
-      ];
-    });
-  </script>
-</body>
-</html>
+```python
+COLUMNS = [
+    {"key": "symbol", "label": "Instrument"},
+    {"key": "quantity", "label": "Quantity", "type": "decimal", "group": True},
+    {"key": "market_value", "label": "Market value", "type": "decimal", "group": True},
+    {"key": "day_pnl", "label": "Day P&L", "type": "decimal", "group": True, "tone": "sign"},
+]
+
+
+@pages.page("/positions", "Positions", levels=["write", "read"])
+def positions(request: meridian.Request) -> str:
+    return pages.render("positions.html", grid={"columns": COLUMNS, "rows": []})
+```
+
+and its template, `templates/positions.html`:
+
+```html+jinja
+{% extends "meridian/base.html" %}
+{% block head_actions %}
+<om-live src="events" snapshot="positions.json" for="positions"></om-live>
+{% endblock %}
+{% block content %}
+<p class="muted">Every account you may read here.</p>
+<section class="panel">
+  <om-grid id="positions" row-key="position_id" high-rate sort="market_value:desc" caption="Positions">
+    <script type="application/json">{{ grid | tojson }}</script>
+    <table><tr><th>Instrument</th><th>Quantity</th><th>Market value</th></tr></table>
+  </om-grid>
+</section>
+{% endblock %}
 ```
 
 The plugin's server answers `positions.json` with `{ "sequence": "41", "rows":
@@ -225,8 +251,10 @@ theirs.
 
 ### Before starting
 
-- `meridian --version` is 0.1.15 or later. Older ones have no `plugin check`,
-  and before 0.1.3 no `plugin dev`: the person runs `meridian upgrade`.
+- `meridian --version` is 0.1.21 or later. Older ones open a page at no
+  chosen level (`--level` came in 0.1.21), before 0.1.15 have no `plugin
+  check`, and before 0.1.3 no `plugin dev`: the person runs `meridian
+  upgrade`.
 - The person has run `meridian connect` (with the address, for a deployment
   not on this machine). You cannot do it for them: it signs in through their
   browser. `meridian plugin list` says whether the
@@ -299,10 +327,10 @@ Ask the question that answers what you changed:
 
 | To know | Run |
 |---|---|
-| What the page shows, as the person is served it | `meridian plugin open --instance snaptrade --print /` (any path on the plugin) |
+| What the page shows, as the person is served it | `meridian plugin open --instance snaptrade --level view --print /` (any path on the plugin, at the level whose button serves it: `--level manage` for `/admin/connections` and `/admin/accounts`, `open` or `view` for `/`) |
 | What the plugin printed or logged since your change | `meridian plugin logs --instance snaptrade --since <R-1>` |
 | What the sidecar refused it, or what else happened | `meridian plugin events --instance snaptrade --since <R-1> --json` |
-| What the person sees in a browser | `meridian plugin open --instance snaptrade`: a link one browser opens once. Give it to the person, or open it in your browser pane |
+| What the person sees in a browser | `meridian plugin open --instance snaptrade --level manage` (or `open`, `view`): a link one browser opens once, to a session at that level. Give it to the person, or open it in your browser pane |
 
 `--print` exits non-zero when the plugin answers with an error, and prints what
 it answered. Prefer it to a browser for checking your own work: it needs no

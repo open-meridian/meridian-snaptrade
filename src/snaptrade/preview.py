@@ -3,19 +3,21 @@ for looking at the pages without a deployment.
 
     python -m snaptrade.preview accounts > preview/accounts.html
 
-The page is connections (the default), accounts or statements. Each links the kit
-where the dashboard serves it, /.meridian/ui/<version>/, so serve it beside
-the kit to see it styled (meridian-ui's `make serve` serves the kit under that
-path); opened on its own it is the page without the kit, unstyled, which must
-work too.
+The page is connections (the default), accounts or statements. Each is served
+by its own view, as the sidecar would ask it, and links the kit where the
+dashboard serves it, /.meridian/ui/<version>/, so serve it beside the kit to
+see it styled (meridian-ui's `make serve` serves the kit under that path);
+opened on its own it is the page without the kit, unstyled, which must work
+too.
 
-There is no sidecar here, so nothing is recorded. The Account links tab shows
-the first account linked, as the plugin's account scope would give it, and
-the other two not linked, as if the last read had recorded the first, had the
-second's rows refused for want of a link, and had not recorded the third yet;
-the deployment's accounts it offers are invented, like the rest. Statements
-is as a reader sees it who may read the accounts the first two are linked to,
-and not the third, which nothing links.
+There is no sidecar here, so nothing is recorded. Connections and Account
+links are as a deployment admin sees them under Manage. The Account links tab
+shows the first account linked, as the plugin's account scope would give it,
+and the other two not linked, as if the last read had recorded the first, had
+the second's rows refused for want of a link, and had not recorded the third
+yet; the deployment's accounts it offers are invented, like the rest.
+Statements is as a reader sees it under View who may read the accounts the
+first two are linked to, and not the third, which nothing links.
 """
 
 from __future__ import annotations
@@ -23,15 +25,17 @@ from __future__ import annotations
 import asyncio
 import sys
 from dataclasses import replace
+from typing import cast
 
 import meridian
+from meridian.testing import caller_header
 
 from .contract import Outcome
-from .linking import DeploymentAccount, LinkView, Offered, link_of
+from .linking import DeploymentAccount, Links, Offered
 from .normalise import views
-from .page import render_accounts, render_connections, render_statements, visible
+from .page import ACCOUNTS, CONNECTIONS, STATEMENTS, hold, pages
 from .settings import Config
-from .sync import Status
+from .sync import Status, Syncer
 from .synthetic import USER_ID, SyntheticVenue
 from .venue import read, utc_now
 
@@ -46,6 +50,14 @@ OFFERED = Offered(
 )
 
 
+class _Offering(Links):
+    """The plugin's links with no sidecar behind them: the deployment's
+    accounts it offers are OFFERED."""
+
+    async def offered(self, acting_for: str) -> Offered:
+        return OFFERED
+
+
 async def _status() -> Status:
     venue = SyntheticVenue(utc_now)
     snapshot = await read(venue, utc_now)
@@ -58,17 +70,30 @@ async def _status() -> Status:
     )
 
 
-def _links(status: Status, scope: meridian.AccountScope) -> dict[str, LinkView]:
-    return {
-        view.account.external_account_id: link_of(scope, view.account.external_account_id)
-        for view in status.accounts
-    }
+def _shown(status: Status, scope: meridian.AccountScope, path: str, header: str) -> str:
+    """The page at `path`, served by its view for the caller `header` names,
+    from `status` and the links `scope` holds."""
+    plugin = cast(meridian.Plugin, None)
+    syncer = Syncer(plugin)
+    syncer.status = status
+    links = _Offering(plugin)
+    asyncio.run(links.hold(scope))
+    hold(syncer, links, asyncio.Event())
+    request = meridian.Request("GET", path, meridian.Caller.from_header(header), plugin)
+    answer = asyncio.run(pages.dispatch(request))
+    if answer.status != 200:
+        sys.exit(f"{path} answered {answer.status}: {answer.text}")
+    return answer.text
 
 
-def _linked(status: Status) -> tuple[Status, dict[str, LinkView]]:
+# A deployment admin, under Manage: they are offered a new account too.
+MANAGING = caller_header("admin", subject="preview|admin", deployment_admin=True)
+
+
+def _linked(status: Status) -> tuple[Status, meridian.AccountScope]:
     """The read with the first account linked to ACC-1002 and its rows
     recorded, the second's refused for want of a link, and the third not
-    recorded yet; and each one's link as the account scope gives it."""
+    recorded yet; and the links as the account scope gives them."""
     first, second, *_ = status.accounts
     unlinked = second.account.external_account_id
     rows = [len(view.statement.holdings) if view.statement else 0 for view in (first, second)]
@@ -86,13 +111,13 @@ def _linked(status: Status) -> tuple[Status, dict[str, LinkView]]:
             ),
         )
     )
-    return replace(status, outcomes=outcomes), _links(status, scope)
+    return replace(status, outcomes=outcomes), scope
 
 
 def _read(status: Status) -> str:
-    """Statements for a reader who may read ACC-1001 and ACC-1002, to which
-    the first two accounts are linked, and whose rows the last read
-    recorded."""
+    """Statements under View, for a reader who may read ACC-1001 and
+    ACC-1002, to which the first two accounts are linked, and whose rows the
+    last read recorded."""
     first, second, *_ = status.accounts
     outcomes = {
         view.account.external_account_id: Outcome(
@@ -111,23 +136,22 @@ def _read(status: Status) -> str:
             ),
         )
     )
-    reader = meridian.Caller(
-        "reader", "A Reader", "preview", read=frozenset({"ACC-1001", "ACC-1002"})
+    reader = caller_header(
+        "read", read=("ACC-1001", "ACC-1002"), subject="preview|reader", display_name="A Reader"
     )
-    read = replace(status, outcomes=outcomes)
-    return render_statements(read, visible(read, _links(read, scope), reader), everyone=False)
+    return _shown(replace(status, outcomes=outcomes), scope, STATEMENTS, reader)
 
 
 def main() -> None:
     page = sys.argv[1] if len(sys.argv) > 1 else "connections"
     status = asyncio.run(_status())
     if page == "accounts":
-        linked, links = _linked(status)
-        print(render_accounts(linked, "preview", links, OFFERED))
+        linked, scope = _linked(status)
+        print(_shown(linked, scope, ACCOUNTS, MANAGING))
     elif page == "statements":
         print(_read(status))
     elif page == "connections":
-        print(render_connections(status, "preview"))
+        print(_shown(status, meridian.AccountScope(), CONNECTIONS, MANAGING))
     else:
         sys.exit(f"no page {page!r}: connections, accounts or statements")
 

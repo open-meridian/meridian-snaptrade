@@ -12,7 +12,6 @@ every change.
 from __future__ import annotations
 
 import asyncio
-import base64
 from collections.abc import AsyncIterator, Callable, Iterable
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -22,7 +21,6 @@ import meridian
 import pytest
 from meridian.operations import Operations
 from meridian.plugin.v1 import operations_pb2 as ops
-from meridian.v1 import sidecar_pb2
 
 NOW = datetime(2026, 9, 28, 15, 0, tzinfo=UTC)
 
@@ -151,24 +149,6 @@ class Sidecar(Operations):
 
     def plugin(self) -> meridian.Plugin:
         return cast(meridian.Plugin, self)
-
-
-def caller_header(
-    subject: str = "person-1",
-    name: str = "A Person",
-    deployment_admin: bool = False,
-    read: Iterable[str] = (),
-) -> str:
-    """A Meridian-Caller header as a sidecar forwards one: `read`, the
-    deployment's accounts the person may read through this plugin."""
-    claims = sidecar_pb2.CallerClaims(
-        subject=subject,
-        display_name=name,
-        deployment_admin=deployment_admin,
-        read_account_ids=list(read),
-    ).SerializeToString()
-    assertion = sidecar_pb2.CallerAssertion(claims=claims)
-    return base64.urlsafe_b64encode(assertion.SerializeToString()).decode().rstrip("=")
 
 
 @pytest.fixture

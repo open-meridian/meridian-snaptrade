@@ -1,0 +1,40 @@
+{#- Statements, at write and read: per account the person may read, its sync
+    state, its last statement and its rows, as the last read found them.
+    Under Open, Refresh; under View, nothing to act on. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block head_actions %}{% if level == "write" and not nothing %}{{ kit.refresh(back) }}{% endif %}{% endblock %}
+{% block content %}
+{% if nothing %}
+<section class="panel padded narrow">
+<h2>Nothing here for you</h2>
+<p>This plugin brings brokerage accounts into this deployment through SnapTrade, and you may read none of them. If you should, ask whoever administers this deployment.</p>
+</section>
+{% else %}
+<p class="muted">What the last read of SnapTrade found in each account you may read. Quantities are exact, as SnapTrade reported them.{{ mode }}
+{%- if read_at %} <om-moment label="Last read" value="{{ read_at.isoformat() }}">Last read {{ read_at | moment }}</om-moment>.{% endif %}</p>
+{{ kit.notices(notice) }}
+{% if failed %}
+<div class="notice warn" role="status">The last read of SnapTrade failed, so nothing is shown from it.</div>
+{% endif %}
+{% if tiles %}{{ kit.tiles(tiles) }}{% endif %}
+{% for account in statements %}
+<section class="panel" data-account="{{ account.external_account_id }}">
+<div class="list-row"><div class="grow">
+<div class="row"><span class="title">{{ account.name }}</span> {{ kit.badge(account.badge) }}</div>
+<div class="meta">{{ account.where }}</div>
+<div class="meta">Holdings as of {{ kit.when(account.holdings_as_of) }} · history as of {{ kit.when(account.history_as_of) }}</div>
+<div class="meta">
+{%- if account.as_of_date %}Last statement as of {{ account.as_of_date }}: {% if account.ink %}<span class="{{ account.ink }}">{{ account.recorded }}</span>{% else %}{{ account.recorded }}{% endif %}
+{%- else %}No statement on the last read: {{ account.recorded | lower }}{% endif -%}
+</div>
+{% for line in account.said %}<span class="hint">{{ line }}</span>{% endfor %}
+</div></div>
+{{ kit.grid(account.grid, columns, "key") }}
+</section>
+{% else %}
+<section class="panel"><div class="empty-state"><strong>No statements yet</strong><p>None of the accounts you may read has come through SnapTrade here yet. An account appears once it is linked to yours.</p></div></section>
+{% endfor %}
+{% endif %}
+{% endblock %}

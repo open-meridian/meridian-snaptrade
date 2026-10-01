@@ -5,16 +5,20 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.4.4. How a plugin like it is built is documented at
+0.5.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.8.0`, which carries the
-whole account-side contract (spec/the-account-side-fits-every-venue): a
-holding's side, a market value left unset, a currency marked as assumed, a fund
-marked as counted in cash too, buying power on the statement, the sync state
-with holdings and history freshness, the accounts a connection reaches,
-linking them, and reading its own links. The asset class on an ambiguous miss
-is sent empty until sdk-contract/asset-class-is-an-enum rules its names.
+It is built on the SDK it pins, `open-meridian==0.10.0`, which declares
+contract v5 and carries the whole account-side contract
+(spec/the-account-side-fits-every-venue): a holding's side, a market value
+left unset, a currency marked as assumed, a fund marked as counted in cash
+too, buying power on the statement, the sync state with holdings and history
+freshness, the accounts a connection reaches, linking them, and reading its
+own links; and the access-by-button model (sdk-contract/a-plugin-has-admins):
+its pages, each declared with the levels it serves, opened by the dashboard's
+Manage, Open and View. The asset class on an ambiguous miss, an enum since
+0.9.0, is still sent empty: SnapTrade's kinds are not mapped to the ruled
+classes yet.
 
 ## What it does
 
@@ -59,7 +63,7 @@ meridian-design.
 
 Sync state, first that applies:
 
-| SnapTrade | State | What to do (shown on the admin pages) |
+| SnapTrade | State | What to do (shown on Connections) |
 |---|---|---|
 | connection `disabled` | `disabled` | reconnect through SnapTrade's Connection Portal; it serves its last data meanwhile |
 | holdings `initial_sync_completed: false` | `stale` | wait; nothing is recorded until the first sync is done |
@@ -75,7 +79,7 @@ it.
 
 ## Settings
 
-Declared through the SDK and given by a deployment administrator in the
+Declared through the SDK and given by an admin of the plugin in the
 dashboard's settings form, which is built from the declarations: each field's
 label, a default greyed in the empty field, a unit beside a number, and the
 key type first, as a choice whose answer decides which fields follow
@@ -132,33 +136,50 @@ asks nothing of SnapTrade.
 
 ## Its pages
 
-Ruled 2026-09-29 (meridian-design's
-intent/a-custody-plugin-serves-its-statement-receivers, "Admin pages and user
-pages", step 1): admin pages are setup, user pages are daily work. This is
-step 1, with no contract change: SnapTrade's own page, at `/`, is its user
-side, and the admin view keeps Connections and Account links. Step 2 has
-plugins declare user pages as they declare admin pages, and decisions/027
-makes the admin pages a plugin admin's; neither is built here.
+A person opens the plugin from the dashboard's home by a button per level they
+hold on it (meridian-design sdk-contract/a-plugin-has-admins, the rulings of
+2026-09-30): **Manage** at `admin`, **Open** at `write`, **View** at `read`. A
+person may hold `admin` and one of the others; each session carries the one
+level chosen. Each page is declared once, with the levels it serves, on the
+SDK's `meridian.Pages` (`src/snaptrade/page.py`): the dashboard shows it under
+those buttons, and the SDK answers 403 to a session at any other level before
+the page's code runs.
 
-### Statements, the user side
+| Page | Path | Levels | Button |
+|---|---|---|---|
+| Connections | `/admin/connections` | `admin` | Manage |
+| Account links | `/admin/accounts` | `admin` | Manage |
+| Statements | `/` | `write`, `read` | Open, View |
+
+Setup is under Manage, and daily work under Open and View
+(intent/a-custody-plugin-serves-its-statement-receivers, "Admin pages and user
+pages"). Being a deployment admin opens no page and reaches no account: a
+deployment admin is admin on the plugin through All plugins (admin) or
+another grant, and reads an account only through a `read` or `write` grant,
+like anybody.
+
+### Statements, under Open and View
 
 **Statements** (`/`) shows, for each account, its sync state (with its
 holdings and history freshness), its last statement (as of when, and what
 recording it came to) and its rows, as the last read found them, each in an
-`om-grid`. Who sees what (decisions/026, read from the verified
-`Meridian-Caller` header):
+`om-grid`. It is one page for both buttons, adapting by the session's level
+(read from the verified `Meridian-Caller` header):
 
-- **A person who may read** (`caller.read`, checked with `caller.may_read`)
-  sees each account linked to one of the deployment's accounts they may read,
-  and no other.
-- **A deployment admin** sees every account SnapTrade reaches.
-- **Somebody with nothing to read** is told plainly that there is nothing
-  here for them, and nothing is read for them.
+- It shows each account linked to one of the deployment's accounts the
+  person may read (`caller.read`, checked with `caller.may_read`; under Open
+  it holds the accounts they may write too), and no other.
+- **Under Open** it has **Refresh**, which reads SnapTrade now, and answers
+  with Statements saying so. **Under View** it acts on nothing: no form, no
+  button.
+- **Somebody who may read nothing here** is told plainly that there is
+  nothing here for them, and nothing is read for them.
 
-It has no action and no form. Its sections become tabs inside the page once
-there is more than one (Unresolved positions, Discrepancies and Upload are
-planned); today there is one, so it draws none. In synthetic mode it says
-every figure is invented.
+Its head's status dot says how the plugin is reading, as on the pages under
+Manage, except that while settings are missing it says SnapTrade is not being
+read yet rather than naming them: a reader does not give them. In synthetic
+mode it says every figure is invented. Unresolved positions, Discrepancies
+and Upload are planned beside it.
 
 What cuts it to a reader is which of the deployment's accounts each external
 account is linked to. The plugin reads its links beside its account scope
@@ -169,36 +190,36 @@ account linked to one they may read, before a restart and after it. Nothing
 is stored to remember a link: the plugin holds the latest delivery, and
 plugins are ephemeral.
 
-### The admin pages
+### Connections and Account links, under Manage
 
-Two admin pages, declared at registration (`Interface(admin_pages=...)`),
-which the dashboard's admin view of the instance shows as tabs after its own
-Overview, Settings and Access, each framing its path (ruled 2026-09-29, "tabs
-at both levels"):
+**A plugin admin is account agnostic** (the product owner, 2026-09-30): a
+Manage session holds no account's data, and these pages show none of what the
+plugin read for an account, no holdings, rows, statements or sync state per
+account; only external identities, their links, and how each connection is.
+The tests hold every page at `admin` to that with the SDK's
+`PageClient.assert_no_account_data`.
 
-- **Connections** (`/admin/connections`): figures for the last read, each
+- **Connections** (`/admin/connections`): figures for the read (connections
+  and how many need attention, accounts reached, the last read), each
   brokerage connection with its health, what to do about it, and refreshing
   or reconnecting it, and the SnapTrade users under the key. **+ Add
   brokerage**, in the Connections card's header, connects one through
   SnapTrade's Connection Portal (a link that opens outside the dashboard's
   frame).
-- **Account links** (`/admin/accounts`), one page: each account the
-  connections reach with its link to one of the deployment's accounts and,
-  beside it in the same map, its sync state (a status dot: what to do and
-  when its holdings are as of in its note), its history's freshness and its
-  last statement, filtered by state so the accounts needing attention are
-  found among thousands.
+- **Account links** (`/admin/accounts`): each account the connections reach,
+  who it is (its name, brokerage, type, number and SnapTrade's ID) and its
+  link to one of the deployment's accounts, in one account map (below).
 
-Each page's head shows how the plugin is reading as a status dot (kit
-0.6.0's `om-status`), its note on hover, focus or a tap: green when the last
-read succeeded, with when; amber while a read is under way; red when the last
-read failed, with its message (what was asked, the exception's type and the
-HTTP status, never its text), or while settings are missing, naming them.
-Without the kit's script its words show beside the dot as plain text. In the
-dashboard's admin tabs the dot is marked for the dashboard (`data-om-header`,
-kit 0.7.0), which draws it beside the plugin's name; with the heading and
-Refresh drawn there too, the head has nothing left, so each tab's page starts
-right under the tabs.
+`/admin` sends a Manage session to Connections. Each page's head shows how the
+plugin is reading as a status dot (kit 0.6.0's `om-status`), its note on
+hover, focus or a tap: green when the last read succeeded, with when; amber
+while a read is under way; red when the last read failed, with its message
+(what was asked, the exception's type and the HTTP status, never its text),
+or while settings are missing, naming them. Without the kit's script its
+words show beside the dot as plain text. Marked for the dashboard
+(`data-om-header`, kit 0.7.0), the dashboard draws it beside the plugin's
+name; with the heading and Refresh drawn there too, the head has nothing
+left, so each page starts right under the dashboard's tabs.
 
 Refresh asks SnapTrade to read a connection's brokerage again
 (`refresh_brokerage_authorization`). It is offered only where it means
@@ -218,17 +239,14 @@ something, by the connection's `data_freshness_mode.snaptrade`:
   other failure is shown as every failed call is: what was asked, the
   exception's type and the HTTP status, never its text.
 
-0.2.0's Holdings tab is gone: what the last read found is on Statements.
-Each admin page has Refresh, which reads SnapTrade now. It is marked as a
-header action (`data-om-action="refresh"`, kit 0.4.0): where the dashboard
-frames the page, it draws Refresh in its own header, beside the plugin's name,
-and the kit drops the page's copy; pressing it there presses the page's, so
-the form still posts from the page, with its token. Opened on its own, the
-page shows it in its head. Each admin page is served to a caller whose verified
-`deployment_admin` claim is true, and anybody else is told it is for the
-deployment's administrators, with the way to Statements. `/admin` sends the
-caller to Connections. No credential is entered or shown here: keys are the
-dashboard's settings form, and granting access is the dashboard's too.
+The head's Refresh, on each page under Manage and on Statements under Open,
+reads SnapTrade now (`/read`). It is marked as a header action
+(`data-om-action="refresh"`, kit 0.4.0): where the dashboard frames the page,
+it draws Refresh in its own header, beside the plugin's name, and the kit
+drops the page's copy; pressing it there presses the page's, so the form still
+posts from the page, with its token. Opened on its own, the page shows it in
+its head. No credential is entered or shown here: keys are the dashboard's
+settings form, and granting access is the dashboard's too.
 
 ### Linking accounts
 
@@ -236,29 +254,29 @@ Each plugin links its own external accounts (kernel/a-plugins-admin-view,
 point 8), and the link is its right to the account: a statement for an account
 nothing links is refused, which the SDK raises as `meridian.NotLinked`, by the
 refusal's code and never its words. The Account links tab draws the kit's
-`om-account-map` (kit 0.5.0, and 0.6.0's status column), built for an
-industrial deployment's hundreds or thousands of accounts: a dense table, one
-row per SnapTrade account with its link and its sync state, searched by name,
-ID, account number, custodian, type and sync state, filtered to Unlinked
-(where it opens, while any are), Linked or All and by sync state (Needs
-attention, or one state), grouped by connection, and paged, so the page holds
-a page of rows however many there are.
-
-Each sync state is a status dot, its label beside it: Current and Delayed by
-design are green (`ok`), Stale amber (`warn`), Needs sign-in and Disabled red
-(`error`). Its note says what SnapTrade said of it and what to do, and when
-its holdings are as of; under it, when its history is as of and what its last
-statement came to. Without the kit, each account's plain row says the same.
+`om-account-map` (kit 0.5.0), built for an industrial deployment's hundreds or
+thousands of accounts: a dense table, one row per SnapTrade account with its
+link, searched by name, ID, account number, custodian and type, filtered to
+Unlinked (where it opens, while any are), Linked or All, grouped by
+connection, and paged, so the page holds a page of rows however many there
+are. It is given no account's status or values (kit 0.6.0's Status column),
+which would be an account's data under Manage. Without the kit, each
+account's plain row says who it is and its link.
 
 A row's choices open under that row alone. An account not linked is linked
 to **an existing account**, found by typing among the deployment's open
-accounts read with `read_accounts_for_linking` (each with its custodian and
-type beside its name where the deployment has them), or to **a new account**,
-named from the SnapTrade account, its custodian pre-filled from the
-connection's brokerage and its type from the account type SnapTrade reports,
-all three editable, which the conductor creates and links in one step (an
-owner and a note are given on the dashboard's Accounts tab). A linked one
-names the account it is linked to, from the link itself, and offers
+accounts read with `read_accounts_for_linking` (identities only, which a
+Manage session may read: each with its custodian and type beside its name
+where the deployment has them), or, by a deployment admin, to **a new
+account** (W6.4: a plugin admin links to any existing account; only a
+deployment admin names a new one), named from the SnapTrade account, its
+custodian pre-filled from the connection's brokerage and its type from the
+account type SnapTrade reports, all three editable, which the conductor
+creates and links in one step (an owner and a note are given on the
+dashboard's Accounts tab). The page offers the plain form to create one only
+to a deployment admin, and a create sent by anybody else is answered that
+only a deployment admin names a new account, and nothing is sent. A linked
+one names the account it is linked to, from the link itself, and offers
 **Unlink**, or another account: the conductor keeps one link per external
 account, so a new link replaces the one standing.
 
@@ -271,25 +289,28 @@ for an account, so a number matches an account named by it. **Link N
 suggested…** lists every suggestion the search finds, each to be left out or
 kept, and sends them in one form.
 
-Every form posts to one route, `/admin/accounts/link`, saying what it means in
-its `intent` field: `link`, `create`, `unlink`, or `link-several`. A form with
-any other intent, or none, is refused and nothing is sent. Each link is sent
-with `link_external_account`, acting for the admin viewing the page (their
-`Meridian-Caller` header as `acting_for`), and the sidecar refuses it for
-anybody else; a refusal is shown as the sidecar worded it. The page answering
-the form waits a few seconds at most for the account scope to show the new
-link, so it shows the link as it now stands.
+Every form posts to one route, `/admin/accounts/link`, at `admin`, saying
+what it means in its `intent` field: `link`, `create`, `unlink`, or
+`link-several`. A form with any other intent, or none, is refused and nothing
+is sent. Each link is sent with `link_external_account`, acting for the admin
+viewing the page (their `Meridian-Caller` header as `acting_for`), and the
+sidecar refuses it outside a Manage session; a refusal is shown as the sidecar
+worded it. The page answering the form waits a few seconds at most for the
+account scope to show the new link, so it shows the link as it now stands.
 
 `link-several` carries the token once and then `external_account_id` and
-`account_id` repeated, one pair per link, in order. The route checks the
-token once, refuses the whole form (400, nothing sent) if the two lists
-differ in length, name an account twice or hold an empty ID, and otherwise
-links each pair as its own `link_external_account`, a few at a time: one
-refused leaves the others as they went, and an account the last read did not
-reach is not sent. The page answering says how many were linked, lists each
-one not linked and why, and folds every result below; it waits for the
-account scope to show every link made, a few seconds at most. It takes a
-body of up to 1 MB, some thousands of pairs; every other form here, 8 KB.
+`account_id` repeated, one pair per link, in order. The route refuses the
+whole form (400, nothing sent) if the two lists differ in length, name an
+account twice or hold an empty ID, and otherwise links each pair as its own
+`link_external_account`, a few at a time: one refused leaves the others as
+they went, and an account the last read did not reach is not sent. The page
+answering says how many were linked, lists each one not linked and why, and
+folds every result below; it waits for the account scope to show every link
+made, a few seconds at most, and for the links themselves at most 55 seconds
+(the SDK's server gives a page 60), after which it says they are still being
+sent and finishes them. It takes a body of up to 1 MB, some thousands of
+pairs; every other form here, 8 KB, and a larger one is refused (413) before
+anything is done.
 
 Whether an account is linked, and to what, is only what the account scope
 says: linked, naming the account, or not linked. There is no third state, and
@@ -297,35 +318,48 @@ recorded rows are not taken for a link.
 
 ### Forms and the kit
 
-Every action is a plain POST whose form carries a CSRF token, checked before
-anything is done; one without it, or with another's, is refused. The plugin
-host has its own session cookie (decisions/021), so the dashboard's front alone
-would not stop a page elsewhere posting here through an administrator's
-browser. The token is an HMAC of the verified caller's subject under a random
-secret the plugin makes at start and keeps only in memory, so a restart only
-means reloading the page.
+Every action is a plain POST, declared with `@pages.route` at the levels it
+serves: reading now (`/read`) at `admin` and `write`; connecting
+(`/admin/connect`), refreshing and reconnecting a connection
+(`/admin/connections/refresh` and `/admin/connections/reconnect`, the
+connection named in the form's `connection_id`) and linking
+(`/admin/accounts/link`) at `admin`. Each carries the SDK's CSRF token,
+`{{ csrf_input }}` in its form and the account map's `token` attribute, and
+the SDK refuses one without it, or with another person's or another
+session's, before the view runs. The plugin host has its own session cookie
+(decisions/021) on the same site as every plugin's, so without it a page
+elsewhere could have a person's browser post here. The token is an HMAC of
+the verified caller's subject and the session's level under a random secret
+the plugin makes at start and keeps only in memory, so a restart only means
+reloading the page.
 
 The pages are built on Open Meridian's plugin UI kit
 ([meridian-ui](https://github.com/open-meridian/meridian-ui);
 spec/plugin-pages-share-one-kit), which the dashboard serves at
-`/.meridian/ui/<version>/` on the plugin's own host: `page.py` links its
-stylesheet and script, uses its classes, its `om-grid` for the accounts and
-each statement's rows (as cards where the frame is narrow), its
-`om-account-map` for linking and its `om-moment` for when SnapTrade was last
-read, and has no style, colour, theme or script of its own: each component
-reads the JSON declared inside it. The dashboard draws the tabs, the plugin's
-name, the way back and the person, and hands the kit the person's colour
-scheme and light or dark. Where the kit is not served the pages still work,
-unstyled: each table, and the account map's plain forms, are in the HTML
-inside the component that replaces them, and every action is a plain form.
-Without the kit the map is a list row per account (its link, and Unlink on a
-linked one) and two forms under them, one to link any account to any open
-account and one to create an account for any, so the page grows with the
-accounts rather than with the accounts times the deployment's.
-Quantities are exact decimal strings, as SnapTrade reported them.
+`/.meridian/ui/<version>/` on the plugin's own host. Each page is a view in
+`page.py` and a Jinja2 template under `src/snaptrade/templates/`, rendered by
+the SDK's `pages.render` on the kit's base template, `meridian/base.html`,
+which links the kit at 0.7.0 and draws the page's heading and the tab row of
+the session's level (dropped when the dashboard frames the page). The
+templates use the kit's classes, its `om-grid` for each statement's rows (as
+cards where the frame is narrow), its `om-account-map` for linking, its
+`om-status` for the head's dot and its `om-moment` for when SnapTrade was last
+read, and have no style, colour, theme or script of their own: each component
+reads the JSON declared inside it. The dashboard draws the plugin's name, the
+way back and the person, and hands the kit the person's colour scheme and
+light or dark. Where the kit is not served the pages still work, unstyled:
+each table, and the account map's plain forms, are in the HTML inside the
+component that replaces them, and every action is a plain form. Without the
+kit the map is a list row per account (who it is, its link, and Unlink on a
+linked one) and the forms under them, one to link any account to any open
+account and, for a deployment admin, one to create an account for any, so the
+page grows with the accounts rather than with the accounts times the
+deployment's. Quantities are exact decimal strings, as SnapTrade reported
+them.
 
-`make preview` writes each page on synthetic data to `preview/`: Connections,
-Account links, and Statements as a reader sees it who may read two of the
+`make preview` writes each page on synthetic data to `preview/`, served by its
+own view: Connections and Account links as a deployment admin sees them under
+Manage, and Statements as a reader sees it under View who may read two of the
 three accounts. They link the kit at `/.meridian/ui/0.7.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
@@ -337,8 +371,12 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.8.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.8.0`.
+The SDK is pinned exactly, `open-meridian==0.10.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.10.0`.
+Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
+meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
+runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
+`meridian.Pages` with their levels and templates, was done by hand.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -351,7 +389,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.4.4 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.5.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

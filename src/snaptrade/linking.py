@@ -1,17 +1,20 @@
 """Linking each external account to one of the deployment's accounts (W6.4),
-on the Account links tab, for the deployment admin viewing it.
+on the Account links tab, for the admin of the plugin viewing it under Manage.
 
 Ruled by the product owner on 2026-09-28 (kernel/a-plugins-admin-view, point
-8): each plugin manages its own external accounts' links, on its admin page,
+8): each plugin manages its own external accounts' links, on its own page,
 and the dashboard lists and links none. The link is this plugin's right to
 the account: a statement for an account nothing links is refused.
 
 Every call here is sent acting for the person the page request came from,
 their `Meridian-Caller` header handed back as `acting_for`, and the sidecar
-refuses it unless that person is a deployment admin. A link names an existing
+refuses it outside a session at `admin` (Manage). A plugin admin is account
+agnostic (2026-09-30): they are answered every account's identity, and never
+its holdings, and link to any existing account. A link names an existing
 account, or a new account's name for the conductor to create and link in one
-step, or neither, to remove the link. A link to another account replaces the
-one standing: the conductor keeps one link per external account.
+step, which only a deployment admin may send, or neither, to remove the
+link. A link to another account replaces the one standing: the conductor
+keeps one link per external account.
 
 What each external account is linked to, and that account's name, this plugin
 reads beside its account scope (W4.11): `__main__` holds the first delivery
@@ -109,7 +112,8 @@ class Links:
         self._plugin = plugin
         self._settle = settle_seconds
         self._scope = meridian.AccountScope()
-        # The page reads from its own threads; deliveries arrive on the loop.
+        # Deliveries and the pages' views run on the loop; a read from any other
+        # thread (a test's, say) still sees one delivery whole.
         self._lock = threading.Lock()
         self._changed = asyncio.Condition()
 

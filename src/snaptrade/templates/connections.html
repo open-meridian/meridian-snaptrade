@@ -1,0 +1,47 @@
+{#- Connections, at admin: the brokerages connected through SnapTrade, how
+    each is, and the SnapTrade user they belong to. Configuration only: no
+    account's data. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block head_actions %}{{ kit.refresh(back) }}{% endblock %}
+{% block content %}
+{{ kit.notices(notice, portal, waiting, error) }}
+{{ kit.tiles(tiles) }}
+<section class="panel">
+<div class="panel-body"><div class="row"><h2>Connections</h2><span class="spacer"></span>
+{#- Connecting a brokerage is the Connections card's own action, in its
+    header (the product owner, 2026-09-30), not the page head's. -#}
+{{ kit.button(paths.connect, "+ Add brokerage", "primary") }}</div>
+<p class="muted">Each brokerage connected through SnapTrade, and how it is.</p></div>
+{% for connection in connections %}
+<div class="list-row"><div class="grow">
+<div class="row"><span class="title">{{ connection.institution }}</span> {{ kit.badge(connection.badge) }}</div>
+<div class="meta">{{ connection.meta }}</div>
+{% if connection.said %}<span class="hint">{{ connection.said }}</span>{% endif %}
+{% if connection.refreshing %}<span class="hint">{{ connection.refreshing }}</span>{% endif %}
+</div>
+{% if connection.refresh %}{{ kit.button(paths.refresh, "Refresh", fields={"connection_id": connection.connection_id}) }}{% endif %}
+{{ kit.button(paths.reconnect, "Reconnect", connection.reconnect, fields={"connection_id": connection.connection_id}) }}
+</div>
+{% else %}
+<div class="empty-state"><strong>No brokerage connections yet</strong><p>Connect one through SnapTrade's Connection Portal to begin.</p></div>
+{% endfor %}
+</section>
+<section class="panel padded">
+<h2>SnapTrade user</h2>
+{% if user_id %}
+<p>This instance reads the brokerage connections of <code>{{ user_id }}</code>.</p>
+{% else %}
+<p class="muted">No SnapTrade user is set, as with a personal key.</p>
+{% endif %}
+<p class="hint">Users registered under this key:</p>
+<ul class="plain">
+{% for user in users %}
+<li><code>{{ user }}</code>{% if user == user_id %} <span class="badge accent">this instance</span>{% endif %}</li>
+{% else %}
+<li class="faint">None listed.</li>
+{% endfor %}
+</ul>
+</section>
+{% endblock %}

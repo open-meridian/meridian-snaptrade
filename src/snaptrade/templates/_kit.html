@@ -1,0 +1,92 @@
+{# The pieces each page here is built from: the kit's classes and components,
+   with what each shows where the kit is not served inside it. Imported with
+   the page's context, so a form carries the page's token. #}
+
+{# The head's status dot (kit 0.6.0's om-status). Marked data-om-header (kit
+   0.7.0): framed, the kit hands it to the dashboard, which draws it beside
+   the plugin's name. Its words show without the kit's script. #}
+{% macro status_dot(dot) -%}
+<om-status data-om-header state="{{ dot.state }}" label="{{ dot.label }}"
+{%- if dot.detail %} detail="{{ dot.detail }}"{% endif %}
+{%- if dot.at %} at="{{ dot.at }}" at-label="Last read"{% endif %}>{{ dot.text }}</om-status>
+{%- endmacro %}
+
+{# A one-button form posting to `action` with the page's token. `header`
+   marks it a header action (kit 0.4.0's data-om-action): framed, the
+   dashboard draws the button in its own header and, pressed there, the kit
+   presses this one, so the form still posts from the page with its token. #}
+{% macro button(action, said, kind="", fields={}, header="") -%}
+<form method="post" action="{{ action }}" class="inline">{{ csrf_input }}
+{%- for name, value in fields.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor -%}
+<button{% if kind %} class="{{ kind }}"{% endif %}{% if header %} data-om-action="{{ header }}"{% endif %}>{{ said }}</button></form>
+{%- endmacro %}
+
+{# The head's one header action: read SnapTrade now, answering with `back`. #}
+{% macro refresh(back) -%}
+{{ button(paths.read, "Refresh", fields={"back": back}, header="refresh") }}
+{%- endmacro %}
+
+{% macro badge(shown) -%}
+<span class="badge {{ shown.tone }}">{{ shown.label }}</span>
+{%- endmacro %}
+
+{% macro tiles(shown) -%}
+<div class="tiles">
+{% for tile in shown %}
+<div class="panel tile"><div class="tile-label">{{ tile.label }}</div><div class="tile-value">{{ tile.value }}</div>
+{%- if tile.delta %}<div class="tile-delta{% if tile.ink %} {{ tile.ink }}{% endif %}">{{ tile.delta }}</div>{% endif %}</div>
+{% endfor %}
+</div>
+{%- endmacro %}
+
+{# What an action came to, and how the reading stands, at the head of the page. #}
+{% macro notices(notice=none, portal=none, waiting="", error="") -%}
+{% if portal is not none %}
+{% if portal %}
+<div class="notice info" role="status"><p>SnapTrade's Connection Portal is ready. Sign in to the brokerage there; the new connection appears here on the next read.</p>
+<p><a class="button primary" href="{{ portal }}" target="_blank" rel="noopener noreferrer">Open the Connection Portal</a></p></div>
+{% else %}
+<div class="notice info" role="status">Synthetic mode has no Connection Portal. It opens once the SnapTrade settings are given and synthetic mode is off.</div>
+{% endif %}
+{% endif %}
+{% if notice %}
+<div class="notice {{ notice.tone }}" role="{{ 'alert' if notice.tone == 'bad' else 'status' }}">{{ notice.text }}
+{%- if notice.shown %}<ul class="plain">{% for item in notice.shown %}<li>{{ item }}</li>{% endfor %}</ul>{% endif %}
+{%- if notice.each %}<details><summary>Each of the {{ notice.each | length }}</summary><ul class="plain">{% for item in notice.each %}<li>{{ item }}</li>{% endfor %}</ul></details>{% endif -%}
+</div>
+{% endif %}
+{% if waiting %}
+<div class="notice warn">Not reading SnapTrade: this plugin's settings need {{ waiting }}. Give them in this plugin's settings in the dashboard, or turn on synthetic mode to try it without a key.</div>
+{% endif %}
+{% if error %}
+<div class="notice bad">The last read failed: {{ error }}</div>
+{% endif %}
+{%- endmacro %}
+
+{# A moment to read, with what it shows until the kit draws it inside. #}
+{% macro when(moment) -%}
+{% if moment %}<time datetime="{{ moment.isoformat() }}">{{ moment | moment }}</time>{% else %}<span class="faint">not reported</span>{% endif %}
+{%- endmacro %}
+
+{# An om-grid, drawn as cards where it is narrow: its columns and rows
+   declared inside it as JSON, which the kit's grid reads, and the same table
+   beside them for a browser without the kit. #}
+{% macro grid(shown, columns, key) -%}
+<om-grid id="{{ shown.id }}" row-key="{{ key }}" narrow="cards" caption="{{ shown.caption }}" empty="{{ shown.empty }}">
+<script type="application/json">{{ shown.data | tojson }}</script>
+<div class="table-wrap"><table><thead><tr>
+{%- for column in columns %}<th{% if column.type == "decimal" %} class="num"{% endif %}>{{ column.label }}</th>{% endfor -%}
+</tr></thead><tbody>
+{% for row in shown.rows %}
+<tr>
+{%- for column in columns %}<td{% if column.type == "decimal" %} class="num"{% endif %}>
+{%- set value = row[column.key] -%}
+{%- if value and column.type == "code" %}<code>{{ value }}</code>{% else %}{{ value }}{% endif -%}
+{%- if column.hint and row[column.hint] %} <span class="hint">{{ row[column.hint] }}</span>{% endif -%}
+</td>{% endfor -%}
+</tr>
+{% else %}
+<tr><td colspan="{{ columns | length }}">{{ shown.empty }}</td></tr>
+{% endfor %}
+</tbody></table></div></om-grid>
+{%- endmacro %}
