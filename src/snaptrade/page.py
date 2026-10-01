@@ -83,7 +83,7 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's newest 0.x for it; pinning one keeps the pages as they were built.
-KIT = "0.7.0"
+KIT = "0.8.0"
 
 # The largest body any request here may carry: the map's several-link form,
 # a pair of IDs for each link, a hundred bytes or so a pair, room for some

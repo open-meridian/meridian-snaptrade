@@ -120,11 +120,13 @@ plain HTML, as the templates write it, and from React, Vue or Svelte alike.
 **It is linked for you.** Each page's template, under `templates/`, extends
 the SDK's base template, `{% extends "meridian/base.html" %}`, which links the
 kit from the path the dashboard serves it at on this plugin's own host, at the
-version `page.py`'s `KIT` names (`/.meridian/ui/0.7.0/`), and draws the page's
+version `page.py`'s `KIT` names (`/.meridian/ui/0.8.0/`), and draws the page's
 heading and tab row (the kit drops both when the dashboard frames the page and
 draws its own). A template fills three blocks: `content`, the page itself;
 `head_actions`, buttons marked `data-om-action="<id>"`, which the dashboard
-draws in its header (here Refresh, on Statements under Open; on
+draws in its header, beside the status dot (here Refresh, on Statements
+under Open, marked `data-om-icon="refresh"` so it is the kit's circular-arrow
+icon, with `title="Refresh"`; on
 Connections it sits beside + Add in the card's header instead); and `status`,
 an `<om-status data-om-header>` it draws beside the plugin's name (here how
 the plugin is reading). `pages.render("x.html", ...)` renders it, every value escaped, with

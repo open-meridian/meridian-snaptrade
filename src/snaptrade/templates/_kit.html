@@ -15,17 +15,21 @@
    the button's accessible name where its words alone do not say enough.
    `header` marks it a header action (kit 0.4.0's data-om-action): framed, the
    dashboard draws the button in its own header and, pressed there, the kit
-   presses this one, so the form still posts from the page with its token. #}
-{% macro button(action, said, kind="", fields={}, header="", label="") -%}
+   presses this one, so the form still posts from the page with its token.
+   `icon` draws it as one of the kit's icons (kit 0.8.0's data-om-icon), its
+   words its accessible name and, as its title, its tooltip. #}
+{% macro button(action, said, kind="", fields={}, header="", label="", icon="") -%}
 <form method="post" action="{{ action }}" class="inline">{{ csrf_input }}
 {%- for name, value in fields.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor -%}
-<button{% if kind %} class="{{ kind }}"{% endif %}{% if label %} aria-label="{{ label }}"{% endif %}{% if header %} data-om-action="{{ header }}"{% endif %}>{{ said }}</button></form>
+<button{% if kind %} class="{{ kind }}"{% endif %}{% if label %} aria-label="{{ label }}"{% endif %}{% if header %} data-om-action="{{ header }}"{% endif %}{% if icon %} data-om-icon="{{ icon }}" title="{{ label or said }}"{% endif %}>{{ said }}</button></form>
 {%- endmacro %}
 
 {# Read SnapTrade now, answering with `back`. In the head (`header`), the
-   page's one header action; elsewhere, a plain button where it is put. #}
+   page's one header action, the kit's circular-arrow icon, which the
+   dashboard draws beside the status dot (the product owner, 2026-10-01);
+   elsewhere, a plain button where it is put. #}
 {% macro refresh(back, header=true) -%}
-{%- if header %}{{ button(paths.read, "Refresh", fields={"back": back}, header="refresh") }}
+{%- if header %}{{ button(paths.read, "Refresh", fields={"back": back}, header="refresh", icon="refresh") }}
 {%- else %}{{ button(paths.read, "Refresh", fields={"back": back}, label="Refresh everything from SnapTrade") }}{% endif %}
 {%- endmacro %}
 

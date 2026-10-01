@@ -812,6 +812,14 @@ def head_of(body: str) -> str:
     return head.group(1)
 
 
+# The head's Refresh: a header action, drawn as the kit's refresh icon (kit
+# 0.8.0), its words its name and its tooltip.
+HEADER_REFRESH = (
+    r'<button data-om-action="refresh" data-om-icon="refresh" title="Refresh">'
+    r"Refresh</button>"
+)
+
+
 def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     """The head's Refresh: the one form in the page head's actions whose
     button is marked as a header action, its action and its fields."""
@@ -823,7 +831,7 @@ def refresh_form(body: str) -> tuple[str, dict[str, str]]:
     marked = [(action, inside) for action, inside in forms if "data-om-action" in inside]
     assert len(marked) == 1, "one header action in the head"
     action, inside = marked[0]
-    assert re.search(r'<button data-om-action="refresh">Refresh</button>', inside)
+    assert re.search(HEADER_REFRESH, inside)
     fields = dict(re.findall(r'<input type="hidden" name="([^"]+)" value="([^"]*)"', inside))
     return action, fields
 
@@ -1614,11 +1622,11 @@ def test_the_tab_row_on_its_own_is_the_sessions_levels() -> None:
     assert 'class="tab on" href="/admin/accounts" aria-current="page"' in shown["accounts"]
 
 
-def test_the_kit_is_the_one_that_hands_the_status_dot_up() -> None:
-    # 0.7.0: a framed page's head status (om-status data-om-header) drawn by
-    # the dashboard beside the plugin's name, and an emptied head dropped
-    # (0.6.0's om-status and 0.5.0's map are in it too: a 0.x release only adds).
-    assert KIT == "0.7.0" and pages.kit == "/.meridian/ui/0.7.0/"
+def test_the_kit_is_the_one_that_draws_refresh_as_an_icon() -> None:
+    # 0.8.0: a header action marked data-om-icon="refresh" drawn as a circular
+    # arrow, by the dashboard beside the status dot (0.7.0's header status,
+    # 0.6.0's om-status and 0.5.0's map are in it too: a 0.x release only adds).
+    assert KIT == "0.8.0" and pages.kit == "/.meridian/ui/0.8.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:
@@ -1897,8 +1905,7 @@ def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
         left = left.replace(status_dot(body), "", 1)
         left = re.sub(
             r'<div class="actions"><form method="post" action="/read" class="inline">'
-            r'(?:<input type="hidden" [^>]*>)*<button data-om-action="refresh">Refresh</button>'
-            r"</form></div>",
+            r'(?:<input type="hidden" [^>]*>)*' + HEADER_REFRESH + r"</form></div>",
             "",
             left,
             count=1,

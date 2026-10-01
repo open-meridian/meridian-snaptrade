@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.6.1. How a plugin like it is built is documented at
+0.6.2. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.11.0`, which declares
@@ -258,8 +258,11 @@ its primary one, and is that page's only page-level Refresh (each delayed
 connection's own Refresh, above, is another action). Account links has none
 (the product owner, 2026-09-30: reading SnapTrade now is Connections'). On
 Statements under Open it is in the head, marked as a header action
-(`data-om-action="refresh"`, kit 0.4.0): where the dashboard frames the page,
-it draws Refresh in its own header, beside the plugin's name, and the kit
+(`data-om-action="refresh"`, kit 0.4.0) and as the kit's refresh icon
+(`data-om-icon="refresh"`, kit 0.8.0: a circular arrow, its words "Refresh"
+its name and tooltip): where the dashboard frames the page, it draws Refresh
+in its own header as that icon, beside the status dot after the plugin's name
+(the product owner, 2026-10-01), and the kit
 drops the page's copy; pressing it there presses the page's, so the form still
 posts from the page, with its token. Opened on its own, the page shows it in
 its head. No credential is entered or shown here: keys are the dashboard's
@@ -357,7 +360,7 @@ spec/plugin-pages-share-one-kit), which the dashboard serves at
 `/.meridian/ui/<version>/` on the plugin's own host. Each page is a view in
 `page.py` and a Jinja2 template under `src/snaptrade/templates/`, rendered by
 the SDK's `pages.render` on the kit's base template, `meridian/base.html`,
-which links the kit at 0.7.0 and draws the page's heading and the tab row of
+which links the kit at 0.8.0 and draws the page's heading and the tab row of
 the session's level (dropped when the dashboard frames the page). The
 templates use the kit's classes, its `om-grid` for each statement's rows (as
 cards where the frame is narrow), its `om-account-map` for linking, its
@@ -378,7 +381,7 @@ them.
 `make preview` writes each page on synthetic data to `preview/`, served by its
 own view: Connections and Account links as a deployment admin sees them under
 Manage, and Statements as a reader sees it under View who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.7.0/`, so serve them
+three accounts. They link the kit at `/.meridian/ui/0.8.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -414,7 +417,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.6.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.6.2 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying
