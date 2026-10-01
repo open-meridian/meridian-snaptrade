@@ -6,13 +6,14 @@ wire's integer and scale, a float refused, a caller's header to the assertion
 it carries) and is kept as the protobuf message the sidecar would have
 received. It holds the plugin's links as the deployment would, and delivers
 them as the SDK's `account_scope()` does: the first at once, and another on
-every change.
+every change. A report is kept as the heartbeat the sidecar receives, built
+by `meridian.testing.heartbeat`, with the figures standing as the SDK's do.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,6 +22,8 @@ import meridian
 import pytest
 from meridian.operations import Operations
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.testing import heartbeat
+from meridian.v1 import sidecar_pb2
 
 NOW = datetime(2026, 9, 28, 15, 0, tzinfo=UTC)
 
@@ -79,6 +82,8 @@ class Sidecar(Operations):
         self.links = {link.external_account_id: link for link in links}
         self._watching: list[asyncio.Queue[meridian.AccountScope]] = []
         self.reports: list[tuple[bool, str]] = []
+        self.heartbeats: list[sidecar_pb2.HeartbeatRequest] = []
+        self._figures: Sequence[meridian.Figure] = ()
         self._resolve = resolve or (lambda params: found())
         self._refuse = refuse or (lambda name, params: None)
         self._already = already_recorded
@@ -141,8 +146,19 @@ class Sidecar(Operations):
         while True:
             yield await watching.get()
 
-    async def report(self, *, healthy: bool, detail: str = "") -> None:
+    async def report(
+        self,
+        *,
+        healthy: bool,
+        detail: str = "",
+        figures: Sequence[meridian.Figure] | None = None,
+    ) -> None:
+        """As the SDK's: `figures` replaces those standing, which go on it."""
+        standing = self._figures if figures is None else tuple(figures)
+        sent = heartbeat(healthy=healthy, detail=detail, figures=standing)
+        self._figures = standing
         self.reports.append((healthy, detail))
+        self.heartbeats.append(sent)
 
     def sent(self, name: str) -> list[Any]:
         return [params for called, params in self.calls if called == name]

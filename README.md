@@ -5,19 +5,21 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.5.4. How a plugin like it is built is documented at
+0.6.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.10.1`, which declares
-contract v5 and carries the whole account-side contract
+It is built on the SDK it pins, `open-meridian==0.11.0`, which declares
+contract v6 and carries the whole account-side contract
 (spec/the-account-side-fits-every-venue): a holding's side, a market value
 left unset, a currency marked as assumed, a fund marked as counted in cash
 too, buying power on the statement, the sync state with holdings and history
 freshness, the accounts a connection reaches, linking them, and reading its
 own links; and the access-by-button model (sdk-contract/a-plugin-has-admins):
 its pages, each declared with the levels it serves, opened by the dashboard's
-Manage, Open and View. An ambiguous miss carries the asset class SnapTrade's
-instrument kind maps to, or none where it maps to none.
+Manage, Open and View; and the figures a plugin reports on the Summary core
+draws (sdk-contract/a-plugin-reports-its-figures). An ambiguous miss carries
+the asset class SnapTrade's instrument kind maps to, or none where it maps to
+none.
 
 ## What it does
 
@@ -201,10 +203,17 @@ The tests hold every page at `admin` to that with the SDK's
 `PageClient.assert_no_account_data`, for a plugin admin and for a deployment
 admin (`PageClient(..., deployment_admin=True)`).
 
-- **Connections** (`/admin/connections`): figures for the read (connections
-  and how many need attention, accounts reached, the last read), each
-  brokerage connection with its health, what to do about it, and refreshing
-  or reconnecting it, and the SnapTrade users under the key. **+ Add**
+- **Summary**, which core draws first under Manage, not a page of the
+  plugin's: core's status (the health each read reports, and why), then the
+  three figures each read reports with it, which the SDK sends on every
+  heartbeat until the next (the product owner, 2026-10-01). **Connections**,
+  the count, marked warn when any needs attention, with why (how many are
+  stale, needing sign-in and disabled, as the Connections page reads each);
+  **Accounts reached**, the count; **Last read**, its time, marked an error
+  with why when it failed ("Not yet" before any).
+- **Connections** (`/admin/connections`): each brokerage connection with its
+  health, what to do about it, and refreshing or reconnecting it, and the
+  SnapTrade users under the key. **+ Add**
   (named "Add a brokerage connection" for assistive technology), in the
   Connections card's header, connects one through SnapTrade's Connection
   Portal (a link that opens outside the dashboard's frame); **Refresh** sits
@@ -379,15 +388,19 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.10.1`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.10.1`.
+The SDK is pinned exactly, `open-meridian==0.11.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.11.0`.
 Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
 meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
 runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
 `meridian.Pages` with their levels and templates, was done by hand. 0.10.1
 changed nothing the plugin calls; from it, the pages' body ceiling is
 `Pages(max_body=...)` and the tests ask as a deployment admin with
-`PageClient(..., deployment_admin=True)`.
+`PageClient(..., deployment_admin=True)`. 0.11.0 changed nothing the plugin
+calls; from it, each read reports its figures (`plugin.report(...,
+figures=...)`), which the tests read as the heartbeat the sidecar receives
+(`meridian.testing.heartbeat`), and the health a read reports stands until
+the next.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -400,7 +413,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.5.4 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.6.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

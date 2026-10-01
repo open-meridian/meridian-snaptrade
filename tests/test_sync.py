@@ -7,8 +7,11 @@ import logging
 from typing import Any
 
 import pytest
+from meridian import Figure
 from meridian.plugin.v1 import operations_pb2 as ops
+from meridian.testing import heartbeat
 
+from snaptrade.normalise import ConnectionView, SyncState
 from snaptrade.settings import (
     CLIENT_ID,
     COMMERCIAL,
@@ -20,11 +23,11 @@ from snaptrade.settings import (
     Config,
     config_from,
 )
-from snaptrade.sync import Syncer, venue_for
+from snaptrade.sync import Status, Syncer, figures, venue_for
 from snaptrade.synthetic import SyntheticVenue
 from snaptrade.venue import SnapTradeVenue, Venue, VenueError
 
-from conftest import Sidecar, clock
+from conftest import NOW, Sidecar, clock
 
 SECRET = "user-secret-77aa-not-real"
 GIVEN: dict[str, str | int | bool] = {
@@ -185,3 +188,88 @@ async def test_waiting_for_settings_is_never_reading() -> None:
     running = syncer(Sidecar(), make_venue=lambda config: None)
     running.configure(config_from({}))
     assert not (await running.run_once()).reading
+
+
+# ── The figures on the plugin's Summary ─────────────────────────────────────
+
+NOT_READ = [
+    Figure("Connections", 0),
+    Figure("Accounts reached", 0),
+    Figure("Last read", "Not yet"),
+]
+# The synthetic read: Schwab's connection is disabled, IBKR's delayed by design.
+SYNTHETIC_READ = [
+    Figure("Connections", 3, state="warn", why="0 stale, 0 needing sign-in, 1 disabled"),
+    Figure("Accounts reached", 3),
+    Figure("Last read", NOW),
+]
+FAILED = [
+    Figure("Connections", 0),
+    Figure("Accounts reached", 0),
+    Figure("Last read", NOW, state="error", why="listing connections failed: no answer"),
+]
+
+
+async def test_a_read_reports_its_figures_with_its_health() -> None:
+    """Connections, warned with each state that asks for attention; Accounts
+    reached; and Last read, as the heartbeat carries them to core's Summary."""
+    sidecar = Sidecar()
+    running = syncer(sidecar)
+    running.configure(config_from({SYNTHETIC: True}))
+    await running.run_once()
+    assert sidecar.heartbeats == [
+        heartbeat(
+            healthy=True,
+            detail="read 3 accounts through 3 connections (synthetic)",
+            figures=SYNTHETIC_READ,
+        )
+    ]
+
+
+async def test_a_failed_read_marks_last_read_an_error_and_says_why() -> None:
+    sidecar = Sidecar()
+    running = syncer(sidecar, make_venue=lambda config: Unreachable())
+    running.configure(config_from(GIVEN))
+    await running.run_once()
+    assert sidecar.heartbeats == [
+        heartbeat(healthy=False, detail="listing connections failed: no answer", figures=FAILED)
+    ]
+
+
+async def test_waiting_for_settings_reports_nothing_read_yet() -> None:
+    sidecar = Sidecar()
+    running = syncer(sidecar, make_venue=lambda config: None)
+    running.configure(config_from({}))
+    await running.run_once()
+    (sent,) = sidecar.heartbeats
+    assert not sent.healthy
+    assert sent.figures == heartbeat(figures=NOT_READ).figures
+
+
+async def test_the_figures_follow_every_read() -> None:
+    """Each read that changes them reports them again: a failure after a read
+    marks Last read an error, and the next read that succeeds clears it."""
+    sidecar = Sidecar()
+    venues: list[Any] = [SyntheticVenue(clock()), Unreachable(), SyntheticVenue(clock())]
+    running = syncer(sidecar, make_venue=lambda config: venues.pop(0))
+    for _ in range(3):
+        running.configure(config_from({SYNTHETIC: True}))
+        await running.run_once()
+    assert [list(beat.figures) for beat in sidecar.heartbeats] == [
+        list(heartbeat(figures=shown).figures)
+        for shown in (SYNTHETIC_READ, FAILED, SYNTHETIC_READ)
+    ]
+
+
+def test_connections_needing_nothing_are_not_marked() -> None:
+    fine = ConnectionView("c1", "", "Broker", "read", SyncState.CURRENT, "", None)
+    delayed = ConnectionView("c2", "", "Broker", "read", SyncState.DELAYED_BY_DESIGN, "", None)
+    shown = figures(Status(mode="snaptrade", read_at=NOW, connections=(fine, delayed)))
+    assert shown[0] == Figure("Connections", 2)
+
+
+def test_a_long_failure_is_cut_to_what_a_figure_carries() -> None:
+    """Refused rather than cut by the SDK, so cut here, where it is made."""
+    shown = figures(Status(mode="snaptrade", error="x" * 300, failed_at=NOW))
+    assert shown[2].why == "x" * 199 + "\N{HORIZONTAL ELLIPSIS}"
+    heartbeat(figures=shown)  # within every bound

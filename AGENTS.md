@@ -60,6 +60,15 @@ a deployment admin approves them.
   each connection is; `PageClient.assert_no_account_data` in the tests holds
   every page at `admin` to that, and `PageClient(..., deployment_admin=True)`
   asks as a deployment admin.
+- **Manage opens on the plugin's Summary, which core draws**: its status,
+  then the figures the plugin reports about its own work. `sync.py`'s
+  `figures` makes them from the last read -- Connections (warn, with why,
+  when any needs attention), Accounts reached, Last read (an error, with
+  why, when it failed) -- and each read reports them with its health
+  (`plugin.report(..., figures=...)`); the SDK sends both on every
+  heartbeat until the next. Counts and a moment only, never an account's
+  data. Build no tiles of these on a page; the tests read them as the
+  heartbeat the sidecar receives (`meridian.testing.heartbeat`).
 
 This file is for any coding agent working on the plugin, and is committed with
 it for whoever works on it next. It is the canonical one: `CLAUDE.md` and the

@@ -4,6 +4,12 @@ page shows of it.
 Nothing here survives the process: plugins are ephemeral, and the next read
 rebuilds everything from SnapTrade. What the page shows is the last read, kept
 in memory.
+
+Each read ends in a report of the plugin's health and its figures, which core
+draws on its Summary under Manage beside its own status (the product owner,
+2026-10-01): Connections, with how many need attention; Accounts reached;
+and Last read, marked an error, with why, when it failed. The SDK sends both
+again on every heartbeat until the next read reports.
 """
 
 from __future__ import annotations
@@ -14,14 +20,23 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 import meridian
+from meridian.figures import LONGEST_WHY
 
 from .contract import Outcome, Recorder
-from .normalise import AccountView, ConnectionView, ns, views
+from .normalise import AccountView, ConnectionView, SyncState, ns, views
 from .settings import Config
 from .synthetic import SyntheticVenue
 from .venue import SnapTradeVenue, Venue, VenueError, read, utc_now
 
 log = logging.getLogger("snaptrade")
+
+#: The connection states that ask a person to do something, each as the
+#: Connections figure counts it.
+ATTENTION: dict[SyncState, str] = {
+    SyncState.STALE: "stale",
+    SyncState.NEEDS_SIGN_IN: "needing sign-in",
+    SyncState.DISABLED: "disabled",
+}
 
 
 @dataclass(frozen=True)
@@ -38,6 +53,8 @@ class Status:
     user_id: str = ""
     # Why the last read failed, when it did. Safe to show.
     error: str = ""
+    # When it failed.
+    failed_at: datetime | None = None
     # The required settings not yet given.
     missing: tuple[str, ...] = ()
     # A read is under way: the rest is the read before it, until it ends.
@@ -46,6 +63,35 @@ class Status:
     @property
     def accounts(self) -> tuple[AccountView, ...]:
         return tuple(view for connection in self.connections for view in connection.accounts)
+
+
+def figures(status: Status) -> list[meridian.Figure]:
+    """The figures on the plugin's Summary, from the last read: how many
+    connections, warned with how many in each state that asks for attention
+    when any does; how many accounts they reach; and when the last read was,
+    an error with its reason when it failed, "Not yet" before any. Counts
+    and a moment, and no account's data: Manage shows none."""
+    states = [connection.state for connection in status.connections]
+    attention = sum(states.count(state) for state in ATTENTION)
+    connections = meridian.Figure(
+        "Connections",
+        len(status.connections),
+        state="warn" if attention else None,
+        why=", ".join(f"{states.count(state)} {said}" for state, said in ATTENTION.items())
+        if attention
+        else None,
+    )
+    last: meridian.Figure
+    if status.error:
+        why = status.error
+        if len(why) > LONGEST_WHY:
+            why = why[: LONGEST_WHY - 1] + "\N{HORIZONTAL ELLIPSIS}"
+        last = meridian.Figure(
+            "Last read", status.failed_at or "Failed", state="error", why=why
+        )
+    else:
+        last = meridian.Figure("Last read", status.read_at or "Not yet")
+    return [connections, meridian.Figure("Accounts reached", len(status.accounts)), last]
 
 
 def venue_for(config: Config, now: Callable[[], datetime] = utc_now) -> Venue | None:
@@ -90,7 +136,7 @@ class Syncer:
         if venue is None:
             detail = "waiting for settings: " + ", ".join(config.missing)
             self.status = replace(base, mode="waiting")
-            await self._plugin.report(healthy=False, detail=detail)
+            await self._report(healthy=False, detail=detail)
             log.info(detail)
             return self.status
 
@@ -106,8 +152,8 @@ class Syncer:
         try:
             snapshot = await read(venue, self._now)
         except VenueError as failed:
-            self.status = replace(base, error=str(failed))
-            await self._plugin.report(healthy=False, detail=str(failed))
+            self.status = replace(base, error=str(failed), failed_at=self._now())
+            await self._report(healthy=False, detail=str(failed))
             log.warning("%s", failed)
             return self.status
         try:
@@ -152,6 +198,11 @@ class Syncer:
             detail += " (synthetic)"
         if stopped:
             detail += f"; {stopped} statements stopped, see the plugin's page"
-        await self._plugin.report(healthy=True, detail=detail)
+        await self._report(healthy=True, detail=detail)
         log.info("%s", detail)
         return self.status
+
+    async def _report(self, *, healthy: bool, detail: str) -> None:
+        """The plugin's health, and its figures from the status just set: both
+        stand on every heartbeat after, until the next read reports."""
+        await self._plugin.report(healthy=healthy, detail=detail, figures=figures(self.status))

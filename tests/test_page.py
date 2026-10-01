@@ -374,15 +374,29 @@ def test_the_connections_tab(server: int) -> None:
     )
 
 
-def test_the_connections_figures_count_connections_and_accounts_and_no_holdings(
-    server: int,
+def test_the_connections_tab_has_no_tiles_but_its_card_rows_and_actions(
+    server: int, sidecar: Sidecar
 ) -> None:
+    """Connections, Accounts reached and Last read are the plugin's figures on
+    the Summary core draws (sync.figures), not tiles here; the card, its
+    rows and their actions stay."""
     _, _, body = ask(server, "GET", CONNECTIONS, MANAGER)
-    tiles = re.findall(r'<div class="tile-label">([^<]*)</div><div class="tile-value">', body)
-    assert tiles == ["Connections", "Accounts reached", "Last read"]
-    # Schwab's connection is disabled.
-    assert '<div class="tile-delta warn-ink">1 needs attention</div>' in body
+    assert 'class="tiles"' not in body and "tile-label" not in body
+    assert "Accounts reached" not in body and "needs attention" not in body
+    # The card: its heading, Refresh beside + Add, and a row per connection,
+    # Schwab's disabled one led to Reconnect.
+    assert "<h2>Connections</h2>" in body
+    assert ">Refresh</button>" in body and ">+ Add</button>" in body
+    assert body.count('<div class="list-row">') == 3
+    assert '<button class="primary">Reconnect</button>' in body
     assert "Holdings read" not in body and "statement" not in body
+    # What the page no longer shows went on the heartbeat with the read.
+    (beat,) = sidecar.heartbeats
+    assert [figure.label for figure in beat.figures] == [
+        "Connections",
+        "Accounts reached",
+        "Last read",
+    ]
 
 
 def test_the_accounts_tab(server: int, sidecar: Sidecar) -> None:

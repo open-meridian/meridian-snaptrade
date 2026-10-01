@@ -24,6 +24,9 @@ the view runs. So the tab row and the plugin agree by construction.
   account; only a deployment admin names a new one (`caller.deployment_admin`,
   read for that alone). `/admin` sends a session to Connections. The
   SnapTrade keys are entered in the dashboard's settings form, never here.
+  How many connections and accounts the last read reached, and when it was,
+  are no tiles here: they are the plugin's figures on the Summary core draws
+  first under Manage (sync.py).
 - **Statements** (`/`), at `write` and `read`: per account, its sync state,
   its last statement and its rows, as the last read found them, for each
   account linked to one the person may read (`caller.read`, which under Open
@@ -74,7 +77,7 @@ from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
 from .settings import label
-from .sync import Status, Syncer
+from .sync import ATTENTION, Status, Syncer
 from .venue import VenueError
 
 TITLE = "SnapTrade"
@@ -198,8 +201,6 @@ _STATE_TONE = {
     SyncState.DISABLED: "bad",
     SyncState.DELAYED_BY_DESIGN: "info",
 }
-# The states that ask a person to do something.
-_ATTENTION = (SyncState.STALE, SyncState.NEEDS_SIGN_IN, SyncState.DISABLED)
 # What a connection says about refreshing it, by how SnapTrade serves it. A
 # real-time one is offered no Refresh: SnapTrade reads the brokerage on every
 # call, and on its Real-time plans (Personal, Pay as you go) it refuses one.
@@ -385,26 +386,6 @@ def _connection(connection: ConnectionView) -> dict[str, Any]:
     }
 
 
-def _connection_tiles(status: Status) -> list[dict[str, str]]:
-    """The read's figures for setup: how many connections and how many of them
-    need seeing to, and how many accounts they reach. Nothing an account holds."""
-    attention = sum(1 for c in status.connections if c.state in _ATTENTION)
-    return [
-        {
-            "label": "Connections",
-            "value": str(len(status.connections)),
-            "delta": (
-                f"{attention} {'needs' if attention == 1 else 'need'} attention"
-                if attention
-                else "none need attention"
-            ),
-            "ink": "warn-ink" if attention else "",
-        },
-        {"label": "Accounts reached", "value": str(len(status.accounts))},
-        _last_read(status),
-    ]
-
-
 def _connections(notice: Notice | None = None, portal: str | None = None) -> meridian.Response:
     status = _now().syncer.status
     return _html(
@@ -416,7 +397,6 @@ def _connections(notice: Notice | None = None, portal: str | None = None) -> mer
             portal=portal,
             waiting=_waiting_for(status),
             error=status.error,
-            tiles=_connection_tiles(status),
             connections=[_connection(c) for c in status.connections],
             user_id=status.user_id,
             users=status.users,
@@ -1015,7 +995,7 @@ def _statement(
 
 
 def _statement_tiles(status: Status, shown: Sequence[Shown]) -> list[dict[str, str]]:
-    attention = sum(1 for _, view in shown if view.freshness.state in _ATTENTION)
+    attention = sum(1 for _, view in shown if view.freshness.state in ATTENTION)
     statements = [view.statement for _, view in shown if view.statement is not None]
     rows = sum(len(statement.holdings) for statement in statements)
     brokerages = {connection.institution or connection.connection_id for connection, _ in shown}
