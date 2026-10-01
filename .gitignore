@@ -18,6 +18,8 @@ CLAUDE.local.md
 .claude/settings.local.json
 .meridian/
 
-# What `make test` and `make preview` leave behind.
+# What `make test`, `make preview` and `make e2e` leave behind: e2e's is the
+# plugin harness it copied out of the runtime image, and what the run printed.
 .test.log
 preview/
+.e2e/

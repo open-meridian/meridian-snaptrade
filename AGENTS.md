@@ -101,8 +101,10 @@ older one, the person runs `meridian upgrade`.
   clock (`tests/conftest.py`); a new operation or page gets a test beside the
   others.
 - **`make ci-local`** runs lint (ruff, mypy strict), the tests,
-  `meridian plugin check --run-tests` and the plugin's image, in containers,
-  and needs nothing installed but Docker. Its check (`make check`) uses the
+  `meridian plugin check --run-tests`, the plugin's image, and `make e2e`
+  (the plugin on the plugin harness of the runtime the `Makefile` pins, the
+  README's "Proven against a released runtime"), in containers, and needs
+  nothing installed but Docker. Its check (`make check`) uses the
   meridian that CI's `check.yaml` pins, which may be newer than yours.
 
 What the check cannot decide stays advice, below: which component fits, the

@@ -1,0 +1,40 @@
+# The plugin proven against a released runtime, on every push and pull
+# request: `make e2e` runs it, in synthetic mode and with no key, on the
+# plugin harness of the runtime image the Makefile pins, links Alpaca's
+# account through its own Account links form, and compares the street store
+# with e2e/expected.street. No secret: the runtime image pulls without a
+# token, and synthetic mode asks nothing of SnapTrade.
+#
+# The job is named for the make target that runs it locally: `make e2e`, part
+# of ci-local and so of the pre-push hook. It is its own workflow rather than
+# a step of ci.yaml, which runs ci-remote without pulling images.
+name: e2e
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: make e2e
+        run: make e2e
+      # What the harness's components and runner printed, kept when it fails.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: e2e-logs
+          path: .e2e/*.log
+          if-no-files-found: ignore

@@ -409,9 +409,65 @@ To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
 
+`make e2e` also pins a released runtime, `meridian-runtime` by tag and
+digest in the `Makefile` (`RUNTIME_IMAGE`), for the plugin harness it runs
+on; below.
+
+## Proven against a released runtime
+
+`make e2e` runs the plugin as it runs in a deployment: its own image, beside
+a sidecar, with a broker, the street store and a dashboard, all from the
+released `meridian-runtime` image the `Makefile` pins
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `5720c20`, the
+first to carry the harness). That deployment is core's
+**plugin harness**, which ships inside the image
+(`/usr/share/meridian/harness/`, with its own README); the target copies it
+out into `.e2e/` and runs it as the compose project `snaptrade-e2e`, with no
+published port, so it runs beside anything else. `e2e/plugin.yaml` restarts
+the plugin when it stops with an error, as a deployment's pod would: started
+before the conductor answers, its first call is refused and it exits. In
+synthetic mode and with no key, as an admin would through the dashboard and
+this plugin's own page, it:
+
+1. waits until the plugin has registered;
+2. turns `synthetic` on in its settings form;
+3. opens Account links under Manage until it lists Alpaca's account
+   (`SYN-ALP-1001`), which the read on that settings change reached;
+4. posts that page's form to create **E2E Alpaca** linked to
+   `ALPACA:SYN-ALP-1001`, the one link it makes, which wakes a read that
+   records Alpaca's statement;
+5. waits until the street store holds a complete statement for E2E Alpaca,
+   prints the store with the harness's `street.sql` and compares it with
+   `e2e/expected.street`;
+6. asks the dashboard how many accounts the plugin reported and nothing
+   links: 2, Interactive Brokers' and Schwab's.
+
+`e2e/expected.street` is every account's rows, so a row for an unlinked
+account is a difference, and step 6 proves the plugin reported them. The
+harness has no platform, so no instrument resolves and every row names the
+deployment's placeholder: the file names each by the identifiers the plugin
+sent (AAPL by its FIGI and symbol, ZZTOP by symbol only). It holds Alpaca's
+seven rows, as `synthetic.py` serves them: AAPL 12.5 long, ZZTOP 40 short
+(-40), the AAPL call, SYNXX 500.00 also counted in cash, BTC 0.012345678,
+and USD 1523.45 and CAD 200.00 cash; and its statement, complete with seven
+rows, with no buying power since Alpaca reports two currencies.
+
+On a failure it says which step, prints the difference if there is one, and
+keeps the components' logs in `.e2e/components.log` and what the runner
+printed in `.e2e/runner.log`; it always tears the harness down with its
+volumes and removes its copy of it, which `meridian plugin check` would
+otherwise read as the plugin's. `make ci-local` runs it, and so the pre-push hook; the `e2e`
+workflow runs it on every push and pull request; and `e2e-latest` runs it
+weekly against the runtime's `latest`, blocking nothing, to say early that
+moving the pin will need work. The pin moves by a deliberate commit, with the
+SDK's when a contract version changes:
+
+    make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest   # try a newer core
+
 ## Working on it
 
-    make ci-local        # lint (ruff, mypy strict), tests, plugin check, and the plugin's image
+    make ci-local        # lint (ruff, mypy strict), tests, plugin check, the plugin's image, and e2e
+    make e2e             # the plugin on the plugin harness of the runtime it pins
     make preview         # each page on synthetic data, in preview/, linking the kit
     make install-hooks   # once per clone, so git push runs ci-local first
 

@@ -1,0 +1,12 @@
+# The plugin harness's `plugin` service, as `make e2e` runs this plugin: the
+# harness's own README offers this override for whatever a plugin needs.
+#
+# Restarted when it stops with an error, as a deployment's pod restarts it.
+# The harness starts the plugin beside its sidecar without waiting for the
+# conductor, and this plugin's first call, its links
+# (`plugin.account_scope()`), is the conductor's to answer: started first, it
+# is refused ("nothing serves platform.config.query.plugin-configuration")
+# and exits, and in a deployment the pod would start it again.
+services:
+  plugin:
+    restart: on-failure

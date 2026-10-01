@@ -9,6 +9,7 @@ AGENTS.md
 CLAUDE.md
 CLAUDE.local.md
 .meridian
-# What `make test` and `make preview` leave behind.
+# What `make test`, `make preview` and `make e2e` leave behind.
 .test.log
 preview/
+.e2e
