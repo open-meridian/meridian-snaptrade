@@ -192,6 +192,7 @@ _STATE_LABEL = {
     SyncState.NEEDS_SIGN_IN: "Needs sign-in",
     SyncState.DISABLED: "Disabled",
     SyncState.DELAYED_BY_DESIGN: "Delayed by design",
+    SyncState.HOLDINGS_UNAVAILABLE: "Holdings unavailable",
 }
 # The kit's badge tones: status, never market direction.
 _STATE_TONE = {
@@ -200,6 +201,8 @@ _STATE_TONE = {
     SyncState.NEEDS_SIGN_IN: "bad",
     SyncState.DISABLED: "bad",
     SyncState.DELAYED_BY_DESIGN: "info",
+    # Like needing sign-in or disabled, a person's to mend: waiting will not.
+    SyncState.HOLDINGS_UNAVAILABLE: "bad",
 }
 # What a connection says about refreshing it, by how SnapTrade serves it. A
 # real-time one is offered no Refresh: SnapTrade reads the brokerage on every

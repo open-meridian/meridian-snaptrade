@@ -38,6 +38,7 @@ _SYNC_STATE: dict[SyncState, meridian.SyncState] = {
     SyncState.NEEDS_SIGN_IN: meridian.SyncState.SYNC_STATE_NEEDS_SIGN_IN,
     SyncState.DISABLED: meridian.SyncState.SYNC_STATE_DISABLED,
     SyncState.DELAYED_BY_DESIGN: meridian.SyncState.SYNC_STATE_DELAYED_BY_DESIGN,
+    SyncState.HOLDINGS_UNAVAILABLE: meridian.SyncState.SYNC_STATE_HOLDINGS_UNAVAILABLE,
 }
 _SIDE: dict[Side, meridian.HoldingSide] = {
     Side.LONG: meridian.HoldingSide.HOLDING_SIDE_LONG,

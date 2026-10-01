@@ -486,6 +486,18 @@ def test_holdings_the_brokerage_does_not_expose_are_not_recorded_as_empty() -> N
     assert view.statement is None and "does not show" in view.withheld
 
 
+def test_holdings_the_brokerage_does_not_expose_are_holdings_unavailable() -> None:
+    """The product owner, 2026-09-28 (the account side, Q4): SnapTrade's
+    `holdings_unavailable` is its own state, not stale, because waiting
+    changes nothing; the remedy is to connect the account another way."""
+    fresh = freshness(synced(1, holdings_unavailable=True), connection(), NOW, STALE_AFTER)
+    assert fresh.state is SyncState.HOLDINGS_UNAVAILABLE and not fresh.healthy
+    assert "does not show" in fresh.detail
+    assert fresh.remedy.startswith("Connect the account another way")
+    # Freshness as SnapTrade reports it, whatever the state.
+    assert fresh.holdings_as_of == NOW - timedelta(hours=1)
+
+
 def test_an_account_that_could_not_be_read_is_withheld_with_the_reason() -> None:
     raw = account()
     read = Snapshot(
@@ -504,6 +516,19 @@ def test_a_connection_shows_the_worst_of_its_accounts() -> None:
     )
     (seen,) = views(snapshot([healthy, old], [connection()]), STALE_AFTER)
     assert seen.state is SyncState.STALE and len(seen.accounts) == 2
+
+
+def test_holdings_unavailable_comes_before_stale_on_its_connection() -> None:
+    """A person's remedy before one that is waiting: a connection with a
+    stale account and one whose holdings are unavailable shows the latter."""
+    old = account(sync_status=synced(48)["sync_status"])
+    hidden = account(
+        id="00000000-0000-4000-8000-0000000000a2",
+        institution_account_id="INST-2",
+        sync_status=synced(1, holdings_unavailable=True)["sync_status"],
+    )
+    (seen,) = views(snapshot([old, hidden], [connection()]), STALE_AFTER)
+    assert seen.state is SyncState.HOLDINGS_UNAVAILABLE
 
 
 def test_an_account_whose_connection_was_not_listed_is_still_shown() -> None:

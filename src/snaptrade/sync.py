@@ -36,6 +36,9 @@ ATTENTION: dict[SyncState, str] = {
     SyncState.STALE: "stale",
     SyncState.NEEDS_SIGN_IN: "needing sign-in",
     SyncState.DISABLED: "disabled",
+    # A person connects the account another way (the product owner,
+    # 2026-09-28).
+    SyncState.HOLDINGS_UNAVAILABLE: "with holdings unavailable",
 }
 
 

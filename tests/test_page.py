@@ -1666,6 +1666,10 @@ def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
         (SyncState.STALE, '<span class="badge warn">Stale</span>'),
         (SyncState.NEEDS_SIGN_IN, '<span class="badge bad">Needs sign-in</span>'),
         (SyncState.DISABLED, '<span class="badge bad">Disabled</span>'),
+        (
+            SyncState.HOLDINGS_UNAVAILABLE,
+            '<span class="badge bad">Holdings unavailable</span>',
+        ),
     ],
 )
 def test_each_accounts_sync_state_is_on_statements(state: SyncState, badge: str) -> None:
@@ -1682,6 +1686,24 @@ def test_each_accounts_sync_state_is_on_statements(state: SyncState, badge: str)
     assert shown.count('<span class="faint">not reported</span>') == 2
     # Nothing recorded on the last read.
     assert "No statement on the last read: nothing recorded" in shown
+
+
+def test_a_connection_whose_holdings_are_unavailable_says_to_connect_another_way() -> None:
+    """The ruled remedy (the product owner, 2026-09-28), not "wait": holdings
+    will not arrive through this connection, however long it waits."""
+    connection = ConnectionView(
+        "c1",
+        "n",
+        "Broker",
+        "read",
+        SyncState.HOLDINGS_UNAVAILABLE,
+        "The brokerage does not show this account's holdings to SnapTrade.",
+        None,
+    )
+    shown = page_for(Status(mode="snaptrade", connections=(connection,)))
+    assert '<span class="badge bad">Holdings unavailable</span>' in shown
+    assert "Connect the account another way, or through another venue" in shown
+    assert "Usually SnapTrade's to recover" not in shown
 
 
 def test_a_stopped_statement_is_toned_bad_on_statements() -> None:

@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.6.0. How a plugin like it is built is documented at
+0.6.1. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.11.0`, which declares
@@ -70,7 +70,7 @@ Sync state, first that applies:
 |---|---|---|
 | connection `disabled` | `disabled` | reconnect through SnapTrade's Connection Portal; it serves its last data meanwhile |
 | holdings `initial_sync_completed: false` | `stale` | wait; nothing is recorded until the first sync is done |
-| holdings `holdings_unavailable: true` | `stale` | nothing is recorded: an empty list does not mean an empty account |
+| holdings `holdings_unavailable: true` | `holdings_unavailable` | connect the account another way, or through another venue: holdings will not arrive through this connection, and waiting changes nothing (the product owner, 2026-09-28). Nothing is recorded: an empty list does not mean an empty account |
 | connection `data_freshness_mode.institution: delayed` (Interactive Brokers) | `delayed_by_design` | nothing; `stale` if more than four days old |
 | last successful holdings sync older than `stale_after_hours` | `stale` | usually SnapTrade's to recover; if it lasts, refresh where Refresh is offered, or reconnect |
 | otherwise | `current` | nothing |
@@ -208,9 +208,10 @@ admin (`PageClient(..., deployment_admin=True)`).
   three figures each read reports with it, which the SDK sends on every
   heartbeat until the next (the product owner, 2026-10-01). **Connections**,
   the count, marked warn when any needs attention, with why (how many are
-  stale, needing sign-in and disabled, as the Connections page reads each);
-  **Accounts reached**, the count; **Last read**, its time, marked an error
-  with why when it failed ("Not yet" before any).
+  stale, needing sign-in, disabled and with holdings unavailable, as the
+  Connections page reads each); **Accounts reached**, the count; **Last
+  read**, its time, marked an error with why when it failed ("Not yet" before
+  any).
 - **Connections** (`/admin/connections`): each brokerage connection with its
   health, what to do about it, and refreshing or reconnecting it, and the
   SnapTrade users under the key. **+ Add**
@@ -413,7 +414,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.6.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.6.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

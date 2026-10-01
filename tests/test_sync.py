@@ -199,7 +199,12 @@ NOT_READ = [
 ]
 # The synthetic read: Schwab's connection is disabled, IBKR's delayed by design.
 SYNTHETIC_READ = [
-    Figure("Connections", 3, state="warn", why="0 stale, 0 needing sign-in, 1 disabled"),
+    Figure(
+        "Connections",
+        3,
+        state="warn",
+        why="0 stale, 0 needing sign-in, 1 disabled, 0 with holdings unavailable",
+    ),
     Figure("Accounts reached", 3),
     Figure("Last read", NOW),
 ]
@@ -266,6 +271,21 @@ def test_connections_needing_nothing_are_not_marked() -> None:
     delayed = ConnectionView("c2", "", "Broker", "read", SyncState.DELAYED_BY_DESIGN, "", None)
     shown = figures(Status(mode="snaptrade", read_at=NOW, connections=(fine, delayed)))
     assert shown[0] == Figure("Connections", 2)
+
+
+def test_a_connection_whose_holdings_are_unavailable_asks_for_attention() -> None:
+    """Its remedy is a person's, to connect the account another way (the
+    product owner, 2026-09-28), so the figure counts it and says so."""
+    hidden = ConnectionView(
+        "c1", "", "Broker", "read", SyncState.HOLDINGS_UNAVAILABLE, "", None
+    )
+    shown = figures(Status(mode="snaptrade", read_at=NOW, connections=(hidden,)))
+    assert shown[0] == Figure(
+        "Connections",
+        1,
+        state="warn",
+        why="0 stale, 0 needing sign-in, 0 disabled, 1 with holdings unavailable",
+    )
 
 
 def test_a_long_failure_is_cut_to_what_a_figure_carries() -> None:

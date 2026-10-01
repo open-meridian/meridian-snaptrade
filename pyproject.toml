@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snaptrade"
-version = "0.6.0"
+version = "0.6.1"
 description = "Holdings, cash and sync state from brokerages through SnapTrade, for an Open Meridian deployment"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"

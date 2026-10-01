@@ -33,8 +33,10 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 - **Numbers are Decimal.** A float reaching here becomes Decimal(repr(value)).
 - **The statement ID is made from the account and the read time.**
 - **Sync state and freshness** from the connection and the account's sync
-  status: disabled, delayed by design (Interactive Brokers through SnapTrade),
-  stale, or current, with holdings and history freshness apart.
+  status: disabled, holdings unavailable (the brokerage does not show
+  SnapTrade the account's holdings), delayed by design (Interactive Brokers
+  through SnapTrade), stale, or current, with holdings and history freshness
+  apart.
 - **How SnapTrade serves a connection,** from `data_freshness_mode.snaptrade`:
   `realtime` (it reads the brokerage on every call, so there is nothing to
   refresh, and on a Real-time plan SnapTrade refuses a refresh), `delayed` (it
@@ -102,6 +104,9 @@ class SyncState(Enum):
     NEEDS_SIGN_IN = "needs_sign_in"
     DISABLED = "disabled"
     DELAYED_BY_DESIGN = "delayed_by_design"
+    # The product owner, 2026-09-28: the venue does not provide holdings
+    # through this connection (SnapTrade's `holdings_unavailable`).
+    HOLDINGS_UNAVAILABLE = "holdings_unavailable"
 
 
 REMEDY: dict[SyncState, str] = {
@@ -117,6 +122,10 @@ REMEDY: dict[SyncState, str] = {
     ),
     SyncState.DELAYED_BY_DESIGN: (
         "Nothing to do: this brokerage reaches SnapTrade a business day late."
+    ),
+    SyncState.HOLDINGS_UNAVAILABLE: (
+        "Connect the account another way, or through another venue: its holdings will "
+        "not arrive through this connection, however long it waits."
     ),
 }
 
@@ -415,7 +424,7 @@ def freshness(
         )
     if holdings.get("holdings_unavailable") is True:
         return said(
-            SyncState.STALE,
+            SyncState.HOLDINGS_UNAVAILABLE,
             "The brokerage does not show this account's holdings to SnapTrade; an empty "
             "list from it does not mean an empty account.",
         )
@@ -642,10 +651,12 @@ def _connection_view(connection: Json, accounts: tuple[AccountView, ...]) -> Con
     if connection.get("disabled") is True:
         state, detail = SyncState.DISABLED, "SnapTrade disabled this connection."
     elif accounts:
-        # The worst of its accounts', in the order a person should act on them.
+        # The worst of its accounts', in the order a person should act on them:
+        # what a person must do before what waiting may mend.
         order = [
             SyncState.DISABLED,
             SyncState.NEEDS_SIGN_IN,
+            SyncState.HOLDINGS_UNAVAILABLE,
             SyncState.STALE,
             SyncState.DELAYED_BY_DESIGN,
             SyncState.CURRENT,

@@ -9,7 +9,7 @@ from typing import Any
 import meridian
 from meridian.plugin.v1 import operations_pb2 as ops
 
-from snaptrade.contract import Recorder
+from snaptrade.contract import _SYNC_STATE, Recorder
 from snaptrade.normalise import (
     ExternalAccount,
     Freshness,
@@ -271,6 +271,27 @@ async def test_delayed_by_design_is_healthy() -> None:
     await Recorder(sidecar.plugin()).report_sync(ACCOUNT, late, ns(NOW))
     (sent,) = sidecar.sent("ReportSyncStatus")
     assert sent.connection_healthy and sent.state == ops.SYNC_STATE_DELAYED_BY_DESIGN
+
+
+async def test_holdings_unavailable_is_sent_as_the_contracts_own_state() -> None:
+    """Not stale: SYNC_STATE_HOLDINGS_UNAVAILABLE, ruled for exactly this
+    (the product owner, 2026-09-28)."""
+    sidecar = Sidecar()
+    hidden = Freshness(
+        SyncState.HOLDINGS_UNAVAILABLE, NOW, NOW.date(), "Not shown to SnapTrade."
+    )
+    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, hidden, ns(NOW))
+    (sent,) = sidecar.sent("ReportSyncStatus")
+    assert sent.state == ops.SYNC_STATE_HOLDINGS_UNAVAILABLE
+    assert not sent.connection_healthy
+    assert sent.status_detail == "Not shown to SnapTrade."
+
+
+def test_every_sync_state_has_the_contracts_value() -> None:
+    """Each of the plugin's states is sent as the contract's value of the same
+    name, so none is sent as another."""
+    for state in SyncState:
+        assert _SYNC_STATE[state] == ops.SyncState.Value(f"SYNC_STATE_{state.name}")
 
 
 async def test_the_accounts_a_connection_reaches_are_reported(sidecar: Sidecar) -> None:
