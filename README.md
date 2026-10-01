@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.5.3. How a plugin like it is built is documented at
+0.5.4. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.10.1`, which declares
@@ -55,7 +55,7 @@ meridian-design.
 | `instrument.figi_instrument.figi_code` | identifier `{scheme: figi}` |
 | `instrument.symbol` (a ticker, or an option's OCC symbol) | identifier `{scheme: symbol, source: snaptrade}` |
 | `instrument.exchange`, when a MIC | the MIC resolution is qualified by |
-| `instrument.kind` | the asset class an ambiguous miss is reported with (the product owner, 2026-10-01): `stock` is `equity`; `etf` and `mutualfund` are `fund`; `bond` is `debt`; `option` is `derivative`; `crypto` is `crypto_asset`. Any other kind (`adr`, `cef`, `future`, `future_option`, `cfd`, `tokenized_asset`, `other`, or one SnapTrade adds) is sent with no class, for a person to set on the platform; so is cash, which is no instrument SnapTrade reports |
+| `instrument.kind` | the asset class an ambiguous miss is reported with (the product owner, 2026-10-01): `stock` is `equity`; `etf` and `mutualfund` are `fund`; `bond` is `debt`; `option` is `derivative`; `crypto` is `crypto_asset`; `adr` is `equity`; `cef` is `fund`; `future`, `future_option` and `cfd` are `derivative`. `tokenized_asset` (its class is what the token stands for), `other`, and any kind SnapTrade adds are sent with no class, for a person to set on the platform; a cash row is `cash` |
 | balance `buying_power` per currency | the statement's buying power, as reported, never derived |
 | `cash_equivalent: true` (money-market funds) | kept as a position and marked; SnapTrade counts it in cash too |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
@@ -400,7 +400,7 @@ the new SDK has that this plugin does not know, naming it.
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.5.3 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.5.4 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

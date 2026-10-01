@@ -78,6 +78,16 @@ _ASSET_CLASS = {
     "bond": "debt",
     "option": "derivative",
     "crypto": "crypto_asset",
+    # The product owner, 2026-10-01: a depositary receipt is a claim on
+    # shares; a closed-end fund a share of a pool; futures, their options and
+    # contracts for difference take their value from something else. A
+    # tokenized asset's class depends on what the token stands for, and
+    # "other" on nothing known, so both are left for a person.
+    "adr": "equity",
+    "cef": "fund",
+    "future": "derivative",
+    "future_option": "derivative",
+    "cfd": "derivative",
 }
 
 _MIC = re.compile(r"^[A-Z0-9]{4}$")
@@ -504,6 +514,9 @@ def cash_holding(balance: Json) -> Holding | None:
         identifiers=(Identifier("iso4217", code),),
         description=f"{code} cash",
         kind="cash",
+        # A holding of a currency's cash instrument (the product owner,
+        # 2026-10-01).
+        asset_class="cash",
         # A margin debit is negative cash: a short row of the currency.
         side=_side(amount),
         quantity=amount,

@@ -57,6 +57,7 @@ CASH = Holding(
     identifiers=(Identifier("iso4217", "CAD"),),
     description="CAD cash",
     kind="cash",
+    asset_class="cash",
     side=Side.LONG,
     quantity=Decimal("200.00"),
     currency="CAD",
@@ -197,12 +198,12 @@ async def test_an_ambiguous_row_is_still_recorded_and_its_miss_published_once() 
 async def test_a_miss_carries_the_rows_asset_class_and_none_where_it_has_none() -> None:
     sidecar = Sidecar(resolve=lambda p: ambiguous())
     await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
-    # The two stocks are equity; the cash, which has no class, is sent none.
+    # The two stocks are equity; the cash is a holding of its cash instrument.
     misses = sidecar.sent("ReportMissingInstrument")
     assert [ops.AssetClass.Name(miss.asset_class) for miss in misses] == [
         "ASSET_CLASS_EQUITY",
         "ASSET_CLASS_EQUITY",
-        "ASSET_CLASS_UNSPECIFIED",
+        "ASSET_CLASS_CASH",
     ]
 
 

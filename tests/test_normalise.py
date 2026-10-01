@@ -226,12 +226,12 @@ ASSET_CLASSES = [
     ("bond", "debt"),
     ("option", "derivative"),
     ("crypto", "crypto_asset"),
-    # Not mapped by the product owner: left for a person to set.
-    ("adr", ""),
-    ("cef", ""),
-    ("future", ""),
-    ("future_option", ""),
-    ("cfd", ""),
+    ("adr", "equity"),
+    ("cef", "fund"),
+    ("future", "derivative"),
+    ("future_option", "derivative"),
+    ("cfd", "derivative"),
+    # Left for a person: a token's class is what it stands for.
     ("tokenized_asset", ""),
     ("other", ""),
     # A kind SnapTrade does not document, a spelling it does not use, none.
@@ -254,9 +254,11 @@ def test_each_asset_class_sent_is_one_the_sdk_defines() -> None:
             assert meridian.AssetClass.Value(f"ASSET_CLASS_{said.upper()}")
 
 
-def test_cash_is_no_instrument_snaptrade_reports_and_has_no_asset_class() -> None:
+def test_cash_is_a_holding_of_its_cash_instrument_in_the_cash_class() -> None:
+    # The product owner, 2026-10-01: cash rows carry the cash class; no
+    # position SnapTrade reports has the kind "cash", so the kinds' map keeps none.
     row = cash_holding(balance("USD", Decimal("1523.45")))
-    assert row is not None and row.kind == "cash" and row.asset_class == ""
+    assert row is not None and row.kind == "cash" and row.asset_class == "cash"
     assert asset_class("cash") == ""
 
 
