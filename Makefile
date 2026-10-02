@@ -34,6 +34,15 @@ E2E     := MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) MERIDIAN_HARNESS_PLUGIN_IMAGE
            docker compose -p snaptrade-e2e -f .e2e/harness/compose.yaml -f e2e/plugin.yaml
 E2E_RUN := $(E2E) run --rm -T runner
 E2E_STREET := $(E2E) exec -T postgres psql -U meridian -d meridian -At -v ON_ERROR_STOP=1 -f /harness/street.sql
+# What the plugin kept of SnapTrade's raw responses for Alpaca's account, read
+# inside its container (raw.STAND_IN, its /tmp): the latest read's calls, by
+# name. The harness's admin holds Manage alone, so the Raw responses tab,
+# under Open and View, is the tests' to prove (tests/test_raw.py).
+export E2E_RAW := from snaptrade.raw import STAND_IN, RawStore; \
+	r = RawStore(STAND_IN).latest("ALPACA:SYN-ALP-1001"); \
+	calls = [c["call"] for c in r.calls] if r else []; \
+	assert calls == ["listing connections", "listing accounts", "reading positions", "reading balances"], calls; \
+	print(len(RawStore(STAND_IN).reads("ALPACA:SYN-ALP-1001")), "reads of Alpaca, the latest", r.key)
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the plugin's image, and e2e (the pre-push gate)"
@@ -150,15 +159,17 @@ e2e: image
 		|| fail "the street store is not e2e/expected.street"; \
 	unlinked="$$($(E2E_RUN) unlinked --expect 2 2>>.e2e/runner.log)" \
 		|| fail "the dashboard did not count the two accounts left unlinked"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE): synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked)"
+	raw="$$($(E2E) exec -T plugin python -c "$$E2E_RAW" 2>>.e2e/components.log)" \
+		|| fail "the plugin kept no raw responses for Alpaca's account on its read-only root"; \
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE): synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in /tmp on a read-only root ($$raw)"
 
 preview:
 	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for tab in connections accounts statements; do \
+	@for tab in connections accounts statements raw; do \
 		docker run --rm $(CHECK) python -m snaptrade.preview $$tab >preview/$$tab.html || exit 1; \
 	done
-	@echo "preview: preview/connections.html, preview/accounts.html, preview/statements.html"
+	@echo "preview: preview/connections.html, preview/accounts.html, preview/statements.html, preview/raw.html"
 
 # Applied in a container and written back, because the host has no toolchain.
 fmt:

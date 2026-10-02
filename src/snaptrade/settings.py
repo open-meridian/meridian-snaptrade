@@ -40,6 +40,7 @@ USER_ID = "snaptrade_user_id"
 USER_SECRET = "snaptrade_user_secret"
 POLL_SECONDS = "poll_seconds"
 STALE_AFTER_HOURS = "stale_after_hours"
+RAW_RETENTION_DAYS = "raw_retention_days"
 SYNTHETIC = "synthetic"
 # 0.1.0's on/off for a personal key, replaced by KEY_TYPE.
 PERSONAL_KEY = "snaptrade_personal_key"
@@ -50,6 +51,9 @@ COMMERCIAL = "commercial"
 DEFAULT_POLL_SECONDS = 300
 LEAST_POLL_SECONDS = 60
 DEFAULT_STALE_AFTER_HOURS = 24
+# How long SnapTrade's raw responses are kept (raw.py), and the least.
+DEFAULT_RAW_RETENTION_DAYS = 30
+LEAST_RAW_RETENTION_DAYS = 1
 
 _WITH_A_COMMERCIAL_KEY = meridian.AppliesWhen(KEY_TYPE, (COMMERCIAL,))
 
@@ -122,6 +126,17 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
+        RAW_RETENTION_DAYS,
+        int,
+        label="Keep raw responses for",
+        default=DEFAULT_RAW_RETENTION_DAYS,
+        unit="days",
+        description=(
+            "How long SnapTrade's responses to each read are kept as received, for the "
+            f"Raw responses tab. At least {LEAST_RAW_RETENTION_DAYS}; older ones are removed."
+        ),
+    ),
+    meridian.Setting(
         SYNTHETIC,
         bool,
         label="Synthetic mode",
@@ -158,6 +173,11 @@ class Credentials:
     user_secret: str = field(repr=False, default="")
     personal: bool = False
 
+    def secrets(self) -> tuple[str, ...]:
+        """The values never to be kept anywhere, for raw.py to look for and
+        redact; the user ID is not one."""
+        return tuple(filter(None, (self.client_id, self.consumer_key, self.user_secret)))
+
 
 @dataclass(frozen=True)
 class Config:
@@ -172,6 +192,7 @@ class Config:
     poll_seconds: int = DEFAULT_POLL_SECONDS
     stale_after: timedelta = timedelta(hours=DEFAULT_STALE_AFTER_HOURS)
     user_id: str = ""
+    raw_retention: timedelta = timedelta(days=DEFAULT_RAW_RETENTION_DAYS)
 
     @property
     def ready(self) -> bool:
@@ -250,6 +271,7 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
     )
     poll = _number(values, POLL_SECONDS)
     stale = _number(values, STALE_AFTER_HOURS)
+    kept = _number(values, RAW_RETENTION_DAYS)
     return Config(
         synthetic=values.get(SYNTHETIC) is True,
         key_type=key_type,
@@ -260,6 +282,11 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
             hours=stale if stale is not None and stale > 0 else DEFAULT_STALE_AFTER_HOURS
         ),
         user_id="" if personal else _text(values, USER_ID),
+        raw_retention=timedelta(
+            days=DEFAULT_RAW_RETENTION_DAYS
+            if kept is None
+            else max(kept, LEAST_RAW_RETENTION_DAYS)
+        ),
     )
 
 

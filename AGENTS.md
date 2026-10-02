@@ -17,7 +17,9 @@ a deployment admin approves them.
   and View), is daily work: each account linked to one the person may read
   (`caller.may_read`), Refresh under Open alone, and "nothing here for you"
   for somebody who may read none
-  (intent/a-custody-plugin-serves-its-statement-receivers). `venue.py` is
+  (intent/a-custody-plugin-serves-its-statement-receivers); Raw responses,
+  at `/raw`, at `write` and `read` too, is what SnapTrade answered each read
+  for those same accounts (below). `venue.py` is
   SnapTrade behind a small interface and the only module importing its SDK;
   `synthetic.py` stands in for it. `normalise.py` turns SnapTrade's shapes
   into the platform's convention; `contract.py` sends them through the SDK;
@@ -32,6 +34,22 @@ a deployment admin approves them.
   words. Each of the deployment's accounts takes one external account (v7):
   the Account links tab offers none this plugin's links already name, and
   shows the conductor's refusal of a second link as it is worded.
+- **SnapTrade's raw responses are kept, per account, by `raw.py`**, the
+  edge plugin's own raw records (decisions/028; the separation of duties in
+  meridian-design spec/vendor-differences-have-a-place-in-the-contract):
+  each read's calls for an account, by name and request, with SnapTrade's
+  JSON as received (exact, never a float) or why the call failed, and a list
+  call kept as this account's own entry, never another account's. Never a
+  credential, a header or a query string: `raw.redact` replaces a field
+  named as a credential and any credential value before anything is written.
+  Kept for `raw_retention_days` (30 by default), pruned when the settings
+  arrive and after each read. The storage 028 grants is not built in core or
+  the SDK: `RawStore` takes the directory `__main__` gives it
+  (`raw.STAND_IN`, the pod's `/tmp`), and that is the one seam to change
+  when it is. Nothing is read back from it into what is recorded, and the
+  Raw responses tab, an account's data, is never at `admin`. No
+  raw-record reference is sent: contract v8 has none (step 6 slice A's
+  `RawRecordRef`); never invent one.
 - SnapTrade's vocabulary stops at `normalise.py`, its instrument kinds
   mapped to the platform's asset classes there and nowhere else (unmapped
   kinds get none, never a guess), and a number is a `Decimal`
@@ -360,7 +378,7 @@ Ask the question that answers what you changed:
 
 | To know | Run |
 |---|---|
-| What the page shows, as the person is served it | `meridian plugin open --instance snaptrade --level view --print /` (any path on the plugin, at the level whose button serves it: `--level manage` for `/admin/connections` and `/admin/accounts`, `open` or `view` for `/`) |
+| What the page shows, as the person is served it | `meridian plugin open --instance snaptrade --level view --print /` (any path on the plugin, at the level whose button serves it: `--level manage` for `/admin/connections` and `/admin/accounts`, `open` or `view` for `/` and `/raw`) |
 | What the plugin printed or logged since your change | `meridian plugin logs --instance snaptrade --since <R-1>` |
 | What the sidecar refused it, or what else happened | `meridian plugin events --instance snaptrade --since <R-1> --json` |
 | What the person sees in a browser | `meridian plugin open --instance snaptrade --level manage` (or `open`, `view`): a link one browser opens once, to a session at that level. Give it to the person, or open it in your browser pane |

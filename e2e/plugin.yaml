@@ -7,6 +7,13 @@
 # (`plugin.account_scope()`), is the conductor's to answer: started first, it
 # is refused ("nothing serves platform.config.query.plugin-configuration")
 # and exits, and in a deployment the pod would start it again.
+#
+# Its root read-only and /tmp writable, as the chart's pod has them (an
+# emptyDir at /tmp): where the plugin keeps SnapTrade's raw responses until
+# decisions/028's storage is granted (src/snaptrade/raw.py).
 services:
   plugin:
     restart: on-failure
+    read_only: true
+    tmpfs:
+      - /tmp:uid=65532,gid=65532,mode=1777

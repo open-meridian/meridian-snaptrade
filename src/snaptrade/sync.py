@@ -1,9 +1,11 @@
 """One read of SnapTrade, carried through to the sidecar, and what the admin
 page shows of it.
 
-Nothing here survives the process: plugins are ephemeral, and the next read
-rebuilds everything from SnapTrade. What the page shows is the last read, kept
-in memory.
+Nothing here survives the process: the next read rebuilds everything from
+SnapTrade, and what the pages show is the last read, kept in memory. The one
+thing kept beyond it is SnapTrade's raw responses to each read, per account,
+in the plugin's own storage for their retention (raw.py, decisions/028), for
+the Raw responses tab: never read back into what is recorded.
 
 Each read ends in a report of the plugin's health and its figures, which core
 draws on its Summary under Manage beside its own status (the product owner,
@@ -24,9 +26,10 @@ from meridian.figures import LONGEST_WHY
 
 from .contract import Outcome, Recorder
 from .normalise import AccountView, ConnectionView, SyncState, ns, views
+from .raw import RawStore, taken
 from .settings import Config
 from .synthetic import SyntheticVenue
-from .venue import SnapTradeVenue, Venue, VenueError, read, utc_now
+from .venue import Snapshot, SnapTradeVenue, Venue, VenueError, read, utc_now
 
 log = logging.getLogger("snaptrade")
 
@@ -115,8 +118,11 @@ class Syncer:
         plugin: meridian.Plugin,
         now: Callable[[], datetime] = utc_now,
         make_venue: Callable[[Config], Venue | None] | None = None,
+        raw: RawStore | None = None,
     ) -> None:
         self._plugin = plugin
+        # SnapTrade's raw responses, kept per account; None keeps none.
+        self.raw = raw
         self._recorder = Recorder(plugin)
         self._now = now
         self._make_venue = make_venue or (lambda config: venue_for(config, now))
@@ -127,6 +133,11 @@ class Syncer:
     def configure(self, config: Config) -> None:
         self.config = config
         self.venue = self._make_venue(config)
+        if self.raw is not None:
+            # The first delivery comes as the plugin starts: what is past the
+            # retention, as the settings now say it, goes before any read.
+            self.raw.retention = config.raw_retention
+            self.raw.prune(self._now())
 
     async def run_once(self) -> Status:
         config, venue = self.config, self.venue
@@ -166,6 +177,7 @@ class Syncer:
             users = ()
 
         connections = views(snapshot, config.stale_after)
+        self._keep_raw(config, snapshot, connections)
         observed = ns(snapshot.read_at)
         accounts = [view for connection in connections for view in connection.accounts]
         outcomes: dict[str, Outcome] = {}
@@ -204,6 +216,17 @@ class Syncer:
         await self._report(healthy=True, detail=detail)
         log.info("%s", detail)
         return self.status
+
+    def _keep_raw(
+        self, config: Config, snapshot: Snapshot, connections: tuple[ConnectionView, ...]
+    ) -> None:
+        """SnapTrade's responses to this read, kept per account with every
+        credential redacted, then whatever is past the retention pruned."""
+        if self.raw is None:
+            return
+        secrets = config.credentials.secrets() if config.credentials is not None else ()
+        self.raw.keep(taken(snapshot, connections, config.synthetic), secrets)
+        self.raw.prune(self._now())
 
     async def _report(self, *, healthy: bool, detail: str) -> None:
         """The plugin's health, and its figures from the status just set: both

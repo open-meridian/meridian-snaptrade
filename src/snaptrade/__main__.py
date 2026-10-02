@@ -8,9 +8,13 @@ change, reads SnapTrade (or, in synthetic mode, its built-in responses),
 normalises what it read to the platform's convention (normalise.py), and
 records it through the SDK's typed operations (contract.py): each account's
 sync status, and a holdings statement per account. It holds nothing between
-reads; a restart reads again. Which of its external accounts are linked, and
-to what, it reads beside its account scope, holding the first delivery before
-its pages are served and each one after (linking.py).
+reads that it needs; a restart reads again. What SnapTrade answered each read
+is kept per account, as received, for the Raw responses tab (raw.py), in the
+storage decisions/028 has the deployment grant an edge plugin; until that is
+built, in the directory given here, raw.STAND_IN. Which of its external
+accounts are linked, and to what, it reads beside its account scope, holding
+the first delivery before its pages are served and each one after
+(linking.py).
 
 Everything goes through the sidecar. The SnapTrade credentials arrive as the
 plugin's own secret settings, set by an admin of the plugin in the dashboard,
@@ -30,6 +34,7 @@ import meridian
 
 from .linking import Links
 from .page import TITLE, pages, serve
+from .raw import STAND_IN, RawStore
 from .settings import DECLARED, config_from
 from .sync import Syncer
 
@@ -98,7 +103,8 @@ async def run() -> None:
             plugin.identity.instance_id,
             ", ".join(plugin.identity.roles) or "none",
         )
-        syncer = Syncer(plugin)
+        # decisions/028's seam: the granted storage goes here once it exists.
+        syncer = Syncer(plugin, raw=RawStore(STAND_IN))
         configured, wake = asyncio.Event(), asyncio.Event()
         links = Links(plugin)
         following = await follow_links(plugin, links)

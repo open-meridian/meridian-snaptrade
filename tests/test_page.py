@@ -14,12 +14,14 @@ import contextlib
 import http.client
 import json
 import re
+import tempfile
 import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -49,6 +51,7 @@ from snaptrade.page import (
     KIT,
     LINK,
     ONLY_DEPLOYMENT_ADMINS,
+    RAW,
     READ,
     REAL_TIME,
     RECONNECT,
@@ -59,6 +62,7 @@ from snaptrade.page import (
     hold,
     pages,
 )
+from snaptrade.raw import RawStore
 from snaptrade.settings import SYNTHETIC, config_from
 from snaptrade.sync import Status, Syncer
 from snaptrade.synthetic import SyntheticVenue
@@ -214,11 +218,14 @@ class Offering(Links):
 
 
 def holding(
-    status: Status, scope: meridian.AccountScope | None, offered: Offered | None
+    status: Status,
+    scope: meridian.AccountScope | None,
+    offered: Offered | None,
+    raw: RawStore | None = None,
 ) -> None:
     """The pages holding `status` as the last read, the links `scope` holds,
-    and `offered` as the deployment's accounts."""
-    syncer = Syncer(Sidecar().plugin())
+    `offered` as the deployment's accounts, and `raw`'s raw responses."""
+    syncer = Syncer(Sidecar().plugin(), raw=raw)
     syncer.status = status
     links = Offering(offered)
     asyncio.run(links.hold(scope or meridian.AccountScope()))
@@ -231,10 +238,11 @@ def page_for(
     caller: str = MANAGER,
     scope: meridian.AccountScope | None = None,
     offered: Offered | None = None,
+    raw: RawStore | None = None,
 ) -> str:
     """The page at `path` as its view serves `caller`, from `status` and the
     links `scope` holds, with no server."""
-    holding(status, scope, offered)
+    holding(status, scope, offered, raw)
     request = meridian.Request(
         "GET", path, meridian.Caller.from_header(caller), Sidecar().plugin()
     )
@@ -280,12 +288,14 @@ def flat(body: str) -> str:
 
 
 def test_each_page_is_declared_once_with_the_levels_it_serves() -> None:
-    # Connections and Account links at admin (Manage); Statements at write and
-    # read (Open and View), one page adapting by the session's level.
+    # Connections and Account links at admin (Manage); Statements and Raw
+    # responses at write and read (Open and View), each adapting by the
+    # session's level.
     assert [(page.path, page.title, tuple(page.levels)) for page in pages.declared] == [
         (CONNECTIONS, "Connections", (ADMIN_LEVEL,)),
         (ACCOUNTS, "Account links", (ADMIN_LEVEL,)),
         (STATEMENTS, "Statements", (WRITE_LEVEL, READ_LEVEL)),
+        (RAW, "Raw responses", (WRITE_LEVEL, READ_LEVEL)),
     ]
     # What registration sends: one list, the actions not among its tabs.
     declared = meridian.Interface(port=8000, title=TITLE, pages=pages)._declared()
@@ -293,6 +303,7 @@ def test_each_page_is_declared_once_with_the_levels_it_serves() -> None:
         (CONNECTIONS, [ADMIN_LEVEL]),
         (ACCOUNTS, [ADMIN_LEVEL]),
         (STATEMENTS, [WRITE_LEVEL, READ_LEVEL]),
+        (RAW, [WRITE_LEVEL, READ_LEVEL]),
     ]
 
 
@@ -312,6 +323,9 @@ def test_each_page_is_served_at_its_levels_and_refused_at_the_others(
         (STATEMENTS, "admin"): 403,
         (STATEMENTS, "write"): 200,
         (STATEMENTS, "read"): 200,
+        (RAW, "admin"): 403,
+        (RAW, "write"): 200,
+        (RAW, "read"): 200,
     }
 
 
@@ -1639,7 +1653,19 @@ def all_pages() -> dict[str, str]:
         "statements-open": page_for(status, STATEMENTS, WRITER, scope),
         "statements-view": page_for(status, STATEMENTS, READER, scope),
         "nothing": page_for(status, STATEMENTS, NOBODY, scope),
+        "raw-open": page_for(status, RAW, WRITER, scope, raw=kept_raw()),
+        "raw-view": page_for(status, RAW, READER, scope, raw=kept_raw()),
+        "raw-nothing": page_for(status, RAW, NOBODY, scope, raw=kept_raw()),
     }
+
+
+def kept_raw() -> RawStore:
+    """A store holding the synthetic read's raw responses."""
+    store = RawStore(Path(tempfile.mkdtemp()) / "raw")
+    syncer = Syncer(Sidecar().plugin(), now=clock(), raw=store)
+    syncer.configure(config_from({SYNTHETIC: True}))
+    asyncio.run(syncer.run_once())
+    return store
 
 
 def test_each_page_is_built_on_the_kits_base_template_with_no_style_of_its_own() -> None:
@@ -1670,9 +1696,10 @@ def test_the_tab_row_on_its_own_is_the_sessions_levels() -> None:
         name: re.findall(r'<a class="tab[^"]*" href="([^"]+)"', page)
         for name, page in shown.items()
     }
-    # Under Manage, its two tabs; under Open and View, one page and no tab row.
+    # Under Manage, its two tabs; under Open and View, its two others.
     assert tabs["connections"] == tabs["accounts"] == [CONNECTIONS, ACCOUNTS]
-    assert tabs["statements-open"] == tabs["statements-view"] == []
+    assert tabs["statements-open"] == tabs["statements-view"] == [STATEMENTS, RAW]
+    assert tabs["raw-open"] == tabs["raw-view"] == [STATEMENTS, RAW]
     assert 'class="tab on" href="/admin/accounts" aria-current="page"' in shown["accounts"]
 
 
@@ -1952,6 +1979,8 @@ def test_framed_the_head_leaves_nothing_under_the_dashboards_tabs() -> None:
         page_for(status, ACCOUNTS),
         page_for(status, STATEMENTS, WRITER),
         page_for(status, STATEMENTS, READER),
+        page_for(status, RAW, WRITER),
+        page_for(status, RAW, READER),
     ):
         head = head_of(body)
         assert status_dot(body).startswith("<om-status data-om-header ")

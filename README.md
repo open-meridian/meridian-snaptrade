@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.7.0. How a plugin like it is built is documented at
+0.8.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.12.0`, which declares
@@ -42,7 +42,10 @@ On start, on every settings change, and every `poll_seconds`, it:
    account nothing links is refused before any row.
    A refusal stops that statement and is shown, never retried.
 
-It holds nothing between reads. A restart reads again.
+It holds nothing between reads that it needs: a restart reads again. What
+SnapTrade answered each read is kept beside, per account, for its retention,
+for the Raw responses tab ("Raw responses: what SnapTrade said", below);
+nothing is ever read back from it into what is recorded.
 
 ### How SnapTrade's shapes become the platform's
 
@@ -109,6 +112,7 @@ without any of them.
 | `snaptrade_user_secret` | User secret | text | yes | with a commercial key | that user's secret |
 | `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
 | `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
+| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1 |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
@@ -164,6 +168,7 @@ the page's code runs.
 | Connections | `/admin/connections` | `admin` | Manage |
 | Account links | `/admin/accounts` | `admin` | Manage |
 | Statements | `/` | `write`, `read` | Open, View |
+| Raw responses | `/raw` | `write`, `read` | Open, View |
 
 Setup is under Manage, and daily work under Open and View
 (intent/a-custody-plugin-serves-its-statement-receivers, "Admin pages and user
@@ -203,6 +208,30 @@ or removed, or a linked account is renamed or closed. So a reader sees every
 account linked to one they may read, before a restart and after it. Nothing
 is stored to remember a link: the plugin holds the latest delivery, and
 plugins are ephemeral.
+
+### Raw responses, under Open and View
+
+**Raw responses** (`/raw`) shows what SnapTrade answered, as received, for
+each account Statements shows the person: linked to one of the deployment's
+accounts they may read, and no other (the same `caller.may_read`, cut by the
+plugin's links rather than by what the last read reached, so a read kept
+before a restart shows before the next one). For each account, the latest
+read: when it was read, and each call it made for the account, by name and
+request (`reading positions`, `GET /accounts/{accountId}/positions/all`),
+with SnapTrade's JSON body formatted, every number as SnapTrade wrote it, or
+why the call failed; and **Download JSON**, the read as it is kept. Below
+it, the older reads still kept, newest first and twenty at a time, each
+opened on the tab (`/raw?account=<id>&read=<read>`) or downloaded
+(`/raw/download?account=<id>&read=<read>`). An account the person may not
+read is answered 404, the same as no such account, on the tab and the
+download alike.
+
+Raw responses are an account's data, so the tab and its download are never
+served at `admin`: Manage shows no account's data, and the tests hold every
+Manage page to that with `PageClient.assert_no_account_data`. Under Open the
+head has Refresh, which reads SnapTrade now and answers with this tab; under
+View it acts on nothing. Somebody who may read nothing is told so. In
+synthetic mode each read says it is synthetic, not SnapTrade.
 
 ### Connections and Account links, under Manage
 
@@ -398,10 +427,73 @@ them.
 
 `make preview` writes each page on synthetic data to `preview/`, served by its
 own view: Connections and Account links as a deployment admin sees them under
-Manage, and Statements as a reader sees it under View who may read two of the
-three accounts. They link the kit at `/.meridian/ui/0.8.0/`, so serve them
+Manage, and Statements and Raw responses as a reader sees them under View who
+may read two of the three accounts (Raw responses with the synthetic read kept
+twice, an hour apart, in a temporary directory). They link the kit at `/.meridian/ui/0.8.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
+
+## Raw responses: what SnapTrade said
+
+The product owner, debugging duplicate positions (2026-10-02), asked to see
+SnapTrade's raw response on a refresh. Where it lives follows the ruled
+separation of duties (meridian-design spec/vendor-differences-have-a-place-
+in-the-contract, "Separation of duties"): the sidecar is the normalisation
+boundary, core is plugin-agnostic, and an edge plugin keeps the vendor's raw
+inputs in its own storage (decisions/028), for recordkeeping, for debugging
+a discrepancy, for backfill when the contract gains a field ("Backfill from
+raw records"), and as evidence the model lacks something. Core never reads
+them, and no other plugin does.
+
+**What is kept.** Each read, for each account it reached, one record: the
+read's time; each call made for the account, by the plugin's name for it and
+the request it was (the path alone: never a query string, which carries the
+user secret, a header or a credential); and SnapTrade's JSON body, read
+exactly (every number as written, never a float), or why the call failed.
+The connections and accounts lists, answered for every account at once, are
+kept as this account's own entry of each, so a record holds one account's
+data and no other's. SnapTrade's list of users under the key is no account's
+data and is not kept; a read that fails before the accounts are listed keeps
+nothing (its error is on the status dot). Before anything is written, a
+field named as a credential (a secret, a token, a password, an
+authorization, a signature, a client ID or a consumer key) is replaced with
+`[redacted]`, and so is the client ID, consumer key or user secret wherever
+one appears in a body. The tests hold a hostile body to that, and every kept
+byte to having no credential in it.
+
+**Where, and for how long.** decisions/028 has the deployment grant an edge
+plugin its own bucket or database schema at launch, with a declared
+retention, and the plugin's process stays stateless. **None of that is built
+yet**: there is no storage declaration in `[tool.meridian]`, nothing in the
+SDK (0.12.0, nor 0.13.0) hands a plugin storage, and core's launcher and
+chart mount none (the contract revision is meridian-design
+tasks/kernel/edge-plugins-own-storage-for-raw-records, open). So the store
+(`src/snaptrade/raw.py`) takes a directory it is given, and `__main__` gives
+it the one writable place a plugin's pod has: `/tmp/snaptrade/raw-responses`,
+on the `emptyDir` the chart mounts at `/tmp` beside a read-only root. That
+lasts as long as the pod: through a restart of the plugin's process, not past
+the pod being replaced (a new version, a node moving). The directory is the
+028 seam: once storage is granted, the store is given it instead, the
+retention comes from the grant, and nothing else changes. Until then the
+retention is the plugin's own setting, `raw_retention_days`, 30 days by
+default; records older are removed when the settings first arrive as the
+plugin starts, whenever the setting changes, and after each read. Each
+record is a gzipped JSON file, `<root>/a-<hash of the external account
+ID>/<read time>.json.gz`, written whole or not at all. A store that cannot be
+written leaves the read as it was; the tab says the responses were not kept.
+At the default poll of five minutes that is 288 records an account a day, a
+few kilobytes each compressed.
+
+**A raw-record reference on the rows: not yet.** The spec's ruling A puts on
+every store row a reference to the raw record it came from (proposed
+`RawRecordRef`, the writing plugin's instance and its own key for the
+record; Q9: followed only on the owning plugin's page). Contract v8 has no
+such field: neither core's `holdings.proto` nor the SDK at 7e21182 (0.13.0)
+carries one on a holding or a statement. It is a step 6 slice A contract item
+(the spec's "W2 amended: a holding row references the raw record it was
+converted from"), and nothing is sent for it here. When it lands, the key is
+the account and the read (`/raw?account=<id>&read=<read>`), which is what this
+tab already opens.
 
 ## Depends on
 
@@ -463,7 +555,13 @@ this plugin's own page, it:
    prints the store with the harness's `street.sql` and compares it with
    `e2e/expected.street`;
 6. asks the dashboard how many accounts the plugin reported and nothing
-   links: 2, Interactive Brokers' and Schwab's.
+   links: 2, Interactive Brokers' and Schwab's;
+7. reads, inside the plugin's container, what it kept of SnapTrade's raw
+   responses for Alpaca's account under `/tmp/snaptrade/raw-responses`: the
+   latest read's four calls, by name. `e2e/plugin.yaml` runs the plugin on a
+   read-only root with `/tmp` writable, as the chart's pod has them. The
+   harness's admin holds Manage alone, so the Raw responses tab, under Open
+   and View, is proven by `tests/test_raw.py`, not here.
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The
@@ -496,7 +594,7 @@ SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.7.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.8.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

@@ -1,5 +1,6 @@
 """The plugin's pages, declared and served on the SDK's `meridian.Pages`:
-Connections and Account links under Manage, Statements under Open and View.
+Connections and Account links under Manage, Statements and Raw responses
+under Open and View.
 
 The dashboard's home opens the plugin by a button per level the person holds
 on it (meridian-design sdk-contract/a-plugin-has-admins, the rulings of
@@ -34,6 +35,10 @@ the view runs. So the tab row and the plugin agree by construction.
   who may read none. Under Open it has Refresh, which reads SnapTrade now;
   under View it acts on nothing (intent/a-custody-plugin-serves-its-
   statement-receivers, the user-page split).
+- **Raw responses** (`/raw`), at `write` and `read`: what SnapTrade answered
+  each read, as received, for the same accounts (raw.py): the latest read
+  per account, each call formatted, the older reads kept, each downloadable
+  as JSON. An account's data, so never at `admin`.
 
 Which of the deployment's accounts an external account is linked to is what
 cuts Statements to a reader. The plugin reads its links beside its account
@@ -76,6 +81,7 @@ from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
+from .raw import Record, dumps
 from .settings import label
 from .sync import ATTENTION, Status, Syncer
 from .venue import VenueError
@@ -102,8 +108,11 @@ pages = meridian.Pages(
 
 # The pages, in the order each button's tab row shows them.
 STATEMENTS = "/"
+RAW = "/raw"
 CONNECTIONS = "/admin/connections"
 ACCOUNTS = "/admin/accounts"
+# A kept read of SnapTrade's, as a JSON file to save.
+RAW_DOWNLOAD = f"{RAW}/download"
 # The actions, each a POST.
 READ = "/read"
 CONNECT = "/admin/connect"
@@ -119,6 +128,7 @@ pages.environment.globals["paths"] = {
     "refresh": REFRESH,
     "reconnect": RECONNECT,
     "link": LINK,
+    "raw": RAW,
 }
 
 # The longest name a new account is given here, and the longest custodian or
@@ -1068,21 +1078,215 @@ async def statements(request: meridian.Request) -> meridian.Response:
     return _statements(request.caller)
 
 
+# ── Raw responses, at write and read ────────────────────────────────────────
+#
+# SnapTrade's responses to each read, as received, per account (raw.py): the
+# latest read of each account the person may read, each call by name and
+# request with its JSON body formatted, then the older reads still kept, each
+# opened here and each downloadable as JSON. An account's data, so never at
+# admin: Manage shows no account's data. Cut to the person by the plugin's
+# links, as Statements is, and not by what the last read reached, so a read
+# kept before a restart is shown before the next read.
+
+# The older reads listed at once for an account; `older` pages through them.
+OLDER_AT_ONCE = 20
+
+
+@dataclass(frozen=True)
+class RawAccount:
+    """An account whose raw responses this person may read."""
+
+    external_account_id: str
+    name: str
+    where: str
+
+
+def raw_accounts(caller: meridian.Caller) -> list[RawAccount]:
+    """The external accounts linked to an account `caller` may read: those
+    the last read reached first, in its order, then any other the plugin's
+    links name, whose kept reads may predate this process."""
+    if not caller.read:
+        return []
+    held = _now()
+    reached = [
+        RawAccount(view.account.external_account_id, view.account.name, _where(c, view))
+        for c in held.syncer.status.connections
+        for view in c.accounts
+    ]
+    known = {account.external_account_id for account in reached}
+    others = [
+        RawAccount(
+            link.external_account_id, link.external_account_id, "Not reached by the last read"
+        )
+        for link in sorted(held.links.scope.links, key=lambda link: link.external_account_id)
+        if link.external_account_id not in known
+    ]
+    return [
+        account
+        for account in reached + others
+        if _readable(held.links.of(account.external_account_id), caller)
+    ]
+
+
+def _raw_href(path: str, **query: str | int) -> str:
+    return f"{path}?{urlencode(query)}"
+
+
+def _shown_call(call: Mapping[str, Any]) -> dict[str, str]:
+    """One call of a kept read, as the tab shows it: by name and request, its
+    body formatted (every number as SnapTrade wrote it), or why it failed."""
+    failed = call.get("failed")
+    return {
+        "call": str(call.get("call", "")),
+        "request": str(call.get("request", "")),
+        "note": str(call.get("note", "")),
+        "failed": str(failed) if failed else "",
+        "json": "" if failed else dumps(call.get("body"), indent=2),
+    }
+
+
+def _shown_record(account: RawAccount, record: Record) -> dict[str, Any]:
+    return {
+        "key": record.key,
+        "read_at": record.read_at,
+        "synthetic": record.synthetic,
+        "calls": [_shown_call(call) for call in record.calls],
+        "download": _raw_href(
+            RAW_DOWNLOAD, account=account.external_account_id, read=record.key
+        ),
+    }
+
+
+def _number(text: str) -> int:
+    return int(text) if text.isdigit() else 0
+
+
+def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Response:
+    """Raw responses: for each account the person may read (or the one the
+    query names), the read asked for or the latest, then the older reads kept."""
+    caller = request.caller
+    held = _now()
+    store = held.syncer.raw
+    accounts = raw_accounts(caller)
+    asked = request.query.get("account", "").strip()
+    if asked and asked not in {a.external_account_id for a in accounts}:
+        # Not one of theirs, or no such account: the same answer for both.
+        return _said("No such account.", 404)
+    chosen = [a for a in accounts if a.external_account_id == asked] if asked else accounts
+    key = request.query.get("read", "").strip() if asked else ""
+    older = _number(request.query.get("older", "")) if asked else 0
+    shown: list[dict[str, Any]] = []
+    for account in chosen:
+        reads = store.reads(account.external_account_id) if store is not None else []
+        record = None
+        if store is not None:
+            record = (
+                store.record(account.external_account_id, key)
+                if key
+                else store.latest(account.external_account_id)
+            )
+        current = record.key if record is not None else ""
+        others = [r for r in reads if r.key != current]
+        page = others[older : older + OLDER_AT_ONCE]
+        here = {"account": account.external_account_id}
+        shown.append(
+            {
+                "external_account_id": account.external_account_id,
+                "name": account.name,
+                "where": account.where,
+                "record": _shown_record(account, record) if record is not None else None,
+                # A read asked for by key that is no longer kept.
+                "gone": bool(key) and record is None,
+                "older": [
+                    {
+                        "read_at": r.read_at,
+                        "href": _raw_href(RAW, **here, read=r.key),
+                        "download": _raw_href(RAW_DOWNLOAD, **here, read=r.key),
+                    }
+                    for r in page
+                ],
+                "older_total": len(others),
+                "older_from": older + 1 if page else 0,
+                "older_to": older + len(page),
+                "earlier": _raw_href(RAW, **here, older=older + OLDER_AT_ONCE)
+                if older + OLDER_AT_ONCE < len(others)
+                else "",
+                "later": _raw_href(RAW, **here, older=max(older - OLDER_AT_ONCE, 0))
+                if older > 0
+                else "",
+                "all": _raw_href(RAW, **here),
+            }
+        )
+    status = held.syncer.status
+    return _html(
+        pages.render(
+            "raw.html",
+            dot=_dot(status, setup=False),
+            nothing=not caller.read,
+            accounts=shown,
+            focused=bool(asked),
+            back=RAW,
+            notice=notice,
+            kept=store is not None,
+            failure=store.failure if store is not None else "",
+            retention_days=store.retention.days if store is not None else 0,
+            mode=_MODE[status.mode],
+        )
+    )
+
+
+@pages.page(RAW, "Raw responses", levels=["write", "read"])
+async def raw_responses(request: meridian.Request) -> meridian.Response:
+    return _raw(request)
+
+
+def _filename(external_account_id: str, key: str) -> str:
+    plain = "".join(c if c.isalnum() or c in "-." else "-" for c in external_account_id)
+    return f"snaptrade-raw-{plain}-{key}.json"
+
+
+@pages.route(RAW_DOWNLOAD, levels=["write", "read"])
+async def raw_download(request: meridian.Request) -> meridian.Response:
+    """One kept read of one account the person may read, as the JSON file it
+    is kept as, to save: the read the query names, or the latest."""
+    store = _now().syncer.raw
+    asked = request.query.get("account", "").strip()
+    readable = {a.external_account_id for a in raw_accounts(request.caller)}
+    if store is None or not asked or asked not in readable:
+        return _said("No such account.", 404)
+    key = request.query.get("read", "").strip()
+    record = store.record(asked, key) if key else store.latest(asked)
+    if record is None:
+        return _said("That read is not kept.", 404)
+    return meridian.Response(
+        dumps(record.document, indent=2) + "\n",
+        200,
+        "application/json; charset=utf-8",
+        (
+            ("content-disposition", f'attachment; filename="{_filename(asked, record.key)}"'),
+            ("cache-control", "no-store"),
+        ),
+    )
+
+
 # ── Reading now: Refresh ────────────────────────────────────────────────────
 
 
 @pages.route(READ, levels=["admin", "write"], methods=["POST"])
 async def read_now(request: meridian.Request) -> meridian.Response:
     """Read SnapTrade now: Refresh, in the Connections card beside + Add, and
-    in the head on Statements under Open (View acts on nothing; Account
-    links has none, the product owner 2026-09-30). It answers with the page
+    in the head on Statements and Raw responses under Open (View acts on
+    nothing; Account links has none, the product owner 2026-09-30). It answers with the page
     it was asked from, among those of the session's level."""
     if (refused := _oversized(request)) is not None:
         return refused
     _now().wake.set()
     notice = Notice("Reading SnapTrade now. Reload in a moment.")
+    back = request.form.get("back", "").strip()
     if not request.caller.admin:
+        if back == RAW:
+            return _raw(request, notice)
         return _statements(request.caller, notice)
-    if request.form.get("back", "").strip() == ACCOUNTS:
+    if back == ACCOUNTS:
         return await _accounts(request, notice)
     return _connections(notice)

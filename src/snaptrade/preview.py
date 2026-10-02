@@ -3,7 +3,7 @@ for looking at the pages without a deployment.
 
     python -m snaptrade.preview accounts > preview/accounts.html
 
-The page is connections (the default), accounts or statements. Each is served
+The page is connections (the default), accounts, statements or raw. Each is served
 by its own view, as the sidecar would ask it, and links the kit where the
 dashboard serves it, /.meridian/ui/<version>/, so serve it beside the kit to
 see it styled (meridian-ui's `make serve` serves the kit under that path);
@@ -17,14 +17,19 @@ and the other two not linked, as if the last read had recorded the first, had
 the second's rows refused for want of a link, and had not recorded the third
 yet; the deployment's accounts it offers are invented, like the rest.
 Statements is as a reader sees it under View who may read the accounts the
-first two are linked to, and not the third, which nothing links.
+first two are linked to, and not the third, which nothing links; Raw
+responses is the same reader's, the synthetic read kept twice an hour apart
+in a temporary directory, removed after.
 """
 
 from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 from dataclasses import replace
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import cast
 
 import meridian
@@ -33,7 +38,8 @@ from meridian.testing import caller_header
 from .contract import Outcome
 from .linking import DeploymentAccount, Links, Offered
 from .normalise import views
-from .page import ACCOUNTS, CONNECTIONS, STATEMENTS, hold, pages
+from .page import ACCOUNTS, CONNECTIONS, RAW, STATEMENTS, hold, pages
+from .raw import RawStore, taken
 from .settings import Config
 from .sync import Status, Syncer
 from .synthetic import USER_ID, SyntheticVenue
@@ -70,11 +76,17 @@ async def _status() -> Status:
     )
 
 
-def _shown(status: Status, scope: meridian.AccountScope, path: str, header: str) -> str:
+def _shown(
+    status: Status,
+    scope: meridian.AccountScope,
+    path: str,
+    header: str,
+    raw: RawStore | None = None,
+) -> str:
     """The page at `path`, served by its view for the caller `header` names,
-    from `status` and the links `scope` holds."""
+    from `status`, the links `scope` holds and the raw responses `raw` keeps."""
     plugin = cast(meridian.Plugin, None)
-    syncer = Syncer(plugin)
+    syncer = Syncer(plugin, raw=raw)
     syncer.status = status
     links = _Offering(plugin)
     asyncio.run(links.hold(scope))
@@ -114,10 +126,10 @@ def _linked(status: Status) -> tuple[Status, meridian.AccountScope]:
     return replace(status, outcomes=outcomes), scope
 
 
-def _read(status: Status) -> str:
-    """Statements under View, for a reader who may read ACC-1001 and
-    ACC-1002, to which the first two accounts are linked, and whose rows the
-    last read recorded."""
+def _read(status: Status, path: str = STATEMENTS, raw: RawStore | None = None) -> str:
+    """Statements (or `path`) under View, for a reader who may read ACC-1001
+    and ACC-1002, to which the first two accounts are linked, and whose rows
+    the last read recorded."""
     first, second, *_ = status.accounts
     outcomes = {
         view.account.external_account_id: Outcome(
@@ -139,7 +151,22 @@ def _read(status: Status) -> str:
     reader = caller_header(
         "read", read=("ACC-1001", "ACC-1002"), subject="preview|reader", display_name="A Reader"
     )
-    return _shown(replace(status, outcomes=outcomes), scope, STATEMENTS, reader)
+    return _shown(replace(status, outcomes=outcomes), scope, path, reader, raw)
+
+
+def _raw(status: Status) -> str:
+    """Raw responses for the same reader: the synthetic read kept twice, an
+    hour apart."""
+    with tempfile.TemporaryDirectory() as kept:
+        store = RawStore(Path(kept))
+        for ago in (timedelta(hours=1), timedelta()):
+
+            def then(ago: timedelta = ago) -> datetime:
+                return utc_now() - ago
+
+            snapshot = asyncio.run(read(SyntheticVenue(then), then))
+            store.keep(taken(snapshot, views(snapshot, Config().stale_after), synthetic=True))
+        return _read(status, RAW, store)
 
 
 def main() -> None:
@@ -150,10 +177,12 @@ def main() -> None:
         print(_shown(linked, scope, ACCOUNTS, MANAGING))
     elif page == "statements":
         print(_read(status))
+    elif page == "raw":
+        print(_raw(status))
     elif page == "connections":
         print(_shown(status, meridian.AccountScope(), CONNECTIONS, MANAGING))
     else:
-        sys.exit(f"no page {page!r}: connections, accounts or statements")
+        sys.exit(f"no page {page!r}: connections, accounts, statements or raw")
 
 
 if __name__ == "__main__":
