@@ -11,7 +11,7 @@ DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.12.0
+BASE        ?= ghcr.io/open-meridian/plugin-python:0.13.0
 PLUGIN_CHECK := meridian-snaptrade-plugin-check
 # The meridian check.yaml holds the plugin to, read from there so the two
 # cannot drift.
@@ -22,7 +22,7 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # deliberate commit, when this plugin chooses, and with the SDK when a
 # contract version changes. `make e2e RUNTIME_IMAGE=...:latest` tries a newer
 # one; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:f49dd7f@sha256:1d7670b2d4598a2e184f612eb8a9d6c3a4dc56e6b7fef9b5bc83e7b70aeef3b8
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:b49445e@sha256:5031dc4c962f380755e9e608456da5d3a18bdda1b04938de01ad0e6d44a3a5d6
 # Its roles as pyproject.toml declares them, so the harness launches it as
 # `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d '" ')

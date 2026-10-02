@@ -5,11 +5,11 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.8.0. How a plugin like it is built is documented at
+0.8.1. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.12.0`, which declares
-contract v7 and carries the whole account-side contract
+It is built on the SDK it pins, `open-meridian==0.13.0`, which declares
+contract v8 and carries the whole account-side contract
 (spec/the-account-side-fits-every-venue): a holding's side, a market value
 left unset, a currency marked as assumed, a fund marked as counted in cash
 too, a holding's average cost and lots as the venue reports them, a
@@ -502,8 +502,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.12.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.12.0`.
+The SDK is pinned exactly, `open-meridian==0.13.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.13.0`.
 Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
 meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
 runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
@@ -519,7 +519,12 @@ moved the pins and rewrote the statement's flat `buying_power=` into
 `figures=[StatementFigures(segment="", ...)]`; the statement's
 `external_account_id` and `institution`, the net liquidation, a holding's
 average cost and lots, and one external account per account on Account links
-were done by hand.
+were done by hand. Moving to 0.13.0 (contract v8, the book of record) ran
+`meridian plugin migrate`, which moved only the pins: nothing the plugin
+calls changed, and `tests/test_contract.py` now knows what v8 adds, none of
+which it sends: the book's operations, reads and deliveries are other roles',
+and SnapTrade states no holding's available split or encumbrances and no
+statement's security interest.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -533,7 +538,7 @@ on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `f49dd7f`, contract v7;
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `b49445e`, contract v8;
 `5720c20` was the first to carry the harness). That deployment is core's
 **plugin harness**, which ships inside the image
 (`/usr/share/meridian/harness/`, with its own README); the target copies it
@@ -594,7 +599,7 @@ SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.8.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.8.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

@@ -26,7 +26,7 @@ env:
   # into it. Move it deliberately, as the SDK's pin is moved, since a newer
   # one may hold a rule this plugin does not keep yet. `make check` reads it
   # from here.
-  MERIDIAN_VERSION: 0.1.21
+  MERIDIAN_VERSION: 0.1.25
 
 jobs:
   check:

@@ -460,6 +460,9 @@ KNOWN_PARAMETERS = {
         "external_account_id",
         "institution",
         "figures",
+        # Known, and never sent (v8): SnapTrade does not say whether an
+        # account is pledged, so the statement leaves it unstated.
+        "security_interest",
     },
     "record_holding": {
         "statement_id",
@@ -479,6 +482,13 @@ KNOWN_PARAMETERS = {
         # margin requirement for a holding.
         "cost_basis",
         "margin_requirement",
+        # Known, and never sent (v8): SnapTrade reports no available or
+        # not-available quantity and no encumbered sub-balance for a holding,
+        # and the contract has them stated as the venue says, never derived.
+        "available_quantity",
+        "not_available_quantity",
+        "available_basis",
+        "encumbrances",
     },
     "resolve_identifier": {"identifiers", "as_of_ns", "exchange_mic", "currency"},
     "report_missing_instrument": {
@@ -514,7 +524,104 @@ KNOWN_PARAMETERS = {
         "since",
     },
     "list_statements": {"account_id", "as_of_date", "cursor", "page_size", "since"},
-    "receive": {"custodial_position_updated", "seed", "statement_recorded"},
+    "receive": {
+        "custodial_position_updated",
+        "seed",
+        "statement_recorded",
+        # Known, and not heard (v8): the book of record's deliveries go to the
+        # roles that read the book, and custody is not one of them.
+        "position_changed",
+        "break_changed",
+        "account_figures_recorded",
+        "account_attribute_changed",
+    },
+    # Known, and not used (v8): the book of record is an operations plugin's
+    # to write and five other roles' to read (operations, portfolio,
+    # reporting, compliance, oms); custody writes and reads only the street.
+    "record_opening_balance": {
+        "account_id",
+        "acting_for",
+        "as_of_date",
+        "idempotency_key",
+        "positions",
+        "reason",
+        "replaces_entry_id",
+        "sources",
+    },
+    "record_break": {
+        "account_id",
+        "acting_for",
+        "book_watermark",
+        "break_id",
+        "business_date",
+        "candidate_causes",
+        "category",
+        "differences",
+        "figure",
+        "idempotency_key",
+        "position",
+        "street",
+    },
+    "record_account_figures": {
+        "account_id",
+        "acting_for",
+        "agreements",
+        "business_date",
+        "idempotency_key",
+        "source",
+    },
+    "record_encumbrances": {
+        "account_id",
+        "acting_for",
+        "business_date",
+        "idempotency_key",
+        "positions",
+        "source",
+    },
+    "handle_break": {
+        "account_id",
+        "acting_for",
+        "break_id",
+        "confirmed_cause",
+        "handling",
+        "idempotency_key",
+        "reason",
+    },
+    "resolve_break": {
+        "account_id",
+        "acting_for",
+        "adjustment",
+        "break_ids",
+        "entries",
+        "explanation",
+        "idempotency_key",
+        "reason",
+        "reversal",
+    },
+    "close_breaks_as_cleared": {
+        "account_id",
+        "acting_for",
+        "break_ids",
+        "cleared_at",
+        "idempotency_key",
+        "reason",
+    },
+    "list_positions": {"account_id", "at", "business_date", "cursor", "page_size", "since"},
+    "list_breaks": {"account_id", "cursor", "page_size", "since", "states"},
+    "list_account_figures": {
+        "account_id",
+        "agreement",
+        "at",
+        "cursor",
+        "from_date",
+        "page_size",
+        "since",
+        "to_date",
+    },
+    "list_account_attributes": {"account_id", "cursor", "page_size", "since"},
+    # Known, and not used (v8): an instrument's record by its ID is for the
+    # roles that read the book; this plugin resolves the venue's identifiers.
+    "resolve_instrument": {"as_of_ns", "instrument_id"},
 }
 
 
