@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.8.2. How a plugin like it is built is documented at
+0.8.3. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.13.0`, which declares
@@ -320,7 +320,8 @@ link, searched by name, ID, account number, custodian and type, filtered to
 Unlinked (where it opens, while any are), Linked or All, grouped by
 connection, and paged, so the page holds a page of rows however many there
 are. It is given no account's status or values (kit 0.6.0's Status column),
-which would be an account's data under Manage. Without the kit, each
+which would be an account's data under Manage. Each row stacks into one
+column where the map is narrow, as on a phone. Without the kit, each
 account's plain row says who it is and its link.
 
 A row's choices open under that row alone. An account not linked is linked
@@ -333,9 +334,11 @@ deployment admin names a new one), named from the SnapTrade account, its
 custodian pre-filled from the connection's brokerage and its type from the
 account type SnapTrade reports, all three editable, which the conductor
 creates and links in one step (an owner and a note are given on the
-dashboard's Accounts tab). The page offers the plain form to create one only
-to a deployment admin, and a create sent by anybody else is answered that
-only a deployment admin names a new account, and nothing is sent. A linked
+dashboard's Accounts tab). For anybody else the map is `no-new-account` (kit
+0.7.1), offering only existing accounts, and the page draws the plain form to
+create one only for a deployment admin; a create sent by anybody else is
+answered that only a deployment admin names a new account, and nothing is
+sent. A linked
 one names the account it is linked to, from the link itself, and offers
 **Unlink**, or another account: the conductor keeps one link per external
 account, so a new link replaces the one standing.
@@ -410,10 +413,14 @@ the SDK's `pages.render` on the kit's base template, `meridian/base.html`,
 which links the kit at 0.8.0 and draws the page's heading and the tab row of
 the session's level (dropped when the dashboard frames the page). The
 templates use the kit's classes, its `om-grid` for each statement's rows (as
-cards where the frame is narrow), its `om-account-map` for linking, its
-`om-status` for the head's dot and its `om-moment` for when SnapTrade was last
-read, and have no style, colour, theme or script of their own: each component
-reads the JSON declared inside it. The dashboard draws the plugin's name, the
+cards where the frame is narrow, each column's hint and blank words declared
+as plain JSON, kit 0.3.0's rich cells), its `om-account-map` for linking, its
+`om-status` for the head's dot and a `<time>` for each moment, as the kit's
+patterns write one, and have no style, colour, theme or script of their own:
+each component reads the JSON declared inside it. At a phone's width (390 px)
+every page is one column with no sideways scroll: a connection's or an
+account's actions drop below its text (`.list-row`), the map's rows stack,
+and a statement's rows are cards. The dashboard draws the plugin's name, the
 way back and the person, and hands the kit the person's colour scheme and
 light or dark. Where the kit is not served the pages still work, unstyled:
 each table, and the account map's plain forms, are in the HTML inside the
@@ -603,7 +610,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.8.2 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.8.3 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

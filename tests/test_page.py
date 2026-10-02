@@ -943,6 +943,13 @@ def fallback_of(body: str) -> str:
     return body[start : body.index("</om-account-map>", start)]
 
 
+def map_tag(body: str) -> str:
+    """The om-account-map element's opening tag, with its attributes."""
+    tag = re.search(r"<om-account-map [^>]*>", body)
+    assert tag is not None
+    return tag.group(0)
+
+
 def map_of(body: str) -> dict[str, Any]:
     """The JSON declared inside om-account-map, which the kit's map reads."""
     data = re.search(
@@ -1108,6 +1115,8 @@ def test_an_unlinked_account_offers_an_existing_account_and_a_deployment_admin_a
     assert 'name="new_account_custodian" maxlength="200"' in create
     assert 'name="new_account_type" maxlength="200"' in create
     assert "Link it to an existing account, or create one for it." in body
+    # The kit's map offers a deployment admin a new account too.
+    assert "no-new-account" not in map_tag(body)
     (read,) = refusing.sent("ReadAccountsForLinking")
     assert read.acting_for == assertion(ROOT)
     # The same for the kit's map, as its JSON.
@@ -1144,6 +1153,8 @@ def test_a_plugin_admin_is_offered_no_new_account_and_sends_none(
     forms = fallback_of(body)
     assert 'name="intent" value="create"' not in forms and "new_account_name" not in forms
     assert "a deployment admin may also create one for it" in body
+    # Nor does the kit's map (kit 0.7.1): no new account anywhere in it.
+    assert " no-new-account " in map_tag(body)
     status, _, body = post_link(
         server, intent="create", external_account_id=ALPACA, new_account_name="Mine"
     )
@@ -1745,6 +1756,47 @@ def test_each_table_is_in_the_html_until_the_kits_grid_replaces_it() -> None:
         # As many rows in the table a browser shows as the grid is given.
         assert element.count("<tr>") == len(data["rows"]) + 1
         assert len({row["key"] for row in data["rows"]}) == len(data["rows"])
+
+
+def test_a_kind_snaptrade_gave_none_is_said_by_its_column_with_no_script() -> None:
+    # The kit's rich cells (kit 0.3.0): the column declares what an empty
+    # value says, as plain JSON, and the row carries no invented word.
+    status = synthetic_status()
+    connections = tuple(
+        replace(
+            connection,
+            accounts=tuple(
+                replace(
+                    view,
+                    statement=replace(
+                        view.statement,
+                        holdings=(
+                            replace(view.statement.holdings[0], kind=""),
+                            *view.statement.holdings[1:],
+                        ),
+                    ),
+                )
+                if view.account.external_account_id == ALPACA and view.statement is not None
+                else view
+                for view in connection.accounts
+            ),
+        )
+        for connection in status.connections
+    )
+    shown = page_for(
+        replace(status, connections=connections),
+        STATEMENTS,
+        READER,
+        meridian.AccountScope(links=HELD),
+    )
+    data = grid(shown, "rows-0")
+    kind = next(column for column in data["columns"] if column["key"] == "kind")
+    assert kind == {"key": "kind", "label": "Kind", "type": "text", "blank": "not given"}
+    assert data["rows"][0]["kind"] == ""
+    assert all(row["kind"] for row in data["rows"][1:])
+    # Without the kit, the same words, faint.
+    faint = '<td><span class="faint">not given</span></td>'
+    assert grid_element(shown, "rows-0").count(faint) == 1
 
 
 @pytest.mark.parametrize(

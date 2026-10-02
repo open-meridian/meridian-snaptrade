@@ -248,7 +248,9 @@ plain forms. Without the kit the page is unstyled, but everything on it works.
 token (`{{ csrf_input }}`), checked before the view runs (the README's
 "Forms and the kit"); a new form carries it too. The Account links tab is
 the kit's `om-account-map`, whose forms all post to `/admin/accounts/link`
-with an `intent`; the page has no grid code of its own, since the grid's rich
+with an `intent`, and which is `no-new-account` for a plugin admin who is no
+deployment admin (the handler refuses their `create` regardless); the page
+has no grid code of its own, since the grid's rich
 cells are declared JSON. `make preview` writes each page on synthetic data to
 `preview/`, linking the kit.
 

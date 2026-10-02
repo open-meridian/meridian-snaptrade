@@ -30,7 +30,7 @@
 <p class="muted">Each account SnapTrade reaches is recorded against the deployment's account it is linked to, and one nothing links is not recorded. Each of the deployment's accounts takes one at most, so one already linked is not offered for another.
 {%- if creates %} Link it to an existing account, or create one for it.{% else %} Link it to an existing account; a deployment admin may also create one for it.{% endif %}
 {%- if summary %} {{ summary }}.{% endif %}</p></div>
-<om-account-map action="{{ paths.link }}" token-name="{{ token_name }}" token="{{ csrf_token }}" group-by="connection" link-several empty="{{ empty }}">
+<om-account-map action="{{ paths.link }}" token-name="{{ token_name }}" token="{{ csrf_token }}" group-by="connection" link-several{% if not creates %} no-new-account{% endif %} empty="{{ empty }}">
 <script type="application/json">{{ map | tojson }}</script>
 {% for row in rows %}
 <div class="list-row" data-account="{{ row.external_account_id }}"><div class="grow">

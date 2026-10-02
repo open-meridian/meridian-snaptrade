@@ -88,7 +88,8 @@
 <tr>
 {%- for column in columns %}<td{% if column.type == "decimal" %} class="num"{% endif %}>
 {%- set value = row[column.key] -%}
-{%- if value and column.type == "code" %}<code>{{ value }}</code>{% else %}{{ value }}{% endif -%}
+{%- if not value %}{% if column.blank %}<span class="faint">{{ column.blank }}</span>{% endif %}
+{%- elif column.type == "code" %}<code>{{ value }}</code>{% else %}{{ value }}{% endif -%}
 {%- if column.hint and row[column.hint] %} <span class="hint">{{ row[column.hint] }}</span>{% endif -%}
 </td>{% endfor -%}
 </tr>

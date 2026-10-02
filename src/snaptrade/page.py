@@ -526,6 +526,9 @@ async def reconnect(request: meridian.Request) -> meridian.Response:
 # Under Manage it is given each external account's identity and link, and
 # nothing the plugin read for it: no sync state, statement or rows (kit
 # 0.6.0's status and values are left out, so the map draws no Status column).
+# For a plugin admin who is no deployment admin, the map is `no-new-account`
+# (kit 0.7.1): it offers only existing accounts, as the plain forms do, and
+# LINK refuses `create` from them whatever is sent.
 #
 # Inside it too, for a browser without the kit, the same as plain forms, in a
 # size that holds for thousands of accounts: a list row per account (its link,
@@ -877,13 +880,15 @@ async def _link_several(
 class Column:
     """One column of a statement's grid, as the kit's om-grid takes it in its
     declared JSON and as the plain table shown without the kit draws it.
-    `hint` names a field shown under the value."""
+    `hint` names a field shown under the value; `blank` is what an empty
+    value says, faint (the kit's rich cells: plain JSON, no script)."""
 
     key: str
     label: str
     type: str = "text"
     group: bool = False
     hint: str = ""
+    blank: str = ""
 
     def declared(self) -> dict[str, object]:
         """As om-grid's columns take it, plain JSON: only what is set."""
@@ -892,6 +897,8 @@ class Column:
             column["group"] = True
         if self.hint:
             column["hint"] = self.hint
+        if self.blank:
+            column["blank"] = self.blank
         return column
 
 
@@ -902,7 +909,7 @@ _ROW_COLUMNS = (
     Column("currency", "Currency"),
     Column("side", "Side"),
     Column("description", "Description", hint="notes"),
-    Column("kind", "Kind"),
+    Column("kind", "Kind", blank="not given"),
 )
 
 
@@ -976,7 +983,8 @@ def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
         "identifiers": " · ".join(others),
         "description": holding.description,
         "notes": "; ".join(notes),
-        "kind": holding.kind or "not given",
+        # Empty where SnapTrade gave none: the column says so (`blank`).
+        "kind": holding.kind,
         "side": holding.side.value.capitalize(),
         # Exact, as read: a decimal string, never a float.
         "quantity": format(holding.quantity, "f"),
