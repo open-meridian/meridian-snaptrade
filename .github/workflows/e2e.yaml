@@ -1,9 +1,9 @@
 # The plugin proven against a released runtime, on every push and pull
 # request: `make e2e` runs it, in synthetic mode and with no key, on the
-# plugin harness of the runtime image the Makefile pins, links Alpaca's
+# plugin harness the Makefile pins beside its runtime image, links Alpaca's
 # account through its own Account links form, and compares the street store
-# with e2e/expected.street. No secret: the runtime image pulls without a
-# token, and synthetic mode asks nothing of SnapTrade.
+# with e2e/expected.street. No secret: the runtime and harness images pull
+# without a token, and synthetic mode asks nothing of SnapTrade.
 #
 # The job is named for the make target that runs it locally: `make e2e`, part
 # of ci-local and so of the pre-push hook. It is its own workflow rather than

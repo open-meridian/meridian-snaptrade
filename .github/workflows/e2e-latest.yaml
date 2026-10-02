@@ -1,8 +1,9 @@
-# The canary: `make e2e` against the runtime's `latest` rather than the image
-# the Makefile pins, weekly and on request. It blocks nothing, since no push
-# or pull request runs it: a red run says that moving the pin to a newer core
-# will need work first, before anyone moves it. The pin moves only by a
-# deliberate commit, when this plugin chooses.
+# The canary: `make e2e` against the runtime's `latest`, and the harness's
+# `latest` published with it, rather than the images the Makefile pins,
+# weekly and on request. It blocks nothing, since no push or pull request
+# runs it: a red run says that moving the pins to a newer core will need work
+# first, before anyone moves them. The pins move only by a deliberate commit,
+# when this plugin chooses.
 #
 # A newer core may speak a newer contract than the SDK this plugin pins, and
 # its sidecar then refuses the plugin; that is this run's news too.
@@ -23,8 +24,8 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest
-        run: make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest
+      - name: make e2e on the runtime and harness tagged latest
+        run: make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest HARNESS_IMAGE=ghcr.io/open-meridian/meridian-harness:latest
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

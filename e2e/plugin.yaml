@@ -1,19 +1,13 @@
-# The plugin harness's `plugin` service, as `make e2e` runs this plugin: the
-# harness's own README offers this override for whatever a plugin needs.
-#
-# Restarted when it stops with an error, as a deployment's pod restarts it.
-# The harness starts the plugin beside its sidecar without waiting for the
-# conductor, and this plugin's first call, its links
-# (`plugin.account_scope()`), is the conductor's to answer: started first, it
-# is refused ("nothing serves platform.config.query.plugin-configuration")
-# and exits, and in a deployment the pod would start it again.
+# The plugin harness's `snaptrade` service, this plugin as `make e2e` runs
+# it: the harness's own README offers an override of a plugin's service, by
+# its instance name, for whatever a plugin needs. The harness restarts it on
+# failure itself, as a deployment's pod does, so nothing here says so.
 #
 # Its root read-only and /tmp writable, as the chart's pod has them (an
 # emptyDir at /tmp): where the plugin keeps SnapTrade's raw responses until
 # decisions/028's storage is granted (src/snaptrade/raw.py).
 services:
-  plugin:
-    restart: on-failure
+  snaptrade:
     read_only: true
     tmpfs:
       - /tmp:uid=65532,gid=65532,mode=1777

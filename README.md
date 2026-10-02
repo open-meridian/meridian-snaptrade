@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.8.1. How a plugin like it is built is documented at
+0.8.2. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.13.0`, which declares
@@ -530,21 +530,24 @@ To move to a new SDK release, change all three together and run
 the new SDK has that this plugin does not know, naming it.
 
 `make e2e` also pins a released runtime, `meridian-runtime` by tag and
-digest in the `Makefile` (`RUNTIME_IMAGE`), for the plugin harness it runs
-on; below.
+digest in the `Makefile` (`RUNTIME_IMAGE`), and the plugin harness published
+with it (`HARNESS_IMAGE`), which it runs on; below.
 
 ## Proven against a released runtime
 
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `b49445e`, contract v8;
-`5720c20` was the first to carry the harness). That deployment is core's
-**plugin harness**, which ships inside the image
-(`/usr/share/meridian/harness/`, with its own README); the target copies it
-out into `.e2e/` and runs it as the compose project `snaptrade-e2e`, with no
-published port, so it runs beside anything else. `e2e/plugin.yaml` restarts
-the plugin when it stops with an error, as a deployment's pod would: started
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `4db6695`, contract v8).
+That deployment is core's **plugin harness**, published beside the runtime
+as its own image of files, `meridian-harness`, at the same commit's tag
+(`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
+The target copies it out into `.e2e/`, has the harness write its plugins
+from a one-entry list (this plugin as instance `snaptrade`, with the roles
+`pyproject.toml` declares), and runs it as the compose project
+`snaptrade-e2e`, with no published port, so it runs beside anything else.
+The harness draws the run's keys and passwords itself, and starts the plugin
+again when it stops with an error, as a deployment's pod would: started
 before the conductor answers, its first call is refused and it exits. In
 synthetic mode and with no key, as an admin would through the dashboard and
 this plugin's own page, it:
@@ -557,7 +560,7 @@ this plugin's own page, it:
    `ALPACA:SYN-ALP-1001`, the one link it makes, which wakes a read that
    records Alpaca's statement;
 5. waits until the street store holds a complete statement for E2E Alpaca,
-   prints the store with the harness's `street.sql` and compares it with
+   prints the store with the harness's `store street` and compares it with
    `e2e/expected.street`;
 6. asks the dashboard how many accounts the plugin reported and nothing
    links: 2, Interactive Brokers' and Schwab's;
@@ -584,11 +587,12 @@ printed in `.e2e/runner.log`; it always tears the harness down with its
 volumes and removes its copy of it, which `meridian plugin check` would
 otherwise read as the plugin's. `make ci-local` runs it, and so the pre-push hook; the `e2e`
 workflow runs it on every push and pull request; and `e2e-latest` runs it
-weekly against the runtime's `latest`, blocking nothing, to say early that
-moving the pin will need work. The pin moves by a deliberate commit, with the
-SDK's when a contract version changes:
+weekly against the runtime's and the harness's `latest`, blocking nothing,
+to say early that moving the pins will need work. The pins move together by a
+deliberate commit, with the SDK's when a contract version changes:
 
-    make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest   # try a newer core
+    make e2e RUNTIME_IMAGE=ghcr.io/open-meridian/meridian-runtime:latest \
+        HARNESS_IMAGE=ghcr.io/open-meridian/meridian-harness:latest   # try a newer core
 
 ## Working on it
 
@@ -599,7 +603,7 @@ SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.8.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.8.2 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

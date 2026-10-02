@@ -18,22 +18,29 @@ PLUGIN_CHECK := meridian-snaptrade-plugin-check
 MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\1/p' .github/workflows/check.yaml)
 
 # The released runtime `make e2e` proves the plugin against, by tag and
-# digest: the tag says which core, the digest makes it immutable. Moved by a
-# deliberate commit, when this plugin chooses, and with the SDK when a
-# contract version changes. `make e2e RUNTIME_IMAGE=...:latest` tries a newer
-# one; e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:b49445e@sha256:5031dc4c962f380755e9e608456da5d3a18bdda1b04938de01ad0e6d44a3a5d6
-# Its roles as pyproject.toml declares them, so the harness launches it as
-# `meridian plugin upload` would.
-ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d '" ')
-# The plugin harness copied out of RUNTIME_IMAGE, as its own project, with
-# e2e/plugin.yaml's restart for the plugin. Every compose command gets all
-# three variables, since compose reads the whole file each time.
-E2E     := MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) MERIDIAN_HARNESS_PLUGIN_IMAGE=$(IMAGE) \
-           MERIDIAN_HARNESS_PLUGIN_ROLES=$(ROLES) \
-           docker compose -p snaptrade-e2e -f .e2e/harness/compose.yaml -f e2e/plugin.yaml
+# digest: the tag says which core, the digest makes it immutable; and core's
+# plugin harness published with it, by the same commit's tag and its digest,
+# since a harness and a runtime of different commits may disagree about the
+# dashboard's pages. Moved together by a deliberate commit, when this plugin
+# chooses, and with the SDK when a contract version changes. `make e2e
+# RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
+# e2e-latest.yaml does that weekly.
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:4db6695@sha256:01ff99ca65f71b7d03f1fcc4f07defbe32b4e0bbb80d096edd3ae790f3751076
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:4db6695@sha256:4049e820c88b6e424cee02d7f6c5924a83d8468493eb1cadd4b9765a1de80467
+# Its roles as pyproject.toml declares them (a JSON list's items), so the
+# harness launches it as `meridian plugin upload` would.
+ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
+# The harness's one plugin, this one, as instance snaptrade: the list
+# `harness.py compose` writes the plugins' half of the deployment from.
+PLUGINS := [{"instance": "snaptrade", "image": "$(IMAGE)", "roles": [$(ROLES)]}]
+# The plugin harness copied out of HARNESS_IMAGE, as its own project, with
+# the plugins it wrote and e2e/plugin.yaml's root for the plugin. Every
+# compose command gets the runtime, since compose reads every file each time.
+E2E     := MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
+           docker compose -p snaptrade-e2e -f .e2e/harness/compose.yaml \
+           -f .e2e/harness/plugins.yaml -f e2e/plugin.yaml
 E2E_RUN := $(E2E) run --rm -T runner
-E2E_STREET := $(E2E) exec -T postgres psql -U meridian -d meridian -At -v ON_ERROR_STOP=1 -f /harness/street.sql
+E2E_STREET := $(E2E) run --rm -T store street
 # What the plugin kept of SnapTrade's raw responses for Alpaca's account, read
 # inside its container (raw.STAND_IN, its /tmp): the latest read's calls, by
 # name. The harness's admin holds Manage alone, so the Raw responses tab,
@@ -114,8 +121,9 @@ image:
 		|| { echo "image FAILED: /plugin holds files; only the installed package belongs" >&2; exit 1; }
 	@echo "image OK: $(IMAGE) on $(BASE), $$(docker image inspect -f '{{.Size}}' $(IMAGE) | awk '{printf "%.0f MB", $$1/1e6}')"
 
-# The plugin, in synthetic mode and with no key, on the plugin harness of the
-# runtime it pins (the harness's README, in that image): an admin turns
+# The plugin, in synthetic mode and with no key, on the plugin harness
+# published with the runtime it pins (the harness's README, in
+# HARNESS_IMAGE): an admin turns
 # synthetic on and creates "E2E Alpaca" linked to Alpaca's account through
 # this plugin's own Account links form; then the street store holds Alpaca's
 # statement exactly as e2e/expected.street says, and nothing for the two
@@ -124,10 +132,12 @@ image:
 # platform, so the file names each row by the identifiers this plugin sent.
 # Its own project and no published port; nothing outlives it.
 e2e: image
-	@[ -n "$(ROLES)" ] || { echo "e2e FAILED: pyproject.toml declares no roles" >&2; exit 1; }
+	@[ -n '$(ROLES)' ] || { echo "e2e FAILED: pyproject.toml declares no roles" >&2; exit 1; }
 	@rm -rf .e2e && mkdir -p .e2e
 	@# A tag alone, such as latest, can move: take what the registry has now.
-	@case "$(RUNTIME_IMAGE)" in *@sha256:*) ;; *) docker pull -q $(RUNTIME_IMAGE) >/dev/null 2>&1 || true;; esac
+	@for image in $(RUNTIME_IMAGE) $(HARNESS_IMAGE); do \
+		case "$$image" in *@sha256:*) ;; *) docker pull -q "$$image" >/dev/null 2>&1 || true;; esac; \
+	done
 	@# The harness is taken down, and its copy removed, however the run ends:
 	@# `meridian plugin check` reads every source file under this directory,
 	@# and the harness's runner is not the plugin's.
@@ -136,10 +146,14 @@ e2e: image
 	fail() { grep -h '^harness .* FAILED' .e2e/runner.log 2>/dev/null | tail -1 >&2; \
 		echo "e2e FAILED: $$1; the components' logs are in .e2e/components.log, the runner's in .e2e/runner.log" >&2; \
 		$(E2E) logs --no-color >>.e2e/components.log 2>&1; exit 1; }; \
-	id="$$(docker create $(RUNTIME_IMAGE) none 2>>.e2e/components.log)" \
-		&& docker cp "$$id:/usr/share/meridian/harness" .e2e/harness >/dev/null \
+	id="$$(docker create $(HARNESS_IMAGE) none 2>>.e2e/components.log)" \
+		&& docker cp "$$id:/harness" .e2e/harness >/dev/null \
 		&& docker rm "$$id" >/dev/null \
-		|| { echo "e2e FAILED: no plugin harness at /usr/share/meridian/harness in $(RUNTIME_IMAGE)" >&2; trap - EXIT; exit 1; }; \
+		|| { echo "e2e FAILED: no plugin harness at /harness in $(HARNESS_IMAGE)" >&2; trap - EXIT; exit 1; }; \
+	printf '%s\n' '$(PLUGINS)' >.e2e/plugins.json; \
+	docker run --rm -i -v "$(CURDIR)/.e2e/harness":/harness:ro python:3.12-alpine \
+		python /harness/harness.py compose <.e2e/plugins.json >.e2e/harness/plugins.yaml 2>>.e2e/components.log \
+		|| { echo "e2e FAILED: the harness did not write its plugins from .e2e/plugins.json" >&2; exit 1; }; \
 	$(E2E) down -v --remove-orphans >>.e2e/components.log 2>&1; \
 	$(E2E) up -d >>.e2e/components.log 2>&1 || fail "the harness did not start"; \
 	$(E2E_RUN) ready >>.e2e/runner.log 2>&1 || fail "the plugin never registered"; \
@@ -151,7 +165,7 @@ e2e: image
 		--expect "Created E2E Alpaca and linked" >>.e2e/runner.log 2>&1 \
 		|| fail "the Account links form did not create and link E2E Alpaca"; \
 	for i in $$(seq 1 60); do \
-		$(E2E_STREET) >.e2e/street 2>>.e2e/components.log || fail "street.sql did not run"; \
+		$(E2E_STREET) >.e2e/street 2>>.e2e/components.log || fail "store street did not print the street store"; \
 		grep -q '^statement|E2E Alpaca|snaptrade|[0-9]*|complete|' .e2e/street && break; \
 		sleep 1; \
 	done; \
@@ -159,9 +173,9 @@ e2e: image
 		|| fail "the street store is not e2e/expected.street"; \
 	unlinked="$$($(E2E_RUN) unlinked --expect 2 2>>.e2e/runner.log)" \
 		|| fail "the dashboard did not count the two accounts left unlinked"; \
-	raw="$$($(E2E) exec -T plugin python -c "$$E2E_RAW" 2>>.e2e/components.log)" \
+	raw="$$($(E2E) exec -T snaptrade python -c "$$E2E_RAW" 2>>.e2e/components.log)" \
 		|| fail "the plugin kept no raw responses for Alpaca's account on its read-only root"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE): synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in /tmp on a read-only root ($$raw)"
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in /tmp on a read-only root ($$raw)"
 
 preview:
 	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1

@@ -136,7 +136,7 @@ older one, the person runs `meridian upgrade`.
   others.
 - **`make ci-local`** runs lint (ruff, mypy strict), the tests,
   `meridian plugin check --run-tests`, the plugin's image, and `make e2e`
-  (the plugin on the plugin harness of the runtime the `Makefile` pins, the
+  (the plugin on the plugin harness the `Makefile` pins beside its runtime, the
   README's "Proven against a released runtime"), in containers, and needs
   nothing installed but Docker. Its check (`make check`) uses the
   meridian that CI's `check.yaml` pins, which may be newer than yours.
