@@ -71,10 +71,25 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 - **Numbers are Decimal.** A float reaching here becomes Decimal(repr(value)).
 - **The statement ID is made from the account and the read time.**
 - **Sync state and freshness** from the connection and the account's sync
-  status: disabled, holdings unavailable (the brokerage does not show
-  SnapTrade the account's holdings), delayed by design (Interactive Brokers
-  through SnapTrade), stale, or current, with holdings and history freshness
-  apart.
+  status: needs sign-in, disabled, holdings unavailable (the brokerage does
+  not show SnapTrade the account's holdings), delayed by design (Interactive
+  Brokers through SnapTrade), stale, or current, with holdings and history
+  freshness apart.
+- **SnapTrade is a cache of the brokerage, and this plugin resolves it** (the
+  product owner, 2026-10-03). SnapTrade says a connection's access to the
+  brokerage has lapsed only by disabling it (`disabled`, `disabled_date`): no
+  status, reason or code says why. A disabled connection serves the last data
+  SnapTrade read until somebody signs in to the brokerage again through
+  SnapTrade's Connection Portal, so it needs sign-in, derived by the rule
+  "SnapTrade disabled the connection". The one more specific thing SnapTrade
+  says is that it has turned the brokerage off (`brokerage.enabled: false`):
+  signing in cannot mend that, so a disabled connection to it is disabled,
+  derived by that rule. The rule travels with the state (`Freshness.closed`).
+- **How old the holdings are** is what the read itself says: the positions'
+  `data_freshness.as_of`, when SnapTrade fetched them from the brokerage, or
+  where it gives none, the account's last successful holdings sync. Older
+  than the stale setting is stale; the statement is as of that date, never
+  the read's, so cached data is never presented as today's.
 - **How SnapTrade serves a connection,** from `data_freshness_mode.snaptrade`:
   `realtime` (it reads the brokerage on every call, so there is nothing to
   refresh, and on a Real-time plan SnapTrade refuses a refresh), `delayed` (it
@@ -118,6 +133,8 @@ RULE_CURRENCY = "the account's only cash currency, or US dollars"
 RULE_INSTITUTION = "the connection's brokerage name"
 RULE_AS_OF_SYNC = "the date of SnapTrade's last successful sync of the holdings"
 RULE_AS_OF_READ = "the date of the read"
+RULE_SIGN_IN = "SnapTrade disabled the connection"
+RULE_DISABLED = "SnapTrade disabled the connection and turned its brokerage off"
 
 # SnapTrade's activity types that move a holding when they settle.
 _TRADES = {"BUY": 1, "SELL": -1}
@@ -199,10 +216,13 @@ REMEDY: dict[SyncState, str] = {
         "Usually SnapTrade's to recover. If it lasts, refresh the connection on the "
         "Connections tab where it offers Refresh, or reconnect it."
     ),
-    SyncState.NEEDS_SIGN_IN: "Somebody signs in to the brokerage again through SnapTrade.",
-    SyncState.DISABLED: (
+    SyncState.NEEDS_SIGN_IN: (
         "Reconnect it: open SnapTrade's Connection Portal from this page and sign in to the "
-        "brokerage. Until then SnapTrade serves the last data it read."
+        "brokerage again. Until then SnapTrade serves the last data it read."
+    ),
+    SyncState.DISABLED: (
+        "SnapTrade's to mend: it has turned this brokerage off, so signing in again cannot. "
+        "Until it turns it on again, SnapTrade serves the last data it read."
     ),
     SyncState.DELAYED_BY_DESIGN: (
         "Nothing to do: this brokerage reaches SnapTrade a business day late."
@@ -284,11 +304,23 @@ class ExternalAccount:
 @dataclass(frozen=True)
 class Freshness:
     state: SyncState
-    # When the holdings SnapTrade serves are as of (its last successful sync
-    # of holdings), and when the history is (transactions, by the day).
+    # When the holdings this read returned are as of (the positions'
+    # `data_freshness.as_of`, or SnapTrade's last successful sync of holdings
+    # where it gives none), and when the history is (transactions, by the day).
     holdings_as_of: datetime | None
     history_as_of: date | None
     detail: str
+    # SnapTrade's last successful sync of the account's holdings, as reported.
+    last_synced: datetime | None = None
+    # How the state was closed, where SnapTrade did not say it: the rule.
+    closed: tuple[Closed, ...] = ()
+
+    @property
+    def status_detail(self) -> str:
+        """The detail as the sync status carries it, with the rule a closed
+        state was derived by: the event has no provenance of its own."""
+        rules = [f'{held.field} derived by the rule "{held.rule}".' for held in self.closed]
+        return " ".join(filter(None, (self.detail, *rules)))
 
     @property
     def healthy(self) -> bool:
@@ -605,27 +637,66 @@ def serving(connection: Json) -> Serving:
     return Serving.UNKNOWN
 
 
+def disabled(connection: Json) -> tuple[SyncState, str, Closed] | None:
+    """What a connection SnapTrade disabled asks of a person, why, and the
+    rule it was derived by; None for one it did not disable. SnapTrade says
+    no more than `disabled` and `disabled_date` of why, so a disabled
+    connection needs sign-in, unless SnapTrade has turned its brokerage off
+    (`brokerage.enabled: false`), which signing in cannot mend."""
+    if connection.get("disabled") is not True:
+        return None
+    since = _moment(connection.get("disabled_date"))
+    when = f" on {since:%Y-%m-%d}" if since else ""
+    if _dict(connection.get("brokerage")).get("enabled") is False:
+        return (
+            SyncState.DISABLED,
+            f"SnapTrade disabled this connection{when} and has turned its brokerage off; "
+            "it serves the last data it read.",
+            Closed("state", "derived", RULE_DISABLED),
+        )
+    return (
+        SyncState.NEEDS_SIGN_IN,
+        f"SnapTrade disabled this connection{when}: its access to the brokerage lapsed, "
+        "and it serves the last data it read until somebody signs in again.",
+        Closed("state", "derived", RULE_SIGN_IN),
+    )
+
+
+def holdings_as_of(account: Json, positions: Json | None = None) -> datetime | None:
+    """When the holdings a read returned are as of: the positions'
+    `data_freshness.as_of` (when SnapTrade fetched them from the brokerage),
+    or, where it gives none, the account's last successful holdings sync."""
+    fetched = _moment(_dict(_dict(positions).get("data_freshness")).get("as_of"))
+    if fetched is not None:
+        return fetched
+    holdings = _dict(_dict(account.get("sync_status")).get("holdings"))
+    return _moment(holdings.get("last_successful_sync"))
+
+
 def freshness(
-    account: Json, connection: Json, now: datetime, stale_after: timedelta
+    account: Json,
+    connection: Json,
+    now: datetime,
+    stale_after: timedelta,
+    positions: Json | None = None,
 ) -> Freshness:
-    """An account's sync state and freshness, from SnapTrade's connection and
-    the account's own sync status. The first that applies wins."""
+    """An account's sync state and freshness, from SnapTrade's connection,
+    the account's own sync status and, where this read returned them, its
+    positions' own as-of. The first that applies wins."""
     status = _dict(account.get("sync_status"))
     holdings = _dict(status.get("holdings"))
     history = _dict(status.get("transactions"))
-    holdings_as_of = _moment(holdings.get("last_successful_sync"))
+    last_synced = _moment(holdings.get("last_successful_sync"))
+    as_of = holdings_as_of(account, positions)
     history_as_of = _day(history.get("last_successful_sync"))
 
-    def said(state: SyncState, detail: str) -> Freshness:
-        return Freshness(state, holdings_as_of, history_as_of, detail)
+    def said(state: SyncState, detail: str, *closed: Closed) -> Freshness:
+        return Freshness(state, as_of, history_as_of, detail, last_synced, closed)
 
-    if connection.get("disabled") is True:
-        since = _moment(connection.get("disabled_date"))
-        when = f" on {since:%Y-%m-%d}" if since else ""
-        return said(
-            SyncState.DISABLED,
-            f"SnapTrade disabled this connection{when}; it still serves the last data it read.",
-        )
+    lapsed = disabled(connection)
+    if lapsed is not None:
+        state, detail, rule = lapsed
+        return said(state, detail, rule)
     if holdings.get("initial_sync_completed") is False:
         return said(
             SyncState.STALE, "SnapTrade has not finished its first sync of this account."
@@ -636,19 +707,23 @@ def freshness(
             "The brokerage does not show this account's holdings to SnapTrade; an empty "
             "list from it does not mean an empty account.",
         )
-    if holdings_as_of is None:
+    if as_of is None:
         return said(SyncState.STALE, "SnapTrade reports no successful sync of this account.")
-    age = now - holdings_as_of
+    age = now - as_of
     if late_by_design(connection):
         if age > DELAYED_STALE_AFTER:
             return said(
                 SyncState.STALE,
-                f"Late by design, and later than that: last synced {holdings_as_of:%Y-%m-%d}.",
+                f"Late by design, and later than that: SnapTrade's holdings are as of "
+                f"{as_of:%Y-%m-%d}.",
             )
         # The remedy says why; there is nothing else to say.
         return said(SyncState.DELAYED_BY_DESIGN, "")
     if age > stale_after:
-        return said(SyncState.STALE, f"Last synced {holdings_as_of:%Y-%m-%d %H:%M} UTC.")
+        return said(
+            SyncState.STALE,
+            f"SnapTrade's holdings are as of {as_of:%Y-%m-%d %H:%M} UTC, from its cache.",
+        )
     return said(SyncState.CURRENT, "")
 
 
@@ -1110,7 +1185,13 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
     for raw in snapshot.accounts:
         connection = connections.get(_text(raw.get("brokerage_authorization")), {})
         account = external_account(raw, connection)
-        fresh = freshness(raw, connection, snapshot.read_at, stale_after)
+        fresh = freshness(
+            raw,
+            connection,
+            snapshot.read_at,
+            stale_after,
+            snapshot.positions.get(account.snaptrade_account_id),
+        )
         withheld = _withheld(raw)
         failure = snapshot.failures.get(account.snaptrade_account_id, "")
         made: Statement | None = None
@@ -1146,8 +1227,9 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
 
 def _connection_view(connection: Json, accounts: tuple[AccountView, ...]) -> ConnectionView:
     brokerage = _dict(connection.get("brokerage"))
-    if connection.get("disabled") is True:
-        state, detail = SyncState.DISABLED, "SnapTrade disabled this connection."
+    lapsed = disabled(connection)
+    if lapsed is not None:
+        state, detail, _ = lapsed
     elif accounts:
         # The worst of its accounts', in the order a person should act on them:
         # what a person must do before what waiting may mend.

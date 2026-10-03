@@ -88,7 +88,7 @@ async def test_synthetic_mode_records_every_account_it_can() -> None:
     assert states == [
         "SYNC_STATE_CURRENT",
         "SYNC_STATE_DELAYED_BY_DESIGN",
-        "SYNC_STATE_DISABLED",
+        "SYNC_STATE_NEEDS_SIGN_IN",
     ]
 
 
@@ -197,13 +197,14 @@ NOT_READ = [
     Figure("Accounts reached", 0),
     Figure("Last read", "Not yet"),
 ]
-# The synthetic read: Schwab's connection is disabled, IBKR's delayed by design.
+# The synthetic read: Schwab's connection needs sign-in (SnapTrade disabled
+# it), IBKR's is delayed by design.
 SYNTHETIC_READ = [
     Figure(
         "Connections",
         3,
         state="warn",
-        why="0 stale, 0 needing sign-in, 1 disabled, 0 with holdings unavailable",
+        why="0 stale, 1 needing sign-in, 0 disabled, 0 with holdings unavailable",
     ),
     Figure("Accounts reached", 3),
     Figure("Last read", NOW),

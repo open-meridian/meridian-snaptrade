@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.9.0. How a plugin like it is built is documented at
+0.9.1. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.16.0`, which declares
@@ -93,17 +93,33 @@ Sync state, first that applies:
 
 | SnapTrade | State | What to do (shown on Connections) |
 |---|---|---|
-| connection `disabled` | `disabled` | reconnect through SnapTrade's Connection Portal; it serves its last data meanwhile |
+| connection `disabled`, its brokerage `enabled: false` | `disabled`, derived by the rule "SnapTrade disabled the connection and turned its brokerage off" | SnapTrade's to mend: signing in cannot while it has the brokerage off; it serves its last data meanwhile |
+| connection `disabled` | `needs_sign_in`, derived by the rule "SnapTrade disabled the connection" | reconnect through SnapTrade's Connection Portal, signing in to the brokerage again; it serves its last data meanwhile |
 | holdings `initial_sync_completed: false` | `stale` | wait; nothing is recorded until the first sync is done |
 | holdings `holdings_unavailable: true` | `holdings_unavailable` | connect the account another way, or through another venue: holdings will not arrive through this connection, and waiting changes nothing (the product owner, 2026-09-28). Nothing is recorded: an empty list does not mean an empty account |
 | connection `data_freshness_mode.institution: delayed` (Interactive Brokers) | `delayed_by_design` | nothing; `stale` if more than four days old |
-| last successful holdings sync older than `stale_after_hours` | `stale` | usually SnapTrade's to recover; if it lasts, refresh where Refresh is offered, or reconnect |
+| holdings older than `stale_after_hours`: the positions' `data_freshness.as_of`, or where SnapTrade gives none, the last successful holdings sync | `stale` | usually SnapTrade's to recover; if it lasts, refresh where Refresh is offered, or reconnect |
 | otherwise | `current` | nothing |
 
-Holdings freshness is the last successful holdings sync; history freshness is
-the last successful transactions sync (a date). SnapTrade surfaces no state
-that means `needs_sign_in` apart from `disabled`, so this plugin never reports
-it.
+SnapTrade is a cache of the brokerage, and this plugin resolves it (the
+product owner, 2026-10-03). SnapTrade says a connection's access to the
+brokerage has lapsed only by disabling it: its connection carries `disabled`
+and `disabled_date`, and no status, reason or code says why (its guide to
+fixing one: reconnect through the Connection Portal; the 402 a refresh of a
+disabled connection answers carries a `code` and `detail` SnapTrade does not
+document). So a disabled connection needs sign-in, by the rule above, unless
+SnapTrade has turned the brokerage itself off, the one more specific thing it
+says. A state derived by a rule says so in the sync status's detail
+(`state derived by the rule "..."`), since the sync status carries no
+provenance field.
+
+Holdings freshness is what the read returned is as of: the positions'
+`data_freshness.as_of`, when SnapTrade fetched them from the brokerage, or
+where it gives none, the last successful holdings sync; the sync status
+carries the last successful sync apart, as `last_synced_at_ns`. The
+statement is as of the same moment's date, so data SnapTrade serves from its
+cache is never presented as the read's. History freshness is the last
+successful transactions sync (a date).
 
 ## Settings
 
@@ -159,11 +175,11 @@ to act on: Alpaca (current; long and short stock, an option, a money-market
 fund, crypto to nine decimals, cash in two currencies; tax lots on Apple,
 the short and Bitcoin, one with no cost or date), Interactive Brokers
 (delayed by design; a euro listing whose lots add up to less than it, a
-position with no stated currency, negative cash), and Schwab (disabled, with
-no stable account ID, and no lots). SnapTrade
-serves Alpaca and Schwab in real time and Interactive Brokers on a delay, so
-only Interactive Brokers is offered Refresh; refreshing it in synthetic mode
-asks nothing of SnapTrade.
+position with no stated currency, negative cash), and Schwab (disabled, so
+needing sign-in, with no stable account ID, and no lots). SnapTrade serves
+Alpaca and Schwab in real time and Interactive Brokers on a delay, so only
+Interactive Brokers is offered Refresh; refreshing it in synthetic mode asks
+nothing of SnapTrade.
 
 ## Its pages
 
@@ -554,9 +570,10 @@ rewrites nothing: the account's kind in place of its type, the cash sent net
 of a fund in place of the "also counted in cash" mark, the provenance of a
 currency in place of the "assumed" flag, the settled and pending quantities
 from the activities, the raw-record references, the declaration and the
-custody suite (`tests/test_suite.py`, every case from SnapTrade's own words)
-were done by hand. `meridian.figures.LONGEST_WHY` is
-`meridian.bounds.PLUGIN_FIGURE_WHY_LENGTH` now.
+custody suite (`tests/test_suite.py`, every case from SnapTrade's own words,
+none declared not presented since 0.9.1) were done by hand.
+`meridian.figures.LONGEST_WHY` is `meridian.bounds.PLUGIN_FIGURE_WHY_LENGTH`
+now.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -644,7 +661,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.9.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.9.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

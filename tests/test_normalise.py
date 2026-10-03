@@ -10,6 +10,9 @@ import meridian
 import pytest
 
 from snaptrade.normalise import (
+    RULE_DISABLED,
+    RULE_SIGN_IN,
+    Closed,
     Identifier,
     Lot,
     Serving,
@@ -698,16 +701,77 @@ def test_older_than_the_setting_is_stale_since_then() -> None:
     assert fresh.holdings_as_of == NOW - timedelta(hours=40)
 
 
-def test_a_disabled_connection_is_disabled_though_it_still_serves() -> None:
+def test_a_disabled_connection_needs_sign_in_by_a_named_rule() -> None:
+    """SnapTrade says a connection's access lapsed only by disabling it, and
+    gives no reason: a person signs in again, derived by the rule that says
+    so (the product owner, 2026-10-03). It still serves what it last read."""
     fresh = freshness(
         synced(1),
         connection(disabled=True, disabled_date="2026-09-23T10:00:00Z"),
         NOW,
         STALE_AFTER,
     )
-    assert fresh.state is SyncState.DISABLED
+    assert fresh.state is SyncState.NEEDS_SIGN_IN and not fresh.healthy
     assert "2026-09-23" in fresh.detail
+    assert fresh.closed == (Closed("state", "derived", RULE_SIGN_IN),)
+    assert fresh.status_detail.endswith(
+        'state derived by the rule "SnapTrade disabled the connection".'
+    )
     assert fresh.holdings_as_of == NOW - timedelta(hours=1)
+
+
+def test_a_disabled_connection_to_a_brokerage_snaptrade_turned_off_is_disabled() -> None:
+    """The one more specific thing SnapTrade says: the brokerage is off
+    (`brokerage.enabled: false`), which signing in cannot mend."""
+    off = connection(
+        disabled=True,
+        disabled_date="2026-09-23T10:00:00Z",
+        brokerage={"slug": "ALPACA", "name": "Alpaca", "enabled": False},
+    )
+    fresh = freshness(synced(1), off, NOW, STALE_AFTER)
+    assert fresh.state is SyncState.DISABLED
+    assert fresh.closed == (Closed("state", "derived", RULE_DISABLED),)
+    (seen,) = views(snapshot([synced(1)], [off]), STALE_AFTER)
+    assert seen.state is SyncState.DISABLED
+
+
+def test_a_brokerage_turned_off_alone_does_not_disable_a_connection() -> None:
+    on = connection(brokerage={"slug": "ALPACA", "name": "Alpaca", "enabled": False})
+    assert freshness(synced(1), on, NOW, STALE_AFTER).state is SyncState.CURRENT
+
+
+def test_a_connection_needing_sign_in_is_so_on_the_connections_tab() -> None:
+    lapsed = connection(disabled=True, disabled_date=None)
+    (seen,) = views(snapshot([synced(1)], [lapsed]), STALE_AFTER)
+    assert seen.state is SyncState.NEEDS_SIGN_IN
+    assert seen.detail.startswith("SnapTrade disabled this connection:")
+
+
+def test_the_holdings_are_as_of_what_the_read_returned_not_the_account_sync() -> None:
+    """SnapTrade is a cache: positions fetched from the brokerage two days ago
+    are two days old, whatever the account's last sync says."""
+    cached = {"results": [], "data_freshness": {"as_of": (NOW - timedelta(days=2)).isoformat()}}
+    fresh = freshness(synced(1), connection(), NOW, STALE_AFTER, cached)
+    assert fresh.state is SyncState.STALE
+    assert fresh.holdings_as_of == NOW - timedelta(days=2)
+    assert fresh.last_synced == NOW - timedelta(hours=1)
+    assert "from its cache" in fresh.detail
+
+
+def test_positions_fetched_now_are_current_though_the_sync_is_old() -> None:
+    """Served in real time: SnapTrade fetched the positions on this read."""
+    live = {"results": [], "data_freshness": {"as_of": NOW.isoformat()}}
+    fresh = freshness(synced(40), connection(), NOW, STALE_AFTER, live)
+    assert fresh.state is SyncState.CURRENT and fresh.holdings_as_of == NOW
+
+
+def test_a_read_judges_freshness_by_the_positions_it_returned() -> None:
+    raw = synced(1)
+    read = snapshot([raw], [connection()])
+    read.positions[raw["id"]]["data_freshness"] = {"as_of": "2026-09-25T12:00:00Z"}
+    (view,) = views(read, STALE_AFTER)[0].accounts
+    assert view.freshness.state is SyncState.STALE
+    assert view.statement is not None and view.statement.as_of_date == "2026-09-25"
 
 
 def test_interactive_brokers_through_snaptrade_is_delayed_by_design() -> None:

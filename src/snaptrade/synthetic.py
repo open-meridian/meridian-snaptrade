@@ -19,8 +19,8 @@ Three connections, chosen so each normalising rule has something to act on:
   lots add up to less than its quantity (recorded as reported), a position
   whose currency SnapTrade does not state, and negative dollar cash.
 - Schwab, served in real time but disabled five days ago and serving what it
-  last read, with an account SnapTrade gives no institution_account_id for,
-  and no tax lots.
+  last read, so needing sign-in, with an account SnapTrade gives no
+  institution_account_id for, and no tax lots.
 
 The tests hold every response here to SnapTrade's own models.
 """

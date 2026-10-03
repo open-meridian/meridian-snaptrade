@@ -67,9 +67,15 @@ a deployment admin approves them.
   activities, the cash of a currency is sent net of the money market funds
   SnapTrade counts in it, an unstated currency is the account's only cash
   currency or USD, and an unstated institution is the connection's: each
-  carries its provenance (`normalise.Closed`, sent by `contract.py`), and a
-  statement that cannot be served clean is withheld (`normalise.Withheld`),
-  never sent with a double count. An account's kind is converted from
+  carries its provenance (`normalise.Closed`, sent by `contract.py`). SnapTrade
+  is a cache of the brokerage, and the plugin resolves it (the product owner,
+  2026-10-03): a connection SnapTrade disabled needs sign-in, or is disabled
+  where SnapTrade turned its brokerage off, the rule in the sync status's
+  detail (it has no provenance field); the holdings are as of what the read
+  returned (`data_freshness.as_of`, else the last sync), stale past the
+  setting, never as of the read; and no suite case is declared not
+  presented. A statement that cannot be served clean is withheld
+  (`normalise.Withheld`), never sent with a double count. An account's kind is converted from
   SnapTrade's type, or not known with the type as reported; SnapTrade's
   type is never sent as the venue's. Otherwise nothing is derived. A
   position's `cost_basis` is SnapTrade's average per unit, sent as

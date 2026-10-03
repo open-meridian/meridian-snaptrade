@@ -9,11 +9,12 @@ reported, the raw record it was converted from, and the provenance of each
 value this plugin closed rather than read; a statement naming its external
 account and institution, with its figures as the one set for the account as a
 whole, and its raw record; the sync state with holdings and history
-freshness; and the accounts a connection reaches with their kinds, SnapTrade's
-type as reported where it says none (W2.8). A resolve states what SnapTrade
-says of the security -- its asset class, its type where it is a money market
-fund, its currency where stated, its description -- and is narrowed only by a
-currency SnapTrade stated.
+freshness, and a state closed by a rule saying so; and the accounts a
+connection reaches with their kinds, SnapTrade's type as reported where it
+says none (W2.8). A resolve states what SnapTrade says of the security -- its
+asset class, its type where it is a money market fund, its currency where
+stated, its description -- and is narrowed only by a currency SnapTrade
+stated.
 """
 
 from __future__ import annotations
@@ -126,13 +127,16 @@ class Recorder:
     async def report_sync(
         self, account: ExternalAccount, fresh: Freshness, observed_at_ns: int
     ) -> None:
-        """W2.1: how fresh the account's data is, and why when it is not."""
+        """W2.1: how fresh the account's data is, and why when it is not: when
+        SnapTrade last synced it, apart from when what it served is as of, and
+        a state this plugin closed with the rule it was derived by, in the
+        detail, since the event carries no provenance."""
         holdings_as_of_ns = ns(fresh.holdings_as_of) if fresh.holdings_as_of else 0
         await self._plugin.report_sync_status(
             source=SOURCE,
-            last_synced_at_ns=holdings_as_of_ns,
+            last_synced_at_ns=ns(fresh.last_synced) if fresh.last_synced else 0,
             connection_healthy=fresh.healthy,
-            status_detail=fresh.detail,
+            status_detail=fresh.status_detail,
             observed_at_ns=observed_at_ns,
             external_account_id=account.external_account_id,
             state=_SYNC_STATE[fresh.state],

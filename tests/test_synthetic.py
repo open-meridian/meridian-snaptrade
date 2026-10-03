@@ -50,7 +50,7 @@ async def test_each_rule_has_something_to_act_on() -> None:
     assert states == {
         "Alpaca": SyncState.CURRENT,
         "Interactive Brokers": SyncState.DELAYED_BY_DESIGN,
-        "Schwab": SyncState.DISABLED,
+        "Schwab": SyncState.NEEDS_SIGN_IN,
     }
     # Real time for most; the IBKR one on a delay, the one a refresh applies to.
     assert {c.institution: c.serving for c in connections} == {

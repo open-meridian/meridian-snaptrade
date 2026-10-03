@@ -373,7 +373,7 @@ def test_the_connections_tab(server: int) -> None:
         "Interactive Brokers",
         "Schwab",
         "Delayed by design",
-        "Disabled",
+        "Needs sign-in",
         ">+ Add</button>",
         "synthetic-user",
     ):
@@ -398,7 +398,7 @@ def test_the_connections_tab_has_no_tiles_but_its_card_rows_and_actions(
     assert 'class="tiles"' not in body and "tile-label" not in body
     assert "Accounts reached" not in body and "needs attention" not in body
     # The card: its heading, Refresh beside + Add, and a row per connection,
-    # Schwab's disabled one led to Reconnect.
+    # Schwab's, needing sign-in, led to Reconnect.
     assert "<h2>Connections</h2>" in body
     assert ">Refresh</button>" in body and ">+ Add</button>" in body
     assert body.count('<div class="list-row">') == 3

@@ -394,8 +394,9 @@ def _connection(connection: ConnectionView) -> dict[str, Any]:
             connection.serving, ""
         ),
         "refresh": connection.serving is not Serving.REAL_TIME,
-        # Reconnecting is what a disabled connection asks for, so it leads there.
-        "reconnect": "primary" if connection.state is SyncState.DISABLED else "",
+        # Reconnecting is what a connection needing sign-in asks for, so it
+        # leads there; it cannot mend one whose brokerage SnapTrade turned off.
+        "reconnect": "primary" if connection.state is SyncState.NEEDS_SIGN_IN else "",
     }
 
 

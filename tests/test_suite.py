@@ -198,8 +198,19 @@ PRODUCERS: dict[str, Callable[[Recorder], Coroutine[Any, Any, None]]] = {
     "sync-stale": reading(
         account_=account(holdings={"last_successful_sync": "2026-09-20T00:00:00Z"})
     ),
-    "sync-disabled": reading(
+    # SnapTrade says a connection's access lapsed only by disabling it, so a
+    # disabled connection needs sign-in, derived by the rule that says so...
+    "sync-needs-sign-in": reading(
         connection_=connection(disabled=True, disabled_date="2026-09-27T00:00:00Z")
+    ),
+    # ...unless SnapTrade has turned its brokerage off, which signing in
+    # cannot mend: then it is disabled.
+    "sync-disabled": reading(
+        connection_=connection(
+            disabled=True,
+            disabled_date="2026-09-27T00:00:00Z",
+            brokerage={"slug": "ALPACA", "name": "Alpaca", "enabled": False},
+        )
     ),
     "sync-delayed-by-design": reading(
         connection_=connection(data_freshness_mode={"institution": "delayed"})
@@ -231,20 +242,62 @@ PRODUCERS: dict[str, Callable[[Recorder], Coroutine[Any, Any, None]]] = {
     "kind-not-converted-on-an-ambiguous-resolve": ambiguous_for("TOKN"),
 }
 
-NOT_PRESENTED = {
-    "sync-needs-sign-in": (
-        "SnapTrade says a connection needs signing in again only by disabling it, "
-        "which is sync-disabled"
-    ),
-}
-
 
 def test_every_case_of_the_custody_suite_passes() -> None:
-    report = run("custody", PRODUCERS, not_presented=NOT_PRESENTED, instance_id="snaptrade")
+    """Every case, none declared not presented: the canonical role is the
+    requirement (the product owner, 2026-10-02 and 2026-10-03)."""
+    report = run("custody", PRODUCERS, instance_id="snaptrade")
     assert report.passed, report.failures
-    assert set(report.passed_cases) | set(report.not_presented) == {
-        case.name for case in suite("custody").cases
-    }
+    assert not report.not_presented
+    assert set(report.passed_cases) == {case.name for case in suite("custody").cases}
+
+
+def sent_sync(read: Callable[[Recorder], Coroutine[Any, Any, None]]) -> Any:
+    recorder = Recorder("snaptrade")
+    asyncio.run(read(recorder))
+    (sent,) = recorder.on("ReportSyncStatus")
+    return sent
+
+
+def test_needing_sign_in_says_the_rule_it_was_derived_by() -> None:
+    """The state SnapTrade did not say crosses with its provenance: the rule,
+    in the detail, since the sync status carries no provenance field."""
+    sent = sent_sync(PRODUCERS["sync-needs-sign-in"])
+    assert sent.state == meridian.SyncState.SYNC_STATE_NEEDS_SIGN_IN
+    assert not sent.connection_healthy
+    assert 'derived by the rule "SnapTrade disabled the connection"' in sent.status_detail
+    assert "2026-09-27" in sent.status_detail
+
+
+def test_disabled_with_its_brokerage_off_says_its_rule() -> None:
+    sent = sent_sync(PRODUCERS["sync-disabled"])
+    assert sent.state == meridian.SyncState.SYNC_STATE_DISABLED
+    assert (
+        'derived by the rule "SnapTrade disabled the connection and turned its brokerage off"'
+        in sent.status_detail
+    )
+
+
+def test_a_cached_read_older_than_allowed_is_stale_as_of_its_own_time() -> None:
+    """SnapTrade's account says it synced minutes ago, but the positions it
+    served were fetched from the brokerage three days ago: the sync status is
+    stale as of then, and the statement is as of that day, not the read's."""
+    cached = (NOW - timedelta(days=3)).isoformat().replace("+00:00", "Z")
+
+    async def produce(recorder: Recorder) -> None:
+        read = snapshot(positions=[position("AAPL", "12.5")], balances=[balance("USD", "1")])
+        read.positions[ACCOUNT_ID]["data_freshness"] = {"as_of": cached}
+        await sync(recorder, read)
+
+    recorder = Recorder("snaptrade")
+    asyncio.run(produce(recorder))
+    (sent,) = recorder.on("ReportSyncStatus")
+    assert sent.state == meridian.SyncState.SYNC_STATE_STALE
+    assert sent.holdings_as_of_ns == ns(NOW - timedelta(days=3))
+    assert sent.last_synced_at_ns == ns(NOW - timedelta(minutes=5))
+    (opened,) = recorder.on("RecordHoldingsStatement")
+    assert opened.as_of_date == (NOW - timedelta(days=3)).date().isoformat()
+    assert not [p for p in opened.provenance if p.field == "as_of_date"]
 
 
 def test_the_cash_sent_net_of_the_fund_is_the_cash_less_the_fund() -> None:
@@ -273,5 +326,5 @@ def test_a_mutation_sending_stale_for_holdings_unavailable_fails_the_suite(
     mutated = {**contract._SYNC_STATE}
     mutated[SyncState.HOLDINGS_UNAVAILABLE] = meridian.SyncState.SYNC_STATE_STALE
     monkeypatch.setattr(contract, "_SYNC_STATE", mutated)
-    report = run("custody", PRODUCERS, not_presented=NOT_PRESENTED, instance_id="snaptrade")
+    report = run("custody", PRODUCERS, instance_id="snaptrade")
     assert set(report.failures) == {"sync-holdings-unavailable"}

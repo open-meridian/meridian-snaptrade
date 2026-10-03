@@ -12,6 +12,7 @@ from meridian.plugin.v1 import operations_pb2 as ops
 
 from snaptrade.contract import _SYNC_STATE, Recorder
 from snaptrade.normalise import (
+    Closed,
     ExternalAccount,
     Freshness,
     Holding,
@@ -74,8 +75,13 @@ STATEMENT = Statement(
     holdings=(LONG, SHORT, CASH),
     buying_power=(meridian.Money(Decimal("3046.90"), "USD"),),
 )
-DISABLED = Freshness(
-    SyncState.DISABLED, NOW - timedelta(days=5), NOW.date(), "SnapTrade disabled it."
+SIGN_IN = Freshness(
+    SyncState.NEEDS_SIGN_IN,
+    NOW - timedelta(days=5),
+    NOW.date(),
+    "SnapTrade disabled it.",
+    last_synced=NOW - timedelta(days=4),
+    closed=(Closed("state", "derived", "SnapTrade disabled the connection"),),
 )
 
 
@@ -393,15 +399,28 @@ async def test_a_refusal_saying_not_linked_without_the_code_is_not_taken_for_one
 
 
 async def test_sync_status_carries_a_state_and_both_freshnesses() -> None:
+    """When SnapTrade last synced, apart from when what it served is as of;
+    and a state closed by a rule, with the rule in the detail."""
     sidecar = Sidecar()
-    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, DISABLED, ns(NOW))
+    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, SIGN_IN, ns(NOW))
     (sent,) = sidecar.sent("ReportSyncStatus")
-    assert sent.state == ops.SYNC_STATE_DISABLED
+    assert sent.state == ops.SYNC_STATE_NEEDS_SIGN_IN
     assert not sent.connection_healthy
-    assert sent.holdings_as_of_ns == sent.last_synced_at_ns == ns(NOW - timedelta(days=5))
+    assert sent.holdings_as_of_ns == ns(NOW - timedelta(days=5))
+    assert sent.last_synced_at_ns == ns(NOW - timedelta(days=4))
     assert sent.history_as_of_ns == ns(NOW.replace(hour=0))
-    assert sent.status_detail == "SnapTrade disabled it."
+    assert sent.status_detail == (
+        'SnapTrade disabled it. state derived by the rule "SnapTrade disabled the connection".'
+    )
     assert sent.external_account_id == "ALPACA:INST-1"
+
+
+async def test_a_state_snaptrade_said_carries_its_detail_alone() -> None:
+    sidecar = Sidecar()
+    stale = Freshness(SyncState.STALE, NOW - timedelta(days=2), None, "As of then.")
+    await Recorder(sidecar.plugin()).report_sync(ACCOUNT, stale, ns(NOW))
+    (sent,) = sidecar.sent("ReportSyncStatus")
+    assert sent.status_detail == "As of then." and sent.last_synced_at_ns == 0
 
 
 async def test_delayed_by_design_is_healthy() -> None:
