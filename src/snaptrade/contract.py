@@ -1,13 +1,19 @@
 """What reaches the sidecar, through the SDK's typed operations.
 
 Each part of the account-side contract (spec/the-account-side-fits-every-venue)
-as the pinned SDK takes it: a holding's side, its settle-date quantity where
-the venue gives one (SnapTrade gives none), a currency marked as assumed, a
-market value left unset where none was reported, a fund marked as counted in
-cash too, its average cost and lots as reported; a statement naming its
-external account and institution, with its figures as the one set for the
-account as a whole; the sync state with holdings and history freshness, and
-the accounts a connection reaches (W2.8).
+as the pinned SDK takes it (contract v11): a holding's side, its settled
+quantity and its pending quantities by value date, a market value left unset
+where none was reported, each asset once -- the cash of a currency net of a
+money market fund SnapTrade counts in it -- its average cost and lots as
+reported, the raw record it was converted from, and the provenance of each
+value this plugin closed rather than read; a statement naming its external
+account and institution, with its figures as the one set for the account as a
+whole, and its raw record; the sync state with holdings and history
+freshness; and the accounts a connection reaches with their kinds, SnapTrade's
+type as reported where it says none (W2.8). A resolve states what SnapTrade
+says of the security -- its asset class, its type where it is a money market
+fund, its currency where stated, its description -- and is narrowed only by a
+currency SnapTrade stated.
 """
 
 from __future__ import annotations
@@ -19,9 +25,13 @@ from datetime import date
 from typing import Any
 
 import meridian
+from meridian.edge import as_reported, derived, reported
 
 from .normalise import (
+    ACCOUNT_TYPE_SCHEME,
+    SECURITY_TYPE_SCHEME,
     SOURCE,
+    Closed,
     ExternalAccount,
     Freshness,
     Holding,
@@ -31,6 +41,7 @@ from .normalise import (
     day_ns,
     ns,
 )
+from .raw import record_key
 
 log = logging.getLogger("snaptrade")
 
@@ -45,6 +56,11 @@ _SYNC_STATE: dict[SyncState, meridian.SyncState] = {
 _SIDE: dict[Side, meridian.HoldingSide] = {
     Side.LONG: meridian.HoldingSide.HOLDING_SIDE_LONG,
     Side.SHORT: meridian.HoldingSide.HOLDING_SIDE_SHORT,
+}
+_KIND: dict[str, meridian.AccountKind] = {
+    "cash": meridian.AccountKind.ACCOUNT_KIND_CASH,
+    "margin": meridian.AccountKind.ACCOUNT_KIND_MARGIN,
+    "retirement": meridian.AccountKind.ACCOUNT_KIND_RETIREMENT,
 }
 
 
@@ -62,7 +78,8 @@ class Outcome:
     statement_id: str = ""
     rows: int = 0
     recorded: int = 0
-    placeholders: int = 0
+    # Records the deployment minted for identifiers nothing matched (W3.7).
+    minted: int = 0
     ambiguous: int = 0
     already_recorded: bool = False
     # Why it stopped before every row was recorded, when it did.
@@ -85,15 +102,22 @@ class Recorder:
         self._plugin = plugin
 
     async def report_accounts(self, accounts: Sequence[ExternalAccount]) -> None:
-        """W2.8: the accounts the connection reaches. The sidecar stamps the
-        source and the time; the venue's own word for the account's kind is
-        carried verbatim."""
+        """W2.8: the accounts the connection reaches, each with its kind,
+        converted from SnapTrade's type; where the type says none, the kind
+        not known and the type beside it as reported (contract v11, Q13)."""
         await self._plugin.report_external_accounts(
             accounts=[
                 meridian.ExternalAccount(
                     external_account_id=account.external_account_id,
                     name=account.name,
-                    venue_account_type=account.account_type,
+                    account_kind=_KIND.get(
+                        account.kind, meridian.AccountKind.ACCOUNT_KIND_UNSPECIFIED
+                    ),
+                    account_kind_as_reported=(
+                        None
+                        if account.kind_as_reported is None
+                        else as_reported(ACCOUNT_TYPE_SCHEME, *account.kind_as_reported)
+                    ),
                 )
                 for account in accounts
             ],
@@ -122,16 +146,30 @@ class Recorder:
         """W3.1, and W3.2 for an ambiguous miss: the row's instrument, or the
         identifiers it could not be told apart by."""
         identifiers = _identifiers(holding)
+        stated_currency = "" if holding.currency_assumed else holding.currency
         answer = await self._plugin.resolve_identifier(
             identifiers=identifiers,
             as_of_ns=as_of_ns,
             exchange_mic=holding.exchange_mic,
-            currency=holding.currency,
+            # Narrowed only by a currency SnapTrade stated (contract v11).
+            currency=stated_currency,
+            # What SnapTrade says of the security, kept as offers for the
+            # deployment admin to accept (W3.1): its class, a money market
+            # fund's type where SnapTrade counts it as a cash equivalent, its
+            # currency where stated, its description.
+            stated_asset_class=holding.asset_class or None,
+            stated_instrument_type=(
+                "money_market_fund"
+                if holding.cash_equivalent and holding.asset_class == "fund"
+                else None
+            ),
+            stated_currency=stated_currency,
+            stated_description=holding.description if holding.kind != "cash" else "",
         )
         if answer.instrument_id:
-            # Found, or nothing matched and the deployment's placeholder
-            # stands in (W3.7); the instrument store reports the latter.
-            outcome.placeholders += 1 if answer.placeholder else 0
+            # Found, or nothing matched and the deployment minted its record
+            # for the identifiers (W3.7).
+            outcome.minted += 1 if answer.minted else 0
             return {"instrument_id": answer.instrument_id}
         # More than one matched. A fact, published once, and the row is still
         # recorded; nothing is retried or guessed.
@@ -139,8 +177,14 @@ class Recorder:
         await self._plugin.report_missing_instrument(
             source=SOURCE,
             # The class normalise.py maps SnapTrade's kind to, by its ruled
-            # name; unset where it maps none, for a person to set.
+            # name; unset where it maps none, for a person to set, with
+            # SnapTrade's kind beside it as reported (contract v11).
             asset_class=holding.asset_class,
+            asset_class_as_reported=(
+                as_reported(SECURITY_TYPE_SCHEME, holding.kind)
+                if holding.kind and not holding.asset_class and holding.kind != "cash"
+                else None
+            ),
             identifiers=identifiers,
             as_of_ns=as_of_ns,
             reason=answer.miss_reason,
@@ -165,18 +209,45 @@ class Recorder:
             )
         ]
 
-    def _row(self, holding: Holding) -> dict[str, Any]:
+    def _provenance(
+        self, closed: Sequence[Closed], account: ExternalAccount, read_at_ns: int
+    ) -> list[meridian.Provenance]:
+        """Each value this plugin closed, as its provenance: derived by the
+        rule it names, or reported by SnapTrade in another of its raw records
+        (the account's activities)."""
+        made: list[meridian.Provenance] = []
+        for held in closed:
+            if held.kind == "reported":
+                made.append(
+                    reported(
+                        held.field,
+                        self._plugin.raw_record(record_key(account, read_at_ns, held.call)),
+                    )
+                )
+            else:
+                made.append(derived(held.field, held.rule))
+        return made
+
+    def _row(
+        self, holding: Holding, account: ExternalAccount, read_at_ns: int
+    ) -> dict[str, Any]:
         return {
             "quantity": holding.quantity,
             "side": _SIDE[holding.side],
             # Unset where SnapTrade reported none; never made from a price.
             "market_value": holding.market_value,
-            "currency_assumed": holding.currency_assumed,
-            # A money-market fund the venue also counts in its cash figure:
-            # recorded as a holding, and marked so nothing counts it twice.
-            "also_counted_in_cash": holding.cash_equivalent,
-            # None where the venue gives none, as SnapTrade never does.
+            # The settled quantity and the pending by value date, closed from
+            # SnapTrade's activities or by a rule, each with its provenance.
             "settle_date_quantity": holding.settle_date_quantity,
+            "pending": [
+                meridian.ReportedPending(value_date=held.value_date, quantity=held.quantity)
+                for held in holding.pending
+            ],
+            # The raw record the row came from, in this plugin's storage.
+            "raw_record": self._plugin.raw_record(
+                record_key(account, read_at_ns, holding.call)
+            ),
+            "provenance": self._provenance(holding.closed, account, read_at_ns),
             # SnapTrade's average per unit, as reported; its total cost basis
             # is none it reports, so `cost_basis` is never sent.
             "average_cost": holding.average_cost,
@@ -212,6 +283,10 @@ class Recorder:
                 read_at_ns=statement.read_at_ns,
                 expected_rows=len(statement.holdings),
                 figures=self._figures(statement),
+                raw_record=self._plugin.raw_record(
+                    record_key(account, statement.read_at_ns, "balances")
+                ),
+                provenance=self._provenance(statement.closed, account, statement.read_at_ns),
             )
             outcome.statement_id = opened.statement_id
             if opened.already_recorded:
@@ -222,7 +297,7 @@ class Recorder:
                     statement_id=opened.statement_id,
                     external_account_id=account.external_account_id,
                     **instrument,
-                    **self._row(holding),
+                    **self._row(holding, account, statement.read_at_ns),
                 )
                 outcome.recorded += 1
         except meridian.MeridianError as refused:

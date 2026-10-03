@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import traceback
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -151,6 +152,9 @@ class OneAccountFails:
         return {"results": []}
 
     async def balances(self, account_id: str) -> list[dict[str, Any]]:
+        return []
+
+    async def activities(self, account_id: str, start: date, end: date) -> list[dict[str, Any]]:
         return []
 
     async def connection_portal(self, reconnect: str | None = None) -> str:

@@ -22,9 +22,10 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 import meridian
-from meridian.figures import LONGEST_WHY
+from meridian.bounds import PLUGIN_FIGURE_WHY_LENGTH
 
 from .contract import Outcome, Recorder
+from .declaration import seen
 from .normalise import AccountView, ConnectionView, SyncState, ns, views
 from .raw import RawStore, taken
 from .settings import Config
@@ -90,8 +91,8 @@ def figures(status: Status) -> list[meridian.Figure]:
     last: meridian.Figure
     if status.error:
         why = status.error
-        if len(why) > LONGEST_WHY:
-            why = why[: LONGEST_WHY - 1] + "\N{HORIZONTAL ELLIPSIS}"
+        if len(why) > PLUGIN_FIGURE_WHY_LENGTH.most:
+            why = why[: PLUGIN_FIGURE_WHY_LENGTH.most - 1] + "\N{HORIZONTAL ELLIPSIS}"
         last = meridian.Figure(
             "Last read", status.failed_at or "Failed", state="error", why=why
         )
@@ -178,6 +179,7 @@ class Syncer:
 
         connections = views(snapshot, config.stale_after)
         self._keep_raw(config, snapshot, connections)
+        self._note_not_carried(snapshot)
         observed = ns(snapshot.read_at)
         accounts = [view for connection in connections for view in connection.accounts]
         outcomes: dict[str, Outcome] = {}
@@ -227,6 +229,12 @@ class Syncer:
         secrets = config.credentials.secrets() if config.credentials is not None else ()
         self.raw.keep(taken(snapshot, connections, config.synthetic), secrets)
         self.raw.prune(self._now())
+
+    def _note_not_carried(self, snapshot: Snapshot) -> None:
+        """Count each name SnapTrade sent this read that the plugin declares
+        it does not carry (declaration.py): by name only, for the heartbeat."""
+        for scheme, name in seen(snapshot):
+            self._plugin.note_not_carried(scheme, name)
 
     async def _report(self, *, healthy: bool, detail: str) -> None:
         """The plugin's health, and its figures from the status just set: both

@@ -33,6 +33,7 @@ ACCOUNT = ExternalAccount(
     institution="Alpaca",
     connection_id="c1",
     snaptrade_account_id="a1",
+    kind="margin",
 )
 
 LONG = Holding(
@@ -64,6 +65,7 @@ CASH = Holding(
     quantity=Decimal("200.00"),
     currency="CAD",
     market_value=meridian.Money(Decimal("200.00"), "CAD"),
+    call="balances",
 )
 STATEMENT = Statement(
     external_statement_id=f"snaptrade:ALPACA:INST-1:{ns(NOW)}",
@@ -127,13 +129,21 @@ async def test_a_row_says_its_side_and_what_was_and_was_not_reported() -> None:
     # A value SnapTrade did not report is left unset, never zero; cash's is its amount.
     assert [row.HasField("market_value") for row in rows] == [False, False, True]
     assert meridian.as_money(rows[2].market_value) == meridian.Money(Decimal("200.00"), "CAD")
-    assert [row.currency_assumed for row in rows] == [False, True, False]
-    # SnapTrade reports no settle-date quantity, so none is sent.
+    # Contract v11 deprecates both marks: a currency closed by a rule says so
+    # in its provenance, and the street counts each asset once.
+    assert not any(row.currency_assumed or row.also_counted_in_cash for row in rows)
+    # No settled quantity was closed for these rows, so none is sent.
     assert not any(row.HasField("settle_date_quantity") for row in rows)
-    assert not any(row.also_counted_in_cash for row in rows)
+    # Each row names the raw record it was converted from, kept by this instance.
+    assert {row.raw_record.instance_id for row in rows} == {"snaptrade"}
+    assert [row.raw_record.key.rsplit("/", 1)[1] for row in rows] == [
+        "positions",
+        "positions",
+        "balances",
+    ]
 
 
-async def test_a_fund_snaptrade_counts_in_cash_is_marked_so() -> None:
+async def test_a_fund_snaptrade_counts_in_cash_is_stated_a_money_market_fund() -> None:
     sidecar = Sidecar()
     fund = Holding(
         identifiers=(Identifier("symbol", "SWVXX", "snaptrade"),),
@@ -143,11 +153,16 @@ async def test_a_fund_snaptrade_counts_in_cash_is_marked_so() -> None:
         quantity=Decimal("10"),
         currency="USD",
         cash_equivalent=True,
+        asset_class="fund",
     )
     statement = Statement(STATEMENT.external_statement_id, "2026-09-28", ns(NOW), (fund,))
     await Recorder(sidecar.plugin()).record(ACCOUNT, statement, ns(NOW))
+    (resolve,) = sidecar.sent("ResolveIdentifier")
+    assert resolve.stated_asset_class == ops.ASSET_CLASS_FUND
+    assert resolve.stated_instrument_type == ops.INSTRUMENT_TYPE_MONEY_MARKET_FUND
+    # Not marked: the cash beside it is sent net of it (normalise.py).
     (row,) = sidecar.sent("RecordHolding")
-    assert row.also_counted_in_cash
+    assert not row.also_counted_in_cash
 
 
 async def test_a_statement_names_its_external_account_and_institution() -> None:
@@ -276,11 +291,11 @@ async def test_a_total_cost_basis_and_a_margin_requirement_are_never_sent() -> N
         assert not row.HasField("margin_requirement")
 
 
-async def test_a_placeholder_is_recorded_against_and_counted() -> None:
-    sidecar = Sidecar(resolve=lambda p: found("LCL-1", placeholder=True))
+async def test_a_minted_record_is_recorded_against_and_counted() -> None:
+    sidecar = Sidecar(resolve=lambda p: found("LCL-1", minted=True))
     outcome = await Recorder(sidecar.plugin()).record(ACCOUNT, STATEMENT, ns(NOW))
     assert {row.instrument_id for row in sidecar.sent("RecordHolding")} == {"LCL-1"}
-    assert outcome.placeholders == 3
+    assert outcome.minted == 3
     # The instrument store reports a not-found; the connector does not.
     assert sidecar.sent("ReportMissingInstrument") == []
 
@@ -421,11 +436,25 @@ def test_every_sync_state_has_the_contracts_value() -> None:
 async def test_the_accounts_a_connection_reaches_are_reported(sidecar: Sidecar) -> None:
     await Recorder(sidecar.plugin()).report_accounts([ACCOUNT])
     (sent,) = sidecar.sent("ReportExternalAccounts")
+    # The kind converted from SnapTrade's type; the type itself is not sent.
     assert list(sent.accounts) == [
-        meridian.ExternalAccount(
-            external_account_id="ALPACA:INST-1", name="Margin", venue_account_type="margin"
+        ops.ExternalAccount(
+            external_account_id="ALPACA:INST-1",
+            name="Margin",
+            account_kind=ops.ACCOUNT_KIND_MARGIN,
         )
     ]
+
+
+async def test_a_type_that_says_no_kind_travels_as_reported(sidecar: Sidecar) -> None:
+    joint = replace(ACCOUNT, account_type="Joint", kind="")
+    await Recorder(sidecar.plugin()).report_accounts([joint])
+    ((sent,),) = [list(call.accounts) for call in sidecar.sent("ReportExternalAccounts")]
+    assert sent.account_kind == ops.ACCOUNT_KIND_UNSPECIFIED
+    assert (sent.account_kind_as_reported.scheme, sent.account_kind_as_reported.code) == (
+        "snaptrade:account-type",
+        "Joint",
+    )
 
 
 # ── The tripwire for the next SDK ────────────────────────────────────────────
@@ -463,6 +492,10 @@ KNOWN_PARAMETERS = {
         # Known, and never sent (v8): SnapTrade does not say whether an
         # account is pledged, so the statement leaves it unstated.
         "security_interest",
+        # v11: the raw record it was converted from, and the provenance of
+        # each value closed rather than read.
+        "raw_record",
+        "provenance",
     },
     "record_holding": {
         "statement_id",
@@ -489,11 +522,28 @@ KNOWN_PARAMETERS = {
         "not_available_quantity",
         "available_basis",
         "encumbrances",
+        # v11: the raw record, the provenance, the pending quantities by value
+        # date; and, known and never sent, a backfill: a row is not sent again.
+        "raw_record",
+        "provenance",
+        "pending",
+        "backfill",
     },
-    "resolve_identifier": {"identifiers", "as_of_ns", "exchange_mic", "currency"},
+    "resolve_identifier": {
+        "identifiers",
+        "as_of_ns",
+        "exchange_mic",
+        "currency",
+        # v10 and v11: what SnapTrade states of the security, offered only.
+        "stated_asset_class",
+        "stated_currency",
+        "stated_description",
+        "stated_instrument_type",
+    },
     "report_missing_instrument": {
         "source",
         "asset_class",
+        "asset_class_as_reported",
         "identifiers",
         "as_of_ns",
         "reason",

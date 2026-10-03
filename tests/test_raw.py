@@ -132,6 +132,7 @@ def test_each_read_keeps_each_accounts_responses_with_its_time_and_calls(
         ("listing accounts", "GET /accounts"),
         ("reading positions", "GET /accounts/{accountId}/positions/all"),
         ("reading balances", "GET /accounts/{accountId}/balances"),
+        ("reading activities", "GET /accounts/{accountId}/activities"),
     ]
     calls = calls_of(store, ALPACA)
     # As SnapTrade answered, read exactly: the same values, Decimals and all.

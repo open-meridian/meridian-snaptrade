@@ -4,8 +4,8 @@
 # failure itself, as a deployment's pod does, so nothing here says so.
 #
 # Its root read-only and /tmp writable, as the chart's pod has them (an
-# emptyDir at /tmp): where the plugin keeps SnapTrade's raw responses until
-# decisions/028's storage is granted (src/snaptrade/raw.py).
+# emptyDir at /tmp). SnapTrade's raw responses go to the storage the harness
+# grants a custody plugin (decisions/028), not to /tmp (src/snaptrade/raw.py).
 services:
   snaptrade:
     read_only: true

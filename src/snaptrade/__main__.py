@@ -10,8 +10,8 @@ records it through the SDK's typed operations (contract.py): each account's
 sync status, and a holdings statement per account. It holds nothing between
 reads that it needs; a restart reads again. What SnapTrade answered each read
 is kept per account, as received, for the Raw responses tab (raw.py), in the
-storage decisions/028 has the deployment grant an edge plugin; until that is
-built, in the directory given here, raw.STAND_IN. Which of its external
+storage the deployment grants an edge plugin (decisions/028), which it
+declares it asks for (declaration.py). Which of its external
 accounts are linked, and to what, it reads beside its account scope, holding
 the first delivery before its pages are served and each one after
 (linking.py).
@@ -32,9 +32,10 @@ from collections.abc import AsyncIterator
 
 import meridian
 
+from .declaration import DECLARATION
 from .linking import Links
 from .page import TITLE, pages, serve
-from .raw import STAND_IN, RawStore
+from .raw import RawStore, storage_root
 from .settings import DECLARED, config_from
 from .sync import Syncer
 
@@ -94,6 +95,9 @@ async def run() -> None:
         # session at any other level.
         interface=meridian.Interface(port=port, title=TITLE, pages=pages),
         settings=DECLARED,
+        # Its secret settings' names, what it receives and does not carry,
+        # and the storage it asks for its raw responses (contract v11).
+        declaration=DECLARATION,
         # It names accounts by SnapTrade's identifiers, which an admin of the
         # plugin links to the deployment's accounts (W6.4).
         reads_external_accounts=True,
@@ -103,8 +107,9 @@ async def run() -> None:
             plugin.identity.instance_id,
             ", ".join(plugin.identity.roles) or "none",
         )
-        # decisions/028's seam: the granted storage goes here once it exists.
-        syncer = Syncer(plugin, raw=RawStore(STAND_IN))
+        # The storage the deployment grants it (decisions/028), or the stand-in
+        # where none is mounted.
+        syncer = Syncer(plugin, raw=RawStore(storage_root()))
         configured, wake = asyncio.Event(), asyncio.Event()
         links = Links(plugin)
         following = await follow_links(plugin, links)

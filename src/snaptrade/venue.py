@@ -24,13 +24,17 @@ import asyncio
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Protocol
 
 from .settings import Credentials
 
 Json = dict[str, Any]
+
+# How far back the activities are read for trades not yet settled: a
+# settlement cycle and a long weekend.
+ACTIVITIES_DAYS = 10
 
 
 class VenueError(Exception):
@@ -77,6 +81,12 @@ class Venue(Protocol):
         """`GET /accounts/{accountId}/balances`: one balance per currency."""
         ...
 
+    async def activities(self, account_id: str, start: date, end: date) -> list[Json]:
+        """`GET /accounts/{accountId}/activities`: the account's activities
+        dated from `start` to `end`, each with its trade and settlement dates
+        (contract v11: what the settled and pending quantities come from)."""
+        ...
+
     async def connection_portal(self, reconnect: str | None = None) -> str:
         """A Connection Portal link: to connect a brokerage, or to reconnect one."""
         ...
@@ -102,6 +112,11 @@ class Snapshot:
     # By SnapTrade account ID: why that account's positions or balances could
     # not be read this time. Its statement is not recorded.
     failures: dict[str, str] = field(default_factory=dict)
+    # By SnapTrade account ID: its recent activities; absent where they
+    # could not be read, which the settled quantities then say.
+    activities: dict[str, list[Json]] = field(default_factory=dict)
+    # By SnapTrade account ID: why its activities could not be read.
+    unread_activities: dict[str, str] = field(default_factory=dict)
 
 
 async def read(venue: Venue, now: Callable[[], datetime]) -> Snapshot:
@@ -114,6 +129,8 @@ async def read(venue: Venue, now: Callable[[], datetime]) -> Snapshot:
     positions: dict[str, Json] = {}
     balances: dict[str, list[Json]] = {}
     failures: dict[str, str] = {}
+    activities: dict[str, list[Json]] = {}
+    unread: dict[str, str] = {}
     for account in accounts:
         account_id = str(account.get("id", ""))
         try:
@@ -121,7 +138,20 @@ async def read(venue: Venue, now: Callable[[], datetime]) -> Snapshot:
             balances[account_id] = await venue.balances(account_id)
         except VenueError as failed:
             failures[account_id] = str(failed)
-    return Snapshot(read_at, connections, accounts, positions, balances, failures)
+            continue
+        try:
+            activities[account_id] = await venue.activities(
+                account_id,
+                (read_at - timedelta(days=ACTIVITIES_DAYS)).date(),
+                read_at.date(),
+            )
+        except VenueError as failed:
+            # Not a reason to withhold: the settled quantities say they
+            # could not be read from SnapTrade.
+            unread[account_id] = str(failed)
+    return Snapshot(
+        read_at, connections, accounts, positions, balances, failures, activities, unread
+    )
 
 
 def parse_exact(text: str | bytes) -> Any:
@@ -228,6 +258,24 @@ class SnapTradeVenue:
                 account_id=account_id, **self._user()
             ),
         )
+        return _objects(body)
+
+    async def activities(self, account_id: str, start: date, end: date) -> list[Json]:
+        def call() -> Any:
+            ask = getattr(self._sdk.account_information, "get_account_activities", None)
+            if ask is None:
+                raise AttributeError("this SnapTrade SDK reads no account activities")
+            return ask(
+                account_id=account_id,
+                start_date=start.isoformat(),
+                end_date=end.isoformat(),
+                **self._user(),
+            )
+
+        body = await self._call("reading activities", call)
+        # Listed, or paged as {"data": [...]}, as SnapTrade's API has it.
+        if isinstance(body, dict):
+            body = body.get("data")
         return _objects(body)
 
     async def connection_portal(self, reconnect: str | None = None) -> str:

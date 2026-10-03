@@ -28,11 +28,11 @@ The tests hold every response here to SnapTrade's own models.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from string import Template
 from typing import Any
 
-from .venue import Json, parse_exact, utc_now
+from .venue import Json, VenueError, parse_exact, utc_now
 
 USER_ID = "synthetic-user"
 
@@ -262,6 +262,30 @@ _BALANCES: dict[str, str] = {
 }
 
 
+# Each account's recent activities, as SnapTrade's account activities answer
+# them (contract v11: the settled and pending quantities come from these).
+# Alpaca's last trade settled long ago, so all it holds is settled; IBKR
+# bought 5 SAP.DE yesterday, settling tomorrow, so 5 of its 30 and the euros
+# paying for them are pending; Schwab's activities cannot be read, so its
+# settled quantities say so.
+_ACTIVITIES: dict[str, Template] = {
+    ALPACA_MARGIN: Template("""{"data": [
+  {"id": "00000000-0000-4000-8000-00000000f001", "type": "BUY",
+   "symbol": {"symbol": "AAPL", "description": "Apple Inc"},
+   "units": "2.5", "price": "234.50", "amount": "-586.25",
+   "currency": {"code": "USD"}, "trade_date": "$nine_days_ago_date",
+   "settlement_date": "$eight_days_ago_date", "description": "Bought 2.5 AAPL"}
+], "pagination": {"offset": 0, "limit": 1000, "total": 1}}"""),
+    IBKR_INDIVIDUAL: Template("""{"data": [
+  {"id": "00000000-0000-4000-8000-00000000f002", "type": "BUY",
+   "symbol": {"symbol": "SAP.DE", "description": "SAP SE"},
+   "units": "5", "price": "212.00", "amount": "-1060.00",
+   "currency": {"code": "EUR"}, "trade_date": "$yesterday_date",
+   "settlement_date": "$tomorrow_date", "description": "Bought 5 SAP.DE"}
+], "pagination": {"offset": 0, "limit": 1000, "total": 1}}"""),
+}
+
+
 def _stamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
@@ -288,6 +312,9 @@ class SyntheticVenue:
             "yesterday_date": yesterday.date().isoformat(),
             "five_days_ago": _stamp(five_days_ago),
             "five_days_ago_date": five_days_ago.date().isoformat(),
+            "nine_days_ago_date": (now - timedelta(days=9)).date().isoformat(),
+            "eight_days_ago_date": (now - timedelta(days=8)).date().isoformat(),
+            "tomorrow_date": (now + timedelta(days=1)).date().isoformat(),
         }
 
     def _json(self, template: Template) -> Any:
@@ -316,6 +343,18 @@ class SyntheticVenue:
     async def balances(self, account_id: str) -> list[Json]:
         body: list[Json] = parse_exact(_BALANCES.get(account_id, "[]"))
         return body
+
+    async def activities(self, account_id: str, start: date, end: date) -> list[Json]:
+        if account_id == SCHWAB_BROKERAGE:
+            # The one account whose activities cannot be read: its settled
+            # quantities say so.
+            raise VenueError("reading activities")
+        template = _ACTIVITIES.get(account_id)
+        body: Json = self._json(template) if template else {"data": []}
+        data = body.get("data")
+        return (
+            [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        )
 
     async def connection_portal(self, reconnect: str | None = None) -> str:
         # There is no portal without a key; the page says so.

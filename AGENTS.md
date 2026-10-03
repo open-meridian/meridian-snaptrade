@@ -43,22 +43,37 @@ a deployment admin approves them.
   credential, a header or a query string: `raw.redact` replaces a field
   named as a credential and any credential value before anything is written.
   Kept for `raw_retention_days` (30 by default), pruned when the settings
-  arrive and after each read. The storage 028 grants is not built in core or
-  the SDK: `RawStore` takes the directory `__main__` gives it
-  (`raw.STAND_IN`, the pod's `/tmp`), and that is the one seam to change
-  when it is. Nothing is read back from it into what is recorded, and the
-  Raw responses tab, an account's data, is never at `admin`. No
-  raw-record reference is sent: contract v8 has none (step 6 slice A's
-  `RawRecordRef`); never invent one.
+  arrive and after each read, in the storage the deployment grants this
+  instance (`raw.storage_root()`: `MERIDIAN_STORAGE_DIR`, or `/tmp` where
+  none is mounted), which the version's declaration asks for
+  (`declaration.py`, contract v11). Every row and statement references the
+  raw record it was converted from (`plugin.raw_record(raw.record_key(...))`:
+  the external account, the read and the call); never another instance's,
+  and never a key the store does not keep. Nothing is read back from the
+  store into what is recorded, and the Raw responses tab, an account's data,
+  is never at `admin`.
+- **The declaration** (`declaration.py`) names the secret settings, what
+  SnapTrade sends and this plugin does not carry, by name only, with why,
+  and the storage. A name newly left out is declared there, and counted as a
+  read sees it (`declaration.seen`); never a value.
 - SnapTrade's vocabulary stops at `normalise.py`, its instrument kinds
   mapped to the platform's asset classes there and nowhere else (unmapped
   kinds get none, never a guess), and a number is a `Decimal`
   from the moment it is read, never a float. A credential is never logged,
   shown or put in an exception's text.
-- **Send only what SnapTrade reported, never derive** (the product owner,
-  2026-10-01). A position's `cost_basis` is SnapTrade's average per unit,
-  sent as `average_cost`, never multiplied into a `cost_basis`, which stays
-  unset; a lot is a `tax_lots` entry, its quantity signed as its holding,
+- **Send what SnapTrade reported; what it did not, close only by a named
+  rule, with its provenance** (the product owner, 2026-10-01; contract v11).
+  The settled quantity and the pending by value date come from SnapTrade's
+  activities, the cash of a currency is sent net of the money market funds
+  SnapTrade counts in it, an unstated currency is the account's only cash
+  currency or USD, and an unstated institution is the connection's: each
+  carries its provenance (`normalise.Closed`, sent by `contract.py`), and a
+  statement that cannot be served clean is withheld (`normalise.Withheld`),
+  never sent with a double count. An account's kind is converted from
+  SnapTrade's type, or not known with the type as reported; SnapTrade's
+  type is never sent as the venue's. Otherwise nothing is derived. A
+  position's `cost_basis` is SnapTrade's average per unit, sent as
+  `average_cost`, never multiplied into a `cost_basis`, which stays unset; a lot is a `tax_lots` entry, its quantity signed as its holding,
   its cost as reported (sign included), the date part of its purchase date;
   no `tax_lots` is no lots, and a holding with any lot not read exactly sends
   none, with a problem said. The account's `balance.total` is the

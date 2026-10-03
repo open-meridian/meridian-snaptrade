@@ -81,7 +81,7 @@ from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
-from .raw import Record, dumps
+from .raw import CALLS, Record, dumps, parse_record_key
 from .settings import label
 from .sync import ATTENTION, Status, Syncer
 from .venue import VenueError
@@ -595,7 +595,9 @@ def _map_data(
                 "name": view.account.name,
                 "detail": _where(connection, view),
                 "custodian": connection.institution,
-                "account_type": view.account.account_type,
+                # The kind, converted, pre-fills a new account's type, never
+                # SnapTrade's own type (contract v11, Q13).
+                "account_type": view.account.kind,
                 "note": _unstable(view),
                 "number": view.account.number,
                 "connection": _connection_label(connection),
@@ -952,8 +954,8 @@ def _recorded(view: AccountView, status: Status) -> tuple[str, str, str]:
     if outcome.already_recorded:
         return "Already recorded", "", ""
     extra = []
-    if outcome.placeholders:
-        extra.append(f"{outcome.placeholders} awaiting an instrument")
+    if outcome.minted:
+        extra.append(f"{outcome.minted} new to the deployment's instrument records")
     if outcome.ambiguous:
         extra.append(f"{outcome.ambiguous} ambiguous")
     return f"{outcome.recorded} rows", "", ", ".join(extra)
@@ -970,9 +972,45 @@ def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
         others.append(f"on {holding.exchange_mic}")
     notes = []
     if holding.currency_assumed:
-        notes.append(f"SnapTrade stated no currency; {holding.currency} is assumed")
-    if holding.cash_equivalent:
-        notes.append("SnapTrade counts it in cash too")
+        notes.append(
+            f"SnapTrade stated no currency; {holding.currency} is derived: the account's "
+            "only cash currency, or US dollars"
+        )
+    statement = view.statement
+    netted = (
+        next((n for n in statement.netted if n.currency == holding.currency), None)
+        if statement is not None
+        else None
+    )
+    if holding.kind == "cash" and netted is not None:
+        # The custodian's own figure, beside what was sent (contract v11):
+        # SnapTrade's cash counts the fund, and the street gets each asset once.
+        funds = ", ".join(
+            f"{symbol}, {format(units, 'f')} at {format(price, 'f')}"
+            for symbol, units, price in netted.funds
+        )
+        notes.append(
+            f"SnapTrade reports {format(netted.gross, 'f')} of {netted.currency} cash, "
+            f"counting {funds}; sent net of it, {format(netted.net, 'f')}: derived, cash net "
+            "of the money market funds the brokerage counts in cash"
+        )
+    elif holding.cash_equivalent:
+        notes.append(
+            f"a money market fund SnapTrade counts in {holding.currency} cash too: sent as a "
+            "fund, and the cash net of it"
+        )
+    if holding.pending:
+        pending = ", ".join(
+            f"{format(p.quantity, 'f')} on {p.value_date}" for p in holding.pending
+        )
+        notes.append(f"pending {pending}, as SnapTrade's activities date the trades")
+    if holding.settle_date_quantity is not None and statement is not None:
+        how = (
+            "derived from SnapTrade's activities"
+            if statement.activities_read
+            else "taken as the quantity: SnapTrade's activities could not be read"
+        )
+        notes.append(f"settled {format(holding.settle_date_quantity, 'f')}, {how}")
     return {
         # One row per instrument and side in each account (normalise._merged).
         "key": " ".join(
@@ -1177,11 +1215,20 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     store = held.syncer.raw
     accounts = raw_accounts(caller)
     asked = request.query.get("account", "").strip()
+    # A row's reference to its raw record (contract v11), followed here: the
+    # account, the read and the call it names.
+    ref = request.query.get("ref", "").strip()
+    ref_read, ref_call = "", ""
+    if ref:
+        named = parse_record_key(ref)
+        if named is None:
+            return _said("No such record.", 404)
+        asked, ref_read, ref_call = named
     if asked and asked not in {a.external_account_id for a in accounts}:
         # Not one of theirs, or no such account: the same answer for both.
         return _said("No such account.", 404)
     chosen = [a for a in accounts if a.external_account_id == asked] if asked else accounts
-    key = request.query.get("read", "").strip() if asked else ""
+    key = (ref_read if ref else request.query.get("read", "").strip()) if asked else ""
     older = _number(request.query.get("older", "")) if asked else 0
     shown: list[dict[str, Any]] = []
     for account in chosen:
@@ -1234,7 +1281,15 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
             accounts=shown,
             focused=bool(asked),
             back=RAW,
-            notice=notice,
+            notice=notice
+            or (
+                Notice(
+                    f"The record a row references: SnapTrade's answer to "
+                    f"\u201c{CALLS[ref_call][0]}\u201d in this read."
+                )
+                if ref_call
+                else None
+            ),
             kept=store is not None,
             failure=store.failure if store is not None else "",
             retention_days=store.retention.days if store is not None else 0,

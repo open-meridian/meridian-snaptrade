@@ -5,14 +5,20 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.8.3. How a plugin like it is built is documented at
+0.9.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.13.0`, which declares
-contract v8 and carries the whole account-side contract
-(spec/the-account-side-fits-every-venue): a holding's side, a market value
-left unset, a currency marked as assumed, a fund marked as counted in cash
-too, a holding's average cost and lots as the venue reports them, a
+It is built on the SDK it pins, `open-meridian==0.16.0`, which declares
+contract v11, the edge keeps its own (meridian-design
+tasks/sdk-contract/the-edge-keeps-its-own), and carries the whole
+account-side contract (spec/the-account-side-fits-every-venue): a holding's
+side, a market value left unset, each asset counted once (a fund SnapTrade
+counts in cash too is kept, and the cash sent net of it), the settled
+quantity and the pending by value date, every row and statement naming the
+raw response it was converted from and every value closed rather than read
+carrying its provenance, an account's kind converted from SnapTrade's type
+(or not known, with the type as reported), the version's declaration and the
+storage it asks for, a holding's average cost and lots as the venue reports them, a
 statement naming its external account and institution with its figures for
 the account as a whole (buying power and net liquidation), the sync state
 with holdings and history freshness, the accounts a connection reaches,
@@ -29,18 +35,24 @@ none.
 On start, on every settings change, and every `poll_seconds`, it:
 
 1. reads the configured SnapTrade user's brokerage connections, their
-   accounts, and each account's positions (`/accounts/{id}/positions/all`) and
-   balances (`/accounts/{id}/balances`);
+   accounts, and each account's positions (`/accounts/{id}/positions/all`),
+   balances (`/accounts/{id}/balances`) and the last ten days of its
+   activities (`/accounts/{id}/activities`), for what is not yet settled;
 2. turns them into the platform's convention (`src/snaptrade/normalise.py`);
 3. for each account, reports its sync status (W2.1) and, when there is
    something to record, opens a holdings statement with its row count (W2.2)
-   and records each row (W2.3), resolving each instrument first (W3.1). A row
-   nothing matches is recorded against the deployment's placeholder (W3.7); an
-   ambiguous one is recorded unresolved and its miss published once (W3.2),
-   with the instrument's asset class where its kind gives one. The statement
+   and records each row (W2.3), resolving each instrument first (W3.1), and
+   stating what SnapTrade says of it: its asset class, its currency, its
+   description, and for a money market fund its instrument type. A row
+   nothing matches is recorded against the record the deployment mints for it
+   (W3.7); an ambiguous one is recorded unresolved and its miss published once
+   (W3.2), with the instrument's asset class where its kind gives one, and
+   SnapTrade's kind as reported where it gives none. The statement
    names the external account it was read for and its institution; one for an
    account nothing links is refused before any row.
-   A refusal stops that statement and is shown, never retried.
+   A refusal stops that statement and is shown, never retried. A statement
+   this plugin cannot serve clean -- a fund counted in cash with no price, or
+   worth more than the cash -- is withheld, and the Statements tab says why.
 
 It holds nothing between reads that it needs: a restart reads again. What
 SnapTrade answered each read is kept beside, per account, for its retention,
@@ -56,14 +68,15 @@ meridian-design.
 |---|---|
 | account `institution_account_id` | the stable account ID, `<brokerage slug>:<institution_account_id>`: the same when one real account is reached through two connections, and unchanged by a reconnect |
 | no `institution_account_id` | `snaptrade:<account id>`, marked unstable: a reconnect makes a new SnapTrade ID, and the account appears as new, to be linked again |
-| account `name`, `raw_type` | the custodian's name for it, and the venue's own account type verbatim (display only) |
+| account `name` | the custodian's name for it |
+| account `raw_type` | the account's kind (contract v11, Q13): one saying only margin is `margin`, only cash is `cash`, and any naming a retirement account (IRA, Roth, 401k, 403b, 457b, RRSP, RRIF, LIRA, SEP, SIMPLE or pension) is `retirement`; any other, Joint say, is not known, with `raw_type` sent beside it as reported (`snaptrade:account-type`). It pre-fills a new account's type on Account links, and is never sent as the venue's type |
 | balance `cash` per `currency.code` | a holding of that currency's cash instrument, `{scheme: iso4217, value: <code>}`, one row per currency; negative cash is a short row |
 | position `units` | the trade-date quantity, signed; negative is a short row, positive a long one |
-| (none) | no settle-date quantity: SnapTrade reports none |
+| (none: SnapTrade states no settled quantity) | the settled quantity, derived from the account's activities: the quantity less each `BUY` or `SELL` traded on or before the as-of date and settling after it, each of those pending on its `settlement_date`, both with their provenance (derived by that rule; the pending reported in the activities call). Where the activities cannot be read, the settled quantity is the quantity, by a rule that says so, and the statement's problems say it |
 | position `price` | nothing. SnapTrade reports no market value, and one is never made from a price; a cash row's value is its amount |
 | position `cost_basis` | the holding's average cost, per unit (per share for an option), as reported, in the row's currency (the product owner, 2026-10-01); never multiplied out, so the holding's total cost basis is left unset: SnapTrade reports none. Two rows merged into one send none |
 | position `tax_lots[]` | the holding's lots, in SnapTrade's order: `quantity` signed as the holding (a short holding's lots are short), `cost_basis` as the lot's cost, the whole lot's, sign as reported, and the date part of `original_purchase_date` as written. None where SnapTrade lists none (lots come only on some brokerages, and with SnapTrade's paid add-on), never a made-up one; and none for a holding any of whose lots cannot be read exactly (no quantity, a side contradicting the holding's, a number past 18 places, a date that is not one), said in the log. `purchased_price`, `current_value` and `lot_id` are not sent |
-| position `currency` | the row's currency; where SnapTrade states none for the position, the listing's, or the account's only cash currency, or USD, marked as assumed |
+| position `currency` | the row's currency; where SnapTrade states none for the position, the listing's, which SnapTrade states too; where it states neither, the account's only cash currency, or USD, each amount in it (an average cost, a lot's cost) carrying its provenance, derived by that rule |
 | `instrument.figi_instrument.figi_code` | identifier `{scheme: figi}` |
 | `instrument.symbol` (a ticker, or an option's OCC symbol) | identifier `{scheme: symbol, source: snaptrade}` |
 | `instrument.exchange`, when a MIC | the MIC resolution is qualified by |
@@ -71,7 +84,7 @@ meridian-design.
 | balance `buying_power` per currency | the statement's buying power, as reported, never derived, where exactly one currency reports it: buying power in several currencies is not summed, and a currency is not a margin segment |
 | account `balance.total` | the statement's net liquidation, the account's total value as the brokerage gave it (the product owner, 2026-10-01); none where SnapTrade gives none |
 | (the statement's figures) | one set with no segment, the account's as a whole, holding the two above; none where neither is reported. SnapTrade reports no margin requirement, maintenance excess, initial or variation margin, or collateral, so none is sent |
-| `cash_equivalent: true` (money-market funds) | kept as a position and marked; SnapTrade counts it in cash too |
+| `cash_equivalent: true` (money-market funds) | kept as a position, stated a money market fund on its resolve, and the cash of its currency sent net of it, units times SnapTrade's `price`, with that provenance (the street counts each asset once). The Statements tab shows the gross cash, the funds and the net. With no price, or a fund worth more than the cash, the statement is withheld rather than a double count |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
 | connection `data_freshness_mode.snaptrade` (`realtime` or `delayed`) | how SnapTrade serves the connection: whether the Connections tab offers Refresh (below); unknown when absent |
 | (the read) | a statement per account, its ID `snaptrade:<account>:<read time in ns>`, as of `data_freshness.as_of` |
@@ -468,39 +481,37 @@ authorization, a signature, a client ID or a consumer key) is replaced with
 one appears in a body. The tests hold a hostile body to that, and every kept
 byte to having no credential in it.
 
-**Where, and for how long.** decisions/028 has the deployment grant an edge
-plugin its own bucket or database schema at launch, with a declared
-retention, and the plugin's process stays stateless. **None of that is built
-yet**: there is no storage declaration in `[tool.meridian]`, nothing in the
-SDK (0.12.0, nor 0.13.0) hands a plugin storage, and core's launcher and
-chart mount none (the contract revision is meridian-design
-tasks/kernel/edge-plugins-own-storage-for-raw-records, open). So the store
-(`src/snaptrade/raw.py`) takes a directory it is given, and `__main__` gives
-it the one writable place a plugin's pod has: `/tmp/snaptrade/raw-responses`,
-on the `emptyDir` the chart mounts at `/tmp` beside a read-only root. That
-lasts as long as the pod: through a restart of the plugin's process, not past
-the pod being replaced (a new version, a node moving). The directory is the
-028 seam: once storage is granted, the store is given it instead, the
-retention comes from the grant, and nothing else changes. Until then the
-retention is the plugin's own setting, `raw_retention_days`, 30 days by
-default; records older are removed when the settings first arrive as the
-plugin starts, whenever the setting changes, and after each read. Each
-record is a gzipped JSON file, `<root>/a-<hash of the external account
-ID>/<read time>.json.gz`, written whole or not at all. A store that cannot be
-written leaves the read as it was; the tab says the responses were not kept.
-At the default poll of five minutes that is 288 records an account a day, a
-few kilobytes each compressed.
+**Where, and for how long.** In the storage the deployment grants an edge
+plugin (decisions/028): the version declares it asks for it, with its
+retention (`src/snaptrade/declaration.py`, 30 days), and the launcher, the
+chart and the plugin harness mount a volume for this instance alone at the
+path `MERIDIAN_STORAGE_DIR` names, kept across restarts and new versions,
+never deleted by the deployment, and reached by no other plugin. The store
+(`src/snaptrade/raw.py`) keeps its records under `raw-responses/` there;
+where no storage is mounted (a test, a deployment from before it), in
+`/tmp/snaptrade/raw-responses`, which lasts as long as the pod. Records
+older than `raw_retention_days` (30 by default) are removed when the
+settings first arrive as the plugin starts, whenever the setting changes,
+and after each read. Each record is a gzipped JSON file, `<root>/a-<hash of
+the external account ID>/<read time>.json.gz`, written whole or not at all.
+A store that cannot be written leaves the read as it was; the tab says the
+responses were not kept. At the default poll of five minutes that is 288
+records an account a day, a few kilobytes each compressed.
 
-**A raw-record reference on the rows: not yet.** The spec's ruling A puts on
-every store row a reference to the raw record it came from (proposed
-`RawRecordRef`, the writing plugin's instance and its own key for the
-record; Q9: followed only on the owning plugin's page). Contract v8 has no
-such field: neither core's `holdings.proto` nor the SDK at 7e21182 (0.13.0)
-carries one on a holding or a statement. It is a step 6 slice A contract item
-(the spec's "W2 amended: a holding row references the raw record it was
-converted from"), and nothing is sent for it here. When it lands, the key is
-the account and the read (`/raw?account=<id>&read=<read>`), which is what this
-tab already opens.
+**A raw-record reference on every row.** Contract v11 puts on every holding
+and statement the raw record it was converted from (`RawRecordRef`: this
+instance, which the sidecar fills or checks, and the plugin's own key, opaque
+past it). The key here is the external account, the read and the call
+(`<external account>/<read>/<positions|balances>`), and the Raw responses
+tab opens the record and the call a key names (`/raw?ref=<key>`). Nothing is
+read back from the records into what is recorded, and a backfill from them
+(the contract's for a field a revision adds) is not sent by this version.
+
+**What it receives and does not carry.** By name only, declared with the
+version and counted on its heartbeat as each read sees them (the counts stay
+in the deployment, on the plugin's Summary): a position's `price` and
+`open_pnl`, a lot's `lot_id`, and an account's `is_paper`, none of which has
+a meaning in the contract yet.
 
 ## Depends on
 
@@ -509,8 +520,12 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.13.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.13.0`.
+The SDK is pinned exactly, `open-meridian==0.16.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.16.0`.
+Where the sibling `meridian-python` checkout carries exactly that version,
+one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
+and the check's containers install it from source, and the image is built on
+a base made from it.
 Moving to 0.10.0 from 0.8.0 ran the SDK's migration (`python -m
 meridian.migrations --from 0.8.0 --to 0.10.0`, what `meridian plugin migrate`
 runs), which rewrote `admin_pages=` to `pages=`; the rest, the pages on
@@ -531,7 +546,17 @@ were done by hand. Moving to 0.13.0 (contract v8, the book of record) ran
 calls changed, and `tests/test_contract.py` now knows what v8 adds, none of
 which it sends: the book's operations, reads and deliveries are other roles',
 and SnapTrade states no holding's available split or encumbrances and no
-statement's security interest.
+statement's security interest. Moving to 0.16.0 (contract v11) from 0.13.0
+went through 0.14.0 (the pins only), 0.15.0 (a resolve's `.placeholder`
+became `.minted`, the deployment minting its own records; what SnapTrade
+states of a security is offered on the resolve) and 0.16.0, whose migration
+rewrites nothing: the account's kind in place of its type, the cash sent net
+of a fund in place of the "also counted in cash" mark, the provenance of a
+currency in place of the "assumed" flag, the settled and pending quantities
+from the activities, the raw-record references, the declaration and the
+custody suite (`tests/test_suite.py`, every case from SnapTrade's own words)
+were done by hand. `meridian.figures.LONGEST_WHY` is
+`meridian.bounds.PLUGIN_FIGURE_WHY_LENGTH` now.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -545,7 +570,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `4db6695`, contract v8).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `502c27c`, contract v11).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -572,21 +597,30 @@ this plugin's own page, it:
 6. asks the dashboard how many accounts the plugin reported and nothing
    links: 2, Interactive Brokers' and Schwab's;
 7. reads, inside the plugin's container, what it kept of SnapTrade's raw
-   responses for Alpaca's account under `/tmp/snaptrade/raw-responses`: the
-   latest read's four calls, by name. `e2e/plugin.yaml` runs the plugin on a
-   read-only root with `/tmp` writable, as the chart's pod has them. The
-   harness's admin holds Manage alone, so the Raw responses tab, under Open
-   and View, is proven by `tests/test_raw.py`, not here.
+   responses for Alpaca's account in the storage the harness grants it
+   (`MERIDIAN_STORAGE_DIR`): the latest read's five calls, by name.
+   `e2e/plugin.yaml` runs the plugin on a read-only root with `/tmp`
+   writable, as the chart's pod has them;
+8. grants the harness's admin View on the plugin and opens the Raw responses
+   tab at the reference a holding carries
+   (`/raw?ref=ALPACA:SYN-ALP-1001/<read>/positions`), which names the call it
+   was converted from;
+9. makes the plugin's container again and finds that read still kept: the
+   granted storage outlives the container it was written from.
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The
-harness has no platform, so no instrument resolves and every row names the
-deployment's placeholder: the file names each by the identifiers the plugin
-sent (AAPL by its FIGI and symbol, ZZTOP by symbol only). It holds Alpaca's
-seven rows, as `synthetic.py` serves them: AAPL 12.5 long, ZZTOP 40 short
-(-40), the AAPL call, SYNXX 500.00 also counted in cash, BTC 0.012345678,
-and USD 1523.45 and CAD 200.00 cash; and its statement, complete with seven
-rows, with no buying power since Alpaca reports two currencies.
+harness has no platform, so every instrument is a record the deployment
+minted: the file names each by the identifiers the plugin sent (AAPL by its
+FIGI and symbol, ZZTOP by symbol only). It holds Alpaca's seven rows, as
+`synthetic.py` serves them, each asset counted once: AAPL 12.5 long, ZZTOP
+40 short (-40), the AAPL call, SYNXX 500.00, BTC 0.012345678, CAD 200.00
+cash, and USD 1023.45 cash, SnapTrade's 1523.45 net of SYNXX; each with its
+settled quantity, all of it, Alpaca's trades having settled; a `closed`
+line for each value the plugin derived rather than read (every settled
+quantity, and the USD cash's quantity and market value); and its statement,
+complete with seven rows, with no buying power since Alpaca reports two
+currencies.
 
 On a failure it says which step, prints the difference if there is one, and
 keeps the components' logs in `.e2e/components.log` and what the runner
@@ -610,7 +644,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.8.3 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.9.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

@@ -15,6 +15,7 @@ from snaptrade.normalise import (
     Serving,
     Side,
     SyncState,
+    Withheld,
     asset_class,
     cash_holding,
     external_account,
@@ -285,9 +286,10 @@ def test_the_positions_own_currency_is_the_venues_and_not_assumed() -> None:
     assert (row.currency, row.currency_assumed) == ("EUR", False)
 
 
-def test_a_currency_the_venue_did_not_state_for_the_position_is_marked_assumed() -> None:
+def test_a_currency_neither_the_position_nor_its_listing_states_is_marked_assumed() -> None:
+    # The listing's currency is SnapTrade's own statement of it (contract v11).
     listed_only = position_holding(stock("SAP.DE", "30", instrument={"currency": "EUR"}), "USD")
-    assert (listed_only.currency, listed_only.currency_assumed) == ("EUR", True)
+    assert (listed_only.currency, listed_only.currency_assumed) == ("EUR", False)
     unstated = position_holding(stock("SYNX", "7", instrument={"currency": None}), "CAD")
     assert (unstated.currency, unstated.currency_assumed) == ("CAD", True)
 
@@ -331,8 +333,12 @@ def test_a_balance_with_no_cash_figure_is_no_row() -> None:
 
 
 def made(
-    positions: list[dict[str, Any]], balances: list[dict[str, Any]], total: Any = None
+    positions: list[dict[str, Any]],
+    balances: list[dict[str, Any]],
+    total: Any = None,
+    activities: list[dict[str, Any]] | None = None,
 ) -> Any:
+    """A statement, its activities read and none pending unless given."""
     acct = external_account(account(), connection())
     fresh = freshness(account(), connection(), NOW, STALE_AFTER)
     return statement(
@@ -342,6 +348,7 @@ def made(
         NOW,
         fresh,
         total,
+        [] if activities is None else activities,
     )
 
 
@@ -389,11 +396,36 @@ def test_one_row_per_instrument_and_side() -> None:
     assert rows == [(Side.LONG, Decimal("12.5")), (Side.SHORT, Decimal("-3"))]
 
 
-def test_a_money_market_fund_counted_in_cash_is_kept_and_marked() -> None:
-    fund = stock("SYNXX", "500.00", cash_equivalent=True, instrument={"kind": "mutualfund"})
+def test_a_money_market_fund_counted_in_cash_is_kept_and_the_cash_sent_net_of_it() -> None:
+    fund = stock(
+        "SYNXX", "500.00", price="1.00", cash_equivalent=True, instrument={"kind": "mutualfund"}
+    )
     result, _ = made([fund], [balance("USD", Decimal("1523.45"))])
-    assert result.holdings[0].cash_equivalent
-    assert len(result.holdings) == 2
+    held, cash = result.holdings
+    assert held.cash_equivalent and held.quantity == Decimal("500.00")
+    assert cash.quantity == Decimal("1023.45")
+    # Written to the cash's own places, as SnapTrade wrote the cash: exact.
+    assert str(cash.quantity) == "1023.45"
+    assert cash.market_value == meridian.Money(Decimal("1023.45"), "USD")
+    assert {(c.field, c.kind) for c in cash.closed} >= {
+        ("quantity", "derived"),
+        ("market_value", "derived"),
+    }
+    assert result.netted[0].gross == Decimal("1523.45")
+
+
+def test_a_fund_counted_in_cash_with_no_price_withholds_the_statement() -> None:
+    fund = stock("SYNXX", "500.00", cash_equivalent=True, instrument={"kind": "mutualfund"})
+    with pytest.raises(Withheld, match="no price for SYNXX"):
+        made([fund], [balance("USD", Decimal("1523.45"))])
+
+
+def test_a_fund_worth_more_than_its_cash_withholds_the_statement() -> None:
+    fund = stock(
+        "SYNXX", "500.00", price="1.00", cash_equivalent=True, instrument={"kind": "mutualfund"}
+    )
+    with pytest.raises(Withheld, match="worth more than that cash"):
+        made([fund], [balance("USD", Decimal("100.00"))])
 
 
 def test_a_row_that_cannot_be_read_is_said_and_the_rest_are_kept() -> None:

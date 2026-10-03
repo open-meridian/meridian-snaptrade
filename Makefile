@@ -11,7 +11,15 @@ DOCKER      := DOCKER_BUILDKIT=1 docker
 PY_VERSION  := 3.12
 CHECK       := meridian-snaptrade-check
 IMAGE       ?= snaptrade:local
-BASE        ?= ghcr.io/open-meridian/plugin-python:0.13.0
+# The SDK pyproject.toml pins, and its base image. Where the sibling
+# meridian-python checkout carries exactly that version -- one not yet
+# published, being tried -- it is built from there (SDK_REPO): the tests' and
+# the check's containers install it from source, and the plugin's image is
+# built on a base made from it. Otherwise both come from PyPI and ghcr.io.
+SDK_VERSION := $(shell sed -n 's/.*"open-meridian==\([0-9][0-9.]*\)".*/\1/p' pyproject.toml)
+SDK_REPO    ?= $(if $(shell grep -s '^version = "$(SDK_VERSION)"$$' ../meridian-python/pyproject.toml),../meridian-python,)
+SDK_CONTEXT := $(if $(SDK_REPO),--build-context sdk=$(SDK_REPO),)
+BASE        ?= $(if $(SDK_REPO),plugin-python:$(SDK_VERSION)-local,ghcr.io/open-meridian/plugin-python:$(SDK_VERSION))
 PLUGIN_CHECK := meridian-snaptrade-plugin-check
 # The meridian check.yaml holds the plugin to, read from there so the two
 # cannot drift.
@@ -25,8 +33,8 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:4db6695@sha256:01ff99ca65f71b7d03f1fcc4f07defbe32b4e0bbb80d096edd3ae790f3751076
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:4db6695@sha256:4049e820c88b6e424cee02d7f6c5924a83d8468493eb1cadd4b9765a1de80467
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:502c27c@sha256:1b13774610b26ac5a3467b6b3c85a9f32c800f5b71e1c94f6eca6792874c434f
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:502c27c@sha256:49d833b22959d5a6f42c327dc1346a5852b2618b5979363484259ad4bda6207d
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
@@ -42,14 +50,21 @@ E2E     := MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
 E2E_RUN := $(E2E) run --rm -T runner
 E2E_STREET := $(E2E) run --rm -T store street
 # What the plugin kept of SnapTrade's raw responses for Alpaca's account, read
-# inside its container (raw.STAND_IN, its /tmp): the latest read's calls, by
-# name. The harness's admin holds Manage alone, so the Raw responses tab,
-# under Open and View, is the tests' to prove (tests/test_raw.py).
-export E2E_RAW := from snaptrade.raw import STAND_IN, RawStore; \
-	r = RawStore(STAND_IN).latest("ALPACA:SYN-ALP-1001"); \
+# inside its container from the storage the harness grants a custody plugin
+# (decisions/028, MERIDIAN_STORAGE_DIR): the latest read's calls, by name.
+# The harness's admin holds Manage alone, so the Raw responses tab, under Open
+# and View, is the tests' to prove (tests/test_raw.py).
+export E2E_RAW := import os; from snaptrade.raw import RawStore, storage_root; \
+	assert os.environ.get("MERIDIAN_STORAGE_DIR"), "no storage granted"; \
+	s = RawStore(storage_root()); r = s.latest("ALPACA:SYN-ALP-1001"); \
 	calls = [c["call"] for c in r.calls] if r else []; \
-	assert calls == ["listing connections", "listing accounts", "reading positions", "reading balances"], calls; \
-	print(len(RawStore(STAND_IN).reads("ALPACA:SYN-ALP-1001")), "reads of Alpaca, the latest", r.key)
+	assert calls == ["listing connections", "listing accounts", "reading positions", "reading balances", "reading activities"], calls; \
+	print(len(s.reads("ALPACA:SYN-ALP-1001")), "reads of Alpaca, the latest", r.key, "in", storage_root())
+# The same read found again, by its key, in a new container: the granted
+# storage outlives the one it was written from (decisions/028).
+export E2E_RAW_KEPT := import os; from snaptrade.raw import RawStore, storage_root; \
+	k = os.environ["E2E_KEPT"]; keys = [r.key for r in RawStore(storage_root()).reads("ALPACA:SYN-ALP-1001")]; \
+	assert k in keys, (k, keys); print("read", k, "kept across a new container")
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the plugin's image, and e2e (the pre-push gate)"
@@ -76,15 +91,15 @@ ci-remote: lint test
 	@echo "ci-remote: GREEN"
 
 lint:
-	@$(DOCKER) build -f Dockerfile.check --target lint . >/dev/null 2>&1 \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target lint . >/dev/null 2>&1 \
 		|| { echo "lint FAILED; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target lint --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target lint --progress=plain ." >&2; exit 1; }
 	@echo "lint OK: ruff and mypy (strict) clean"
 
 test:
-	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1 \
 		|| { echo "test FAILED to build; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target test --progress=plain ." >&2; exit 1; }
 	@docker run --rm $(CHECK) python -m pytest -q -rs >.test.log 2>&1 \
 		|| { echo "test FAILED. The last 40 lines, and the whole of it in .test.log:" >&2; \
 		     tail -40 .test.log >&2; exit 1; }
@@ -96,10 +111,10 @@ test:
 check:
 	@[ -n "$(MERIDIAN_VERSION)" ] \
 		|| { echo "check FAILED: .github/workflows/check.yaml pins no MERIDIAN_VERSION" >&2; exit 1; }
-	@$(DOCKER) build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) \
 		-t $(PLUGIN_CHECK) . >/dev/null 2>&1 \
 		|| { echo "check FAILED to build; see it with:" >&2; \
-		     echo "  DOCKER_BUILDKIT=1 docker build -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
+		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
 	@out="$$(docker run --rm -v "$(CURDIR)":/w:ro $(PLUGIN_CHECK) meridian plugin check --run-tests 2>&1)" \
 		|| { echo "check FAILED:" >&2; echo "$$out" >&2; exit 1; }
 	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --run-tests, every rule holds"
@@ -109,6 +124,10 @@ check:
 # SnapTrade's SDK, and carries nothing of this repository but the package (its
 # final stage receives wheels, so the agents' files cannot reach it).
 image:
+	@if [ -n "$(SDK_REPO)" ]; then \
+		$(MAKE) --no-print-directory -C "$(SDK_REPO)" base-image BASE_IMAGE=$(BASE) >/dev/null \
+			|| { echo "image FAILED: the base for open-meridian $(SDK_VERSION) was not built from $(SDK_REPO)" >&2; exit 1; }; \
+	fi
 	@$(DOCKER) build --build-arg BASE=$(BASE) -t $(IMAGE) . >/dev/null 2>&1 \
 		|| { echo "image FAILED; see it with:" >&2; \
 		     echo "  DOCKER_BUILDKIT=1 docker build --build-arg BASE=$(BASE) --progress=plain ." >&2; exit 1; }
@@ -174,11 +193,19 @@ e2e: image
 	unlinked="$$($(E2E_RUN) unlinked --expect 2 2>>.e2e/runner.log)" \
 		|| fail "the dashboard did not count the two accounts left unlinked"; \
 	raw="$$($(E2E) exec -T snaptrade python -c "$$E2E_RAW" 2>>.e2e/components.log)" \
-		|| fail "the plugin kept no raw responses for Alpaca's account on its read-only root"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in /tmp on a read-only root ($$raw)"
+		|| fail "the plugin kept no raw responses for Alpaca's account in its granted storage"; \
+	key="$$(printf '%s' "$$raw" | sed -n 's/.* the latest \([^ ]*\) in .*/\1/p')"; \
+	[ -n "$$key" ] || fail "the raw responses named no read"; \
+	$(E2E_RUN) grant --level read >>.e2e/runner.log 2>&1 || fail "read on the plugin was not granted"; \
+	$(E2E_RUN) page --level read "/raw?ref=ALPACA:SYN-ALP-1001/$$key/positions" --until "The record a row references" \
+		>>.e2e/runner.log 2>&1 || fail "a holding's raw-record reference did not resolve on the Raw responses tab"; \
+	$(E2E) up -d --no-deps --force-recreate snaptrade >>.e2e/components.log 2>&1 || fail "the plugin's container was not made again"; \
+	kept="$$($(E2E) exec -T -e E2E_KEPT="$$key" snaptrade python -c "$$E2E_RAW_KEPT" 2>>.e2e/components.log)" \
+		|| fail "the raw responses did not survive a new container"; \
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept"
 
 preview:
-	@$(DOCKER) build -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
+	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
 	@for tab in connections accounts statements raw; do \
 		docker run --rm $(CHECK) python -m snaptrade.preview $$tab >preview/$$tab.html || exit 1; \

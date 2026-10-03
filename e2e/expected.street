@@ -1,8 +1,17 @@
-position|E2E Alpaca|placeholder(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|long|12.5|||
-position|E2E Alpaca|placeholder(iso4217:CAD)|long|200.00||200.00 CAD|
-position|E2E Alpaca|placeholder(iso4217:USD)|long|1523.45||1523.45 USD|
-position|E2E Alpaca|placeholder(symbol:AAPL  261218C00250000@snaptrade)|long|2|||
-position|E2E Alpaca|placeholder(symbol:BTC@snaptrade)|long|0.012345678|||
-position|E2E Alpaca|placeholder(symbol:SYNXX@snaptrade)|long|500.00|||in-cash
-position|E2E Alpaca|placeholder(symbol:ZZTOP@snaptrade)|short|-40|||
+closed|E2E Alpaca|local(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(iso4217:CAD)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(iso4217:USD)|long|market_value|derived
+closed|E2E Alpaca|local(iso4217:USD)|long|quantity|derived
+closed|E2E Alpaca|local(iso4217:USD)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(symbol:AAPL  261218C00250000@snaptrade)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(symbol:BTC@snaptrade)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(symbol:SYNXX@snaptrade)|long|settle_date_quantity|derived
+closed|E2E Alpaca|local(symbol:ZZTOP@snaptrade)|short|settle_date_quantity|derived
+position|E2E Alpaca|local(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|long|12.5|12.5||
+position|E2E Alpaca|local(iso4217:CAD)|long|200.00|200.00|200.00 CAD|
+position|E2E Alpaca|local(iso4217:USD)|long|1023.45|1023.45|1023.45 USD|
+position|E2E Alpaca|local(symbol:AAPL  261218C00250000@snaptrade)|long|2|2||
+position|E2E Alpaca|local(symbol:BTC@snaptrade)|long|0.012345678|0.012345678||
+position|E2E Alpaca|local(symbol:SYNXX@snaptrade)|long|500.00|500.00||
+position|E2E Alpaca|local(symbol:ZZTOP@snaptrade)|short|-40|-40||
 statement|E2E Alpaca|snaptrade|7|complete||||false

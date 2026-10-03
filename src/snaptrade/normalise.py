@@ -19,8 +19,30 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
   `{scheme: iso4217, value: <code>}`, one row per account and currency.
 - **Long and short are separate rows,** each with its side and a quantity
   signed to match. SnapTrade reports one signed `units` per instrument.
-- **Trade-date quantity always; settle-date where the venue gives one.**
-  SnapTrade gives none, so it is never set here.
+- **Trade-date quantity always; settled and pending by value date, always**
+  (contract v11; the product owner, 2026-10-02: the custody role's). SnapTrade
+  states no settled quantity, so it is derived from SnapTrade's own activities:
+  each trade dated on or before the as-of date and settling after it is a
+  pending quantity on its settlement date, reported by SnapTrade in its
+  activities, and the settled quantity is the quantity less them, derived by
+  that rule. Where the activities cannot be read, no trade is known pending,
+  and the settled quantity is the quantity by a rule that says so. Each value
+  carries its provenance; none is passed off as SnapTrade's.
+- **Each asset once** (contract v11; the product owner's correction of
+  2026-10-02). SnapTrade counts a money market fund it lists as a position
+  (`cash_equivalent`) in the cash of its currency too. The fund is sent as
+  the holding it is, and the cash net of it: SnapTrade's cash less the fund's
+  units at its price, derived by that rule. A fund larger than its cash, a
+  fund in a currency with no cash, or one with no price is a statement this
+  plugin cannot serve clean, and withholds, saying why.
+- **The account's kind** (contract v11, Q13): `raw_type` margin is margin,
+  cash is cash, a retirement account's type (an IRA, a Roth, a 401(k), an
+  RRSP and the like) is retirement; any other type -- INDIVIDUAL, Brokerage,
+  Joint -- says neither, so the kind is not known and SnapTrade's type travels
+  beside it as reported.
+- **The custodian named** (contract v11, the custody audit's Q7): the
+  account's `institution_name`, or where SnapTrade gives none, the
+  connection's brokerage name, derived by that rule.
 - **Market value only as reported.** SnapTrade reports none for a position,
   and it is never computed from `price`: unset means "not reported". A cash
   row's value is its amount, which is what SnapTrade reported.
@@ -43,7 +65,9 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
   option is derivative, crypto is crypto_asset; any other kind is left unset
   for a person to set on the platform. Cash is no instrument SnapTrade
   reports, and has none.
-- **A stated currency where the venue gives none,** marked as assumed.
+- **A currency where the venue gives none** is the account's only cash
+  currency, or US dollars, derived by that rule and said by its provenance;
+  a resolve is narrowed only by a currency SnapTrade stated.
 - **Numbers are Decimal.** A float reaching here becomes Decimal(repr(value)).
 - **The statement ID is made from the account and the read time.**
 - **Sync state and freshness** from the connection and the account's sync
@@ -73,6 +97,42 @@ import meridian
 from .venue import Json, Snapshot
 
 SOURCE = "snaptrade"
+
+# The schemes this plugin's values as reported, and its names not carried,
+# are in (meridian.edge.as_reported; the declaration's not_carried).
+ACCOUNT_TYPE_SCHEME = "snaptrade:account-type"
+SECURITY_TYPE_SCHEME = "snaptrade:security-type"
+
+# The rules this plugin closes a value by, each named as its provenance says
+# it (contract v11): never presented as SnapTrade's.
+RULE_NET_CASH = "cash net of the money market funds the brokerage counts in cash"
+RULE_SETTLED = "the quantity less the account's trades not settled at the as-of date"
+RULE_SETTLED_UNREAD = (
+    "the quantity, no trade being known pending: SnapTrade's activities could not be read"
+)
+RULE_CASH_SETTLED = (
+    "the cash less the proceeds of sales and plus the cost of purchases not settled at "
+    "the as-of date"
+)
+RULE_CURRENCY = "the account's only cash currency, or US dollars"
+RULE_INSTITUTION = "the connection's brokerage name"
+RULE_AS_OF_SYNC = "the date of SnapTrade's last successful sync of the holdings"
+RULE_AS_OF_READ = "the date of the read"
+
+# SnapTrade's activity types that move a holding when they settle.
+_TRADES = {"BUY": 1, "SELL": -1}
+
+# The raw calls a row or a statement is converted from, by the name a raw
+# record's key gives them (raw.py).
+POSITIONS_CALL = "positions"
+BALANCES_CALL = "balances"
+ACTIVITIES_CALL = "activities"
+
+# SnapTrade's account types, as words of `raw_type` in lower case, that say a
+# tax-advantaged retirement account (contract v11, Q13).
+_RETIREMENT_WORDS = frozenset(
+    {"ira", "roth", "401k", "403b", "457b", "rrsp", "rrif", "lira", "sep", "simple", "pension"}
+)
 
 # How late an account that is late by design may be before it is also stale:
 # a business day, a weekend and a holiday.
@@ -204,6 +264,21 @@ class ExternalAccount:
     # there to the admin. Empty when SnapTrade gives none, or masks it
     # ("****3003"): a masked number matches nothing.
     number: str = ""
+    # The account's kind, converted from SnapTrade's type (contract v11):
+    # cash, margin or retirement, or "" for not known, when `account_type`
+    # travels beside it as reported.
+    kind: str = ""
+    # True when SnapTrade named no institution for the account and the one
+    # above is the connection's brokerage name, derived by that rule.
+    institution_derived: bool = False
+
+    @property
+    def kind_as_reported(self) -> tuple[str, str] | None:
+        """SnapTrade's type, as reported -- its code and its text, which
+        SnapTrade gives as one -- where it did not convert to a kind."""
+        if self.kind or not self.account_type:
+            return None
+        return (self.account_type, self.account_type)
 
 
 @dataclass(frozen=True)
@@ -238,6 +313,43 @@ class Lot:
 
 
 @dataclass(frozen=True)
+class Pending:
+    """A quantity not yet settled, and the date it settles on."""
+
+    value_date: str
+    # Signed as its holding's quantity is.
+    quantity: Decimal
+
+
+@dataclass(frozen=True)
+class Closed:
+    """How a value this plugin closed rather than read came to be (contract
+    v11): its path in the row, the provenance's kind, and the rule, or the
+    raw call it was reported in."""
+
+    field: str
+    kind: str
+    rule: str = ""
+    call: str = ""
+
+
+@dataclass(frozen=True)
+class Netted:
+    """A currency's cash as SnapTrade reported it, the money market funds it
+    counts in that cash, and the cash sent net of them: what the Statements
+    tab shows beside the row."""
+
+    currency: str
+    gross: Decimal
+    funds: tuple[tuple[str, Decimal, Decimal], ...]
+    net: Decimal
+
+
+class Withheld(ValueError):
+    """A statement this plugin cannot serve clean, and why."""
+
+
+@dataclass(frozen=True)
 class Holding:
     identifiers: tuple[Identifier, ...]
     description: str
@@ -265,6 +377,15 @@ class Holding:
     average_cost: meridian.Money | None = None
     # The venue's lots, in its order; none where it lists none.
     lots: tuple[Lot, ...] = ()
+    # SnapTrade's price per unit, kept for netting a fund out of its cash;
+    # never sent, and never made into a market value.
+    price: Decimal | None = None
+    # The quantities not yet settled, by value date (contract v11).
+    pending: tuple[Pending, ...] = ()
+    # Each value this plugin closed rather than read (contract v11).
+    closed: tuple[Closed, ...] = ()
+    # The raw call the row was converted from (raw.py): positions or balances.
+    call: str = POSITIONS_CALL
 
 
 @dataclass(frozen=True)
@@ -280,6 +401,13 @@ class Statement:
     # The account's total value as the brokerage gave it to SnapTrade
     # (`balance.total`); None where it gave none.
     net_liquidation: meridian.Money | None = None
+    # Each value of the statement this plugin closed rather than read: an
+    # as-of date it had to derive, the institution taken from the connection.
+    closed: tuple[Closed, ...] = ()
+    # Each currency whose cash was sent net of a fund (contract v11).
+    netted: tuple[Netted, ...] = ()
+    # Whether SnapTrade's activities were read for the settled quantities.
+    activities_read: bool = False
 
 
 @dataclass(frozen=True)
@@ -410,9 +538,25 @@ def brokerage_slug(connection: Json) -> str:
     return _text(_dict(connection.get("brokerage")).get("slug"))
 
 
+def account_kind(raw_type: str) -> str:
+    """The platform's account kind for SnapTrade's `raw_type`: cash, margin or
+    retirement, or "" where it says none of them (contract v11, Q13)."""
+    words = set(re.findall(r"[a-z0-9]+", raw_type.lower().replace("(k)", "k")))
+    if words & _RETIREMENT_WORDS:
+        return "retirement"
+    if words == {"margin"}:
+        return "margin"
+    if words == {"cash"}:
+        return "cash"
+    return ""
+
+
 def external_account(account: Json, connection: Json) -> ExternalAccount:
-    """The stable identity of an account, and its names."""
+    """The stable identity of an account, its names and its kind."""
     institution = _text(account.get("institution_name"))
+    brokerage = _dict(connection.get("brokerage"))
+    named_by_connection = _text(brokerage.get("display_name")) or _text(brokerage.get("name"))
+    institution_derived = not institution and bool(named_by_connection)
     held_at = brokerage_slug(connection) or institution.upper()
     institution_account_id = _text(account.get("institution_account_id"))
     snaptrade_id = _text(account.get("id"))
@@ -420,15 +564,18 @@ def external_account(account: Json, connection: Json) -> ExternalAccount:
         external_id, stable = f"{held_at}:{institution_account_id}", True
     else:
         external_id, stable = f"snaptrade:{snaptrade_id}", False
+    raw_type = _text(account.get("raw_type"))
     return ExternalAccount(
         external_account_id=external_id,
         stable=stable,
-        name=_text(account.get("name")) or institution,
-        account_type=_text(account.get("raw_type")),
-        institution=institution,
+        name=_text(account.get("name")) or institution or named_by_connection,
+        account_type=raw_type,
+        institution=institution or named_by_connection,
         connection_id=_text(account.get("brokerage_authorization")),
         snaptrade_account_id=snaptrade_id,
         number=account_number(account),
+        kind=account_kind(raw_type),
+        institution_derived=institution_derived,
     )
 
 
@@ -575,6 +722,24 @@ def position_holding(
     except ValueError as refused:
         said.append(f"{refused}; none of {named}'s lots is sent")
         lots = ()
+    price: Decimal | None = None
+    if position.get("price") is not None:
+        try:
+            price = to_decimal(position.get("price"), f"the price of {named}")
+        except ValueError:
+            price = None
+    assumed = not stated and not listed
+    closed: list[Closed] = []
+    if assumed:
+        # A currency SnapTrade stated neither for the position nor its listing:
+        # every amount the row carries is in it, derived by the rule.
+        if average_cost is not None:
+            closed.append(Closed("average_cost.currency_code", "derived", RULE_CURRENCY))
+        closed.extend(
+            Closed(f"lots[{i}].cost.currency_code", "derived", RULE_CURRENCY)
+            for i, lot in enumerate(lots)
+            if lot.cost is not None
+        )
     return Holding(
         identifiers=tuple(identifiers),
         description=_text(instrument.get("description")) or symbol,
@@ -582,7 +747,7 @@ def position_holding(
         side=side,
         quantity=quantity,
         currency=currency,
-        currency_assumed=not stated,
+        currency_assumed=assumed,
         # SnapTrade reports no market value, and one is never made from `price`.
         market_value=None,
         exchange_mic=exchange if _MIC.match(exchange) else "",
@@ -590,6 +755,8 @@ def position_holding(
         asset_class=asset_class(kind),
         average_cost=average_cost,
         lots=lots,
+        price=price,
+        closed=tuple(closed),
     )
 
 
@@ -661,6 +828,7 @@ def cash_holding(balance: Json) -> Holding | None:
         currency=code,
         # The cash itself, in its own currency, is what SnapTrade reported.
         market_value=meridian.Money(amount, code),
+        call=BALANCES_CALL,
     )
 
 
@@ -711,9 +879,12 @@ def statement(
     read_at: datetime,
     freshness: Freshness,
     total: Any = None,
+    activities: list[Json] | None = None,
 ) -> tuple[Statement, tuple[str, ...]]:
     """The statement for one account, and what could not be put in it.
-    `total` is the account's `balance.total` as SnapTrade listed it."""
+    `total` is the account's `balance.total` as SnapTrade listed it;
+    `activities` its trades, None where they could not be read. Raises
+    `Withheld` for a statement this plugin cannot serve clean."""
     problems: list[str] = []
     cash: list[Holding] = []
     buying_power: list[meridian.Money] = []
@@ -730,8 +901,8 @@ def statement(
             problems.append(str(refused))
     # A position whose currency SnapTrade states neither for the position nor
     # for its listing is taken to be in the account's only cash currency, or
-    # in US dollars when the account has several or none. Either way it is
-    # marked as this plugin's assumption, never passed off as SnapTrade's.
+    # in US dollars when the account has several or none: derived by that
+    # rule, and said so, never passed off as SnapTrade's.
     fallback = cash[0].currency if len({row.currency for row in cash}) == 1 else "USD"
     rows: list[Holding] = []
     for position in positions.get("results") or []:
@@ -741,16 +912,28 @@ def statement(
             problems.append(str(refused))
     holdings, merging = _merged(rows + cash)
     problems.extend(merging)
+    holdings, netted = _counted_once(holdings)
+    closed: list[Closed] = []
+    as_of = _day(_dict(positions.get("data_freshness")).get("as_of"))
+    if as_of is None and freshness.holdings_as_of is not None:
+        as_of = freshness.holdings_as_of.date()
+        closed.append(Closed("as_of_date", "derived", RULE_AS_OF_SYNC))
+    if as_of is None:
+        as_of = read_at.date()
+        closed.append(Closed("as_of_date", "derived", RULE_AS_OF_READ))
+    if account.institution_derived:
+        closed.append(Closed("institution", "derived", RULE_INSTITUTION))
+    if activities is None:
+        problems.append(
+            "SnapTrade's activities could not be read: no trade is known pending, and each "
+            "settled quantity is its quantity, by a rule that says so"
+        )
+    holdings = tuple(_settled(holding, as_of, activities) for holding in holdings)
     net_liquidation: meridian.Money | None = None
     try:
         net_liquidation = _total(total)
     except ValueError as refused:
         problems.append(f"{refused}; no net liquidation is sent")
-    as_of = (
-        _day(_dict(positions.get("data_freshness")).get("as_of"))
-        or (freshness.holdings_as_of.date() if freshness.holdings_as_of else None)
-        or read_at.date()
-    )
     return (
         Statement(
             external_statement_id=statement_id(account.external_account_id, read_at),
@@ -759,9 +942,151 @@ def statement(
             holdings=holdings,
             buying_power=tuple(buying_power),
             net_liquidation=net_liquidation,
+            closed=tuple(closed),
+            netted=netted,
+            activities_read=activities is not None,
         ),
         tuple(problems),
     )
+
+
+def _counted_once(
+    holdings: tuple[Holding, ...],
+) -> tuple[tuple[Holding, ...], tuple[Netted, ...]]:
+    """Each asset once (contract v11): the cash of each currency net of the
+    money market funds SnapTrade counts in it, the net derived by the rule.
+    Raises `Withheld` where it cannot be served clean."""
+    funds: dict[str, list[Holding]] = {}
+    for holding in holdings:
+        if holding.cash_equivalent and holding.kind != "cash":
+            funds.setdefault(holding.currency, []).append(holding)
+    if not funds:
+        return holdings, ()
+    netted: list[Netted] = []
+    out: list[Holding] = []
+    cash = {h.currency: h for h in holdings if h.kind == "cash"}
+    for currency, counted in sorted(funds.items()):
+        held = cash.get(currency)
+        named = ", ".join(fund.identifiers[-1].value for fund in counted)
+        if held is None:
+            raise Withheld(
+                f"SnapTrade counts {named} in {currency} cash and reports no {currency} cash, "
+                "so the cash cannot be sent net of it; nothing is sent until it can"
+            )
+        values: list[tuple[str, Decimal, Decimal]] = []
+        for fund in counted:
+            if fund.price is None:
+                raise Withheld(
+                    f"SnapTrade gives no price for {fund.identifiers[-1].value}, which it "
+                    f"counts in {currency} cash, so the cash cannot be sent net of it"
+                )
+            values.append((fund.identifiers[-1].value, fund.quantity, fund.price))
+        net = _at_scale_of(
+            held.quantity - sum((units * price for _, units, price in values), Decimal(0)),
+            held.quantity,
+        )
+        if net < 0:
+            raise Withheld(
+                f"the money market funds SnapTrade counts in {currency} cash ({named}) are "
+                f"worth more than that cash, {held.quantity}; it cannot be sent net of "
+                "them, and nothing is sent rather than a double count"
+            )
+        netted.append(Netted(currency, held.quantity, tuple(values), net))
+    by_currency = {n.currency: n for n in netted}
+    for holding in holdings:
+        done = by_currency.get(holding.currency) if holding.kind == "cash" else None
+        if done is None:
+            out.append(holding)
+            continue
+        out.append(
+            replace(
+                holding,
+                quantity=done.net,
+                side=_side(done.net),
+                market_value=meridian.Money(done.net, holding.currency),
+                closed=holding.closed
+                + (
+                    Closed("quantity", "derived", RULE_NET_CASH),
+                    Closed("market_value", "derived", RULE_NET_CASH),
+                ),
+            )
+        )
+    return tuple(out), tuple(netted)
+
+
+def _at_scale_of(value: Decimal, like: Decimal) -> Decimal:
+    """`value` written to the places `like` is written to, where that is
+    exact (1023.4500 as 1023.45 beside a cash of 1523.45); else as it is.
+    The same number either way: never rounded."""
+    try:
+        shown = value.quantize(like)
+    except InvalidOperation:
+        return value
+    return shown if shown == value else value
+
+
+def _settled(holding: Holding, as_of: date, activities: list[Json] | None) -> Holding:
+    """The holding's settled quantity and pending quantities by value date
+    (contract v11): from SnapTrade's activities, each trade dated on or before
+    `as_of` and settling after it; or, where they could not be read, its
+    quantity by a rule that says so."""
+    if activities is None:
+        return replace(
+            holding,
+            settle_date_quantity=holding.quantity,
+            closed=holding.closed
+            + (Closed("settle_date_quantity", "derived", RULE_SETTLED_UNREAD),),
+        )
+    by_date: dict[str, Decimal] = {}
+    for activity in activities:
+        moved = _pending_move(activity, holding, as_of)
+        if moved is not None:
+            day, quantity = moved
+            by_date[day] = by_date.get(day, Decimal(0)) + quantity
+    pending = tuple(
+        Pending(day, quantity) for day, quantity in sorted(by_date.items()) if quantity
+    )
+    settled = holding.quantity - sum((p.quantity for p in pending), Decimal(0))
+    closed = holding.closed + (
+        Closed(
+            "settle_date_quantity",
+            "derived",
+            RULE_CASH_SETTLED if holding.kind == "cash" else RULE_SETTLED,
+        ),
+    )
+    if pending:
+        closed += (Closed("pending", "reported", call=ACTIVITIES_CALL),)
+    return replace(holding, settle_date_quantity=settled, pending=pending, closed=closed)
+
+
+def _pending_move(activity: Json, holding: Holding, as_of: date) -> tuple[str, Decimal] | None:
+    """What one of SnapTrade's activities leaves pending of a holding at
+    `as_of`, on its settlement date: units of the security traded, or the
+    cash a trade has yet to pay or receive; None where it leaves nothing."""
+    sign = _TRADES.get(_text(activity.get("type")).upper())
+    traded, settles = _day(activity.get("trade_date")), _day(activity.get("settlement_date"))
+    if sign is None or traded is None or settles is None or not traded <= as_of < settles:
+        return None
+    if holding.kind == "cash":
+        if _currency(activity.get("currency")) != holding.currency:
+            return None
+        try:
+            amount = abs(to_decimal(activity.get("amount"), "an activity's amount"))
+        except ValueError:
+            return None
+        # A purchase not settled has yet to pay: pending out of the cash; a
+        # sale has yet to receive: pending into it.
+        return settles.isoformat(), -sign * amount
+    symbol = _text(_dict(activity.get("symbol")).get("symbol"))
+    if not symbol or symbol not in {
+        i.value for i in holding.identifiers if i.scheme == "symbol"
+    }:
+        return None
+    try:
+        units = abs(to_decimal(activity.get("units"), "an activity's units"))
+    except ValueError:
+        return None
+    return settles.isoformat(), sign * units
 
 
 def _total(total: Any) -> meridian.Money | None:
@@ -793,14 +1118,20 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
         if not withheld and failure:
             withheld = failure
         if not withheld:
-            made, problems = statement(
-                account,
-                snapshot.positions.get(account.snaptrade_account_id, {}),
-                snapshot.balances.get(account.snaptrade_account_id, []),
-                snapshot.read_at,
-                fresh,
-                _dict(raw.get("balance")).get("total"),
-            )
+            try:
+                made, problems = statement(
+                    account,
+                    snapshot.positions.get(account.snaptrade_account_id, {}),
+                    snapshot.balances.get(account.snaptrade_account_id, []),
+                    snapshot.read_at,
+                    fresh,
+                    _dict(raw.get("balance")).get("total"),
+                    snapshot.activities.get(account.snaptrade_account_id),
+                )
+            except Withheld as unclean:
+                # A statement it cannot serve clean is withheld, and said why
+                # on the page (the custody audit's Q1).
+                withheld = str(unclean)
         by_connection.setdefault(account.connection_id, []).append(
             AccountView(account, fresh, made, withheld, problems)
         )

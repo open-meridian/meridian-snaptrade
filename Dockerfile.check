@@ -1,7 +1,13 @@
 # The plugin's tests, lint and types, in a container, because the host has no
-# toolchain to rely on (meridian-python does the same). Git is here for the
-# SDK's pin by commit.
+# toolchain to rely on (meridian-python does the same). Git is here for an
+# SDK pinned by commit while one is being tried.
 ARG PYTHON_VERSION=3.12
+
+# The SDK's source, where `make` is given one (SDK_REPO): an SDK release not
+# yet published, tried from the sibling checkout that carries exactly the
+# version pyproject.toml pins. Empty, the pin comes from PyPI.
+FROM scratch AS sdk
+
 FROM python:${PYTHON_VERSION}-slim AS base
 RUN apt-get update \
  && apt-get install -y --no-install-recommends git \
@@ -10,6 +16,8 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /w
 COPY pyproject.toml ./
 COPY src src
+RUN --mount=type=bind,from=sdk,target=/sdk,rw --mount=type=cache,target=/root/.cache/pip \
+    if [ -f /sdk/pyproject.toml ]; then pip install /sdk; fi
 RUN --mount=type=cache,target=/root/.cache/pip pip install -e ".[dev]"
 COPY tests tests
 

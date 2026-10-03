@@ -10,18 +10,20 @@ discrepancy, for backfill when the contract gains a field, and as evidence
 that the model lacks something. Core never reads them, and no other plugin
 does: they are shown on this plugin's own Raw responses tab alone.
 
-**The storage is a stand-in.** decisions/028 has the deployment grant an edge
-plugin its own bucket or database schema at launch, with a declared
-retention; none of that is built yet (meridian-design tasks/kernel/edge-
-plugins-own-storage-for-raw-records: no declaration, no provisioning, nothing
-in the SDK or the launcher). So `RawStore` takes a directory it is given, and
-`__main__` gives it the one writable place a plugin's pod has, `/tmp` (an
-emptyDir the chart mounts on a read-only root): it lasts as long as the pod,
-through a restart of the plugin's process, and not past the pod being
-replaced, by a new version, say. That directory is the seam: when the grant
-lands, the store is given the granted storage instead, and nothing else here
-changes. The retention is the plugin's own setting until the grant declares
-it.
+**The storage is the deployment's** (decisions/028; contract v11). The
+plugin declares the storage it asks for, with its retention, in its version's
+declaration (declaration.py), and the deployment gives an instance holding an
+edge role a claim of its own, mounted in its container alone and kept when
+the pod is replaced (meridian-core fbcc297), which the SDK names
+(`meridian.edge.storage_dir()`). `__main__` keeps the records there, and
+only where no storage is given -- a deployment from before it, a test -- in
+`/tmp` (STAND_IN), which lasts as long as the pod. Records older than the retention are pruned.
+
+**Each row names its record** (contract v11): a row or a statement sent to
+the street references the raw record it was converted from by
+`record_key(account, read, call)` -- the external account, the read and the
+call, `positions`, `balances` or `activities` -- which this plugin's Raw
+responses tab resolves (`find`), and nothing else reads.
 
 What is kept, per account and per read: the read's time; each call made for
 that account, by the plugin's name for it ("reading positions") and the
@@ -60,14 +62,25 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from meridian import edge
+
 from .normalise import ConnectionView
 from .venue import Json, Snapshot, parse_exact
 
 log = logging.getLogger("snaptrade")
 
-#: Where `__main__` keeps the records until decisions/028's storage is
-#: granted: the pod's one writable place.
+#: Where `__main__` keeps the records where the deployment gives no storage:
+#: the pod's one writable place.
 STAND_IN = Path(tempfile.gettempdir()) / "snaptrade" / "raw-responses"
+
+
+def storage_root(granted: Path | None = None) -> Path:
+    """The directory for the raw responses in the storage the deployment
+    grants this instance (decisions/028, `meridian.edge.storage_dir()`), or
+    the stand-in where it grants none."""
+    granted = granted if granted is not None else edge.storage_dir()
+    return granted / "raw-responses" if granted is not None else STAND_IN
+
 
 DEFAULT_RETENTION_DAYS = 30
 LEAST_RETENTION_DAYS = 1
@@ -82,7 +95,10 @@ CONNECTIONS = ("listing connections", "GET /authorizations")
 ACCOUNTS = ("listing accounts", "GET /accounts")
 POSITIONS = ("reading positions", "GET /accounts/{accountId}/positions/all")
 BALANCES = ("reading balances", "GET /accounts/{accountId}/balances")
-EACH = (CONNECTIONS, ACCOUNTS, POSITIONS, BALANCES)
+ACTIVITIES = ("reading activities", "GET /accounts/{accountId}/activities")
+EACH = (CONNECTIONS, ACCOUNTS, POSITIONS, BALANCES, ACTIVITIES)
+#: A row's call, as its record key names it, and the call kept for it.
+CALLS = {"positions": POSITIONS, "balances": BALANCES, "activities": ACTIVITIES}
 # What a list call kept for one account says it is.
 ITS_CONNECTION = "this account's connection, of the list SnapTrade answered"
 ITS_ENTRY = "this account's entry, of the list SnapTrade answered"
@@ -225,6 +241,10 @@ def taken(
                 calls.append(_call(POSITIONS, snapshot.positions[snaptrade_id]))
             if snaptrade_id in snapshot.balances:
                 calls.append(_call(BALANCES, snapshot.balances[snaptrade_id]))
+            if snaptrade_id in snapshot.activities:
+                calls.append(_call(ACTIVITIES, snapshot.activities[snaptrade_id]))
+            elif snaptrade_id in snapshot.unread_activities:
+                calls.append(_failed(ACTIVITIES, snapshot.unread_activities[snaptrade_id]))
             failure = snapshot.failures.get(snaptrade_id, "")
             if failure:
                 asked = next((a for a in EACH if failure.startswith(a[0])), POSITIONS)
@@ -267,6 +287,30 @@ class Record:
 
 def _key_of(moment: datetime) -> str:
     return f"{moment.astimezone(UTC):%Y%m%dT%H%M%S.%fZ}"
+
+
+def read_key(read_at_ns: int) -> str:
+    """A read's key from its time, as a record of it is written under."""
+    seconds, nanos = divmod(read_at_ns, 1_000_000_000)
+    return _key_of(datetime.fromtimestamp(seconds, UTC).replace(microsecond=nanos // 1000))
+
+
+def record_key(account: Any, read_at_ns: int, call: str) -> str:
+    """A raw record's key as a row references it (contract v11): the
+    external account, the read and the call. Opaque past this plugin."""
+    return f"{account.external_account_id}/{read_key(read_at_ns)}/{call}"
+
+
+def parse_record_key(key: str) -> tuple[str, str, str] | None:
+    """The external account, read and call a record key names, or None."""
+    account, _, rest = key.rpartition("/")
+    if not account:
+        return None
+    account, _, read = account.rpartition("/")
+    call = rest
+    if not account or _moment_of(read) is None or call not in CALLS:
+        return None
+    return account, read, call
 
 
 def _moment_of(key: str) -> datetime | None:
@@ -404,6 +448,23 @@ class RawStore:
             else (),
             document=document,
         )
+
+    def find(self, key: str) -> tuple[Record, Json] | None:
+        """The record and the call a row's reference names (contract v11), or
+        None where it names none this store holds: a key that is not one, or
+        a record pruned under its retention."""
+        named = parse_record_key(key)
+        if named is None:
+            return None
+        account, read, call = named
+        found = self.record(account, read)
+        if found is None:
+            return None
+        asked = CALLS[call][0]
+        for held in found.calls:
+            if held.get("call") == asked:
+                return found, held
+        return None
 
     def latest(self, external_account_id: str) -> Record | None:
         """The account's newest kept read that can be read back."""

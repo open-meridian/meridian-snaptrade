@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import meridian
 import pytest
+from meridian import edge
 from meridian.operations import Operations
 from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.statements import checked
@@ -30,6 +31,8 @@ from meridian.testing import heartbeat
 from meridian.v1 import sidecar_pb2
 
 NOW = datetime(2026, 9, 28, 15, 0, tzinfo=UTC)
+# The instance the sidecar registered this plugin as.
+INSTANCE = "snaptrade"
 
 _OPERATIONS = SimpleNamespace(
     ReportSyncStatus="ReportSyncStatus",
@@ -58,12 +61,8 @@ DEPLOYMENT_ACCOUNTS = (
 )
 
 
-def found(
-    instrument_id: str = "INS-1", placeholder: bool = False
-) -> ops.ResolveIdentifierResult:
-    return ops.ResolveIdentifierResult(
-        found=not placeholder, instrument_id=instrument_id, placeholder=placeholder
-    )
+def found(instrument_id: str = "INS-1", minted: bool = False) -> ops.ResolveIdentifierResult:
+    return ops.ResolveIdentifierResult(found=True, instrument_id=instrument_id, minted=minted)
 
 
 def ambiguous() -> ops.ResolveIdentifierResult:
@@ -92,6 +91,7 @@ class Sidecar(Operations):
         self._refuse = refuse or (lambda name, params: None)
         self._already = already_recorded
         self._statements = 0
+        self.not_carried: dict[tuple[str, str], int] = {}
 
     def _operations(self) -> Any:
         return _OPERATIONS
@@ -188,6 +188,14 @@ class Sidecar(Operations):
         self._figures = standing
         self.reports.append((healthy, detail))
         self.heartbeats.append(sent)
+
+    def raw_record(self, key: str) -> ops.RawRecordRef:
+        """As the SDK's: the raw record `key` names, kept by this instance."""
+        return edge.raw_record(key, INSTANCE)
+
+    def note_not_carried(self, scheme: str, name: str) -> None:
+        """As the SDK's: counted, by name only, for the heartbeat."""
+        self.not_carried[(scheme, name)] = self.not_carried.get((scheme, name), 0) + 1
 
     def sent(self, name: str) -> list[Any]:
         return [params for called, params in self.calls if called == name]
