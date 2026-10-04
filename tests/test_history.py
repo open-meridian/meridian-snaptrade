@@ -55,8 +55,6 @@ LINKS = (
     meridian.LinkedExternalAccount(SCHWAB, "ACC-4", "Old Schwab"),
 )
 TODAY = NOW.date()
-READ_AT = "2026-09-28 15:00 UTC"
-AVERAGE = f"SnapTrade average purchase price, {READ_AT}"
 
 
 def days_ago(days: int) -> str:
@@ -311,53 +309,46 @@ def test_lots_are_proposed_from_the_buys_that_account_for_a_position(
     assert syncer.raw is not None and syncer.raw.find(data["raw_record"]) is not None
 
 
-def test_a_position_arrived_by_transfer_gets_no_lot_from_history_and_says_so(
+NO_LOT = (
+    "Its lots are the person's to supply. SnapTrade's average purchase price is beside it, "
+    "as reported, never a lot."
+)
+
+
+def test_a_position_arrived_by_transfer_gets_no_lot_and_says_so(
     held: tuple[Sidecar, Syncer, asyncio.Event],
 ) -> None:
     sidecar, _, _ = held
     synb = proposed(sidecar, "ACC-3")["SYNB"]
-    assert synb["said"][0] == (
+    assert synb["said"] == [
         "No lot from its history: it arrived or left by transfer (EXTERNAL_ASSET_TRANSFER_IN "
         f"on {days_ago(200)}, 00000000-0000-4000-8000-00000000f005), for which SnapTrade "
-        "states no cost or acquisition date."
-    )
-    # Failing its history, its average purchase price: the quantity at that
-    # price, the acquisition date left for the person.
-    assert synb["proposed_from"] == "average purchase price"
-    assert synb["average_purchase_price"] == "18.40"
-    assert synb["proposed"] == [
-        {
-            "quantity": "100",
-            "cost": "1840.00",
-            "currency": "USD",
-            "acquired": None,
-            "source": AVERAGE,
-        }
+        "states no cost or acquisition date.",
+        NO_LOT,
     ]
+    # A lot is specific: never one made from the average purchase price, which
+    # is beside the position, as reported.
+    assert synb["proposed"] == [] and synb["proposed_from"] == ""
+    assert synb["average_purchase_price"] == "18.40"
+    assert synb["average_source"].startswith("SnapTrade's average per unit")
 
 
 def test_a_position_sold_from_is_not_split_by_fifo(
     held: tuple[Sidecar, Syncer, asyncio.Event],
 ) -> None:
     sidecar, _, _ = held
-    synv = proposed(sidecar, "ACC-3")["SYNV"]
+    positions = proposed(sidecar, "ACC-3")
+    synv = positions["SYNV"]
     assert "no FIFO" in synv["said"][0] and "1 sale" in synv["said"][0]
-    assert synv["proposed"] == [
-        {
-            "quantity": "30",
-            "cost": "300.00",
-            "currency": "USD",
-            "acquired": None,
-            "source": AVERAGE,
-        }
-    ]
+    assert synv["proposed"] == [] and synv["said"][-1] == NO_LOT
+    assert synv["average_purchase_price"] == "10.00"
     # With neither a purchase nor an average, nothing, and why.
-    synx = proposed(sidecar, "ACC-3")["SYNX"]
-    assert synx["proposed"] == [] and synx["proposed_from"] == ""
-    assert synx["said"][-1].startswith("SnapTrade reports no average purchase price")
+    synx = positions["SYNX"]
+    assert synx["proposed"] == [] and synx["average_purchase_price"] is None
+    assert synx["said"][-1] == "Its lots are the person's to supply."
 
 
-def test_no_lot_for_an_option_or_a_short_and_a_fund_from_its_average(
+def test_no_lot_for_an_option_a_short_or_a_fund_with_no_purchase(
     held: tuple[Sidecar, Syncer, asyncio.Event],
 ) -> None:
     sidecar, _, _ = held
@@ -366,37 +357,24 @@ def test_no_lot_for_an_option_or_a_short_and_a_fund_from_its_average(
     assert option["proposed"] == [] and option["said"][0].startswith("An option:")
     # ZZTOP is short, but SnapTrade lists its lot: the statement's.
     assert alpaca["ZZTOP"]["lots_reported"] == 1 and alpaca["ZZTOP"]["proposed"] == []
-    assert alpaca["SYNXX"]["proposed"] == [
-        {
-            "quantity": "500.00",
-            "cost": "500.0000",
-            "currency": "USD",
-            "acquired": None,
-            "source": AVERAGE,
-        }
-    ]
+    fund = alpaca["SYNXX"]
+    assert fund["proposed"] == [] and "shows no purchase of SYNXX" in fund["said"][0]
+    assert fund["average_purchase_price"] == "1.00"
 
 
-def test_history_that_cannot_be_read_still_proposes_from_the_average(
+def test_history_that_cannot_be_read_proposes_nothing_and_says_why(
     held: tuple[Sidecar, Syncer, asyncio.Event],
 ) -> None:
     sidecar, _, _ = held
     answer = reader(sidecar).call_tool("read_proposed_lots", {"account": "ACC-4"})
     assert answer.data["history_read"].startswith("not read whole: SnapTrade's activities")
     vti = {each["instrument"]: each for each in answer.data["positions"]}["VTI"]
-    assert vti["said"][0] == (
+    assert vti["said"] == [
         "No lot from its history: SnapTrade's activities could not be read: reading "
-        "activities failed: no answer."
-    )
-    assert vti["proposed"] == [
-        {
-            "quantity": "15",
-            "cost": "3600.00",
-            "currency": "USD",
-            "acquired": None,
-            "source": AVERAGE,
-        }
+        "activities failed: no answer.",
+        NO_LOT,
     ]
+    assert vti["proposed"] == [] and vti["average_purchase_price"] == "240.00"
 
 
 # ── The rules, one position at a time ───────────────────────────────────────
@@ -471,13 +449,14 @@ def test_a_reinvested_dividend_is_a_purchase_with_its_own_lot() -> None:
         ([], "shows no purchase of XYZ"),
     ],
 )
-def test_history_that_does_not_state_the_lots_proposes_from_the_average(
+def test_history_that_does_not_state_the_lots_proposes_none(
     activities: list[history.Activity], why: str
 ) -> None:
     made = history.propose(position("10"), activities, "", "2025-01-01", NOW)
     assert why in made.said[0]
-    assert made.proposed_from == "average purchase price"
-    assert [(str(lot.cost), lot.acquired) for lot in made.proposed] == [("120.00", None)]
+    assert made.proposed == [] and made.proposed_from == ""
+    assert made.average_purchase_price == Decimal("12.00")
+    assert made.said[-1] == NO_LOT
 
 
 def test_nothing_proposed_beside_lots_reported_unread_or_for_a_short() -> None:
@@ -491,10 +470,10 @@ def test_nothing_proposed_beside_lots_reported_unread_or_for_a_short() -> None:
     assert short.proposed == [] and short.said[0].startswith("A short position")
 
 
-def test_an_average_in_a_currency_derived_says_so() -> None:
-    made = history.propose(position(assumed=True), None, "SnapTrade is not being read", "", NOW)
-    assert made.said[0] == "No lot from its history: SnapTrade is not being read."
-    assert made.said[-1].startswith("SnapTrade stated no currency for it; USD is derived")
+def test_history_not_read_proposes_none_and_says_why() -> None:
+    made = history.propose(position(), None, "SnapTrade is not being read", "", NOW)
+    assert made.said == ["No lot from its history: SnapTrade is not being read.", NO_LOT]
+    assert made.proposed == []
 
 
 # ── The pages a person reads ────────────────────────────────────────────────
@@ -518,7 +497,8 @@ def test_the_history_tab_reads_a_range_and_offers_the_proposals(
     lots = client.get(LOTS, "read", account="ACC-3")
     assert lots.status == 200
     assert f"SnapTrade activities, BUY on {days_ago(300)}" in lots.text
-    assert AVERAGE in lots.text and "for the person to supply" in lots.text
+    assert "SnapTrade average purchase price," not in lots.text
+    assert "average purchase price 18.40" in lots.text
 
 
 def test_statements_show_and_answer_the_average_purchase_price(

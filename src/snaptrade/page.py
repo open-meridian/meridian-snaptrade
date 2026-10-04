@@ -1444,9 +1444,9 @@ async def statements(request: meridian.Request) -> meridian.Response:
 # ── History, at write and read ──────────────────────────────────────────────
 #
 # An account's activities over a range, read from SnapTrade when asked, and
-# the lots proposed from its whole history and its average purchase prices
-# (history.py): for each account linked to one the person may read, by the
-# deployment's account, as the opening balance names it. Each read is kept
+# the lots proposed from the purchases in its whole history (history.py):
+# for each account linked to one the person may read, by the deployment's
+# account, as the opening balance names it. Each read is kept
 # as a raw record of the account's (raw.py), and named in what it answers.
 
 # How long the whole of an account's history may take to read, within the
@@ -1821,12 +1821,12 @@ async def account_history(request: meridian.Request) -> meridian.Response:
     description=(
         "Lots proposed, never confirmed, for each position of an account's last statement "
         "that SnapTrade lists no tax lots for: from its purchases in SnapTrade's activities "
-        "(each one's quantity, the amount paid and its trade date), else from SnapTrade's "
-        "average purchase price (the quantity at that price, acquired left empty), each "
-        "naming its source, in the fields an opening balance's lot takes. No FIFO and no "
-        "other rule SnapTrade does not state: a position sold from, or that arrived by "
-        "transfer or a corporate action, gets no lot from its history, and says why. For an "
-        "account the person may read, named as the deployment names it."
+        "(one lot per purchase: its units, the amount paid and its trade date), each naming "
+        "its source, in the fields an opening balance's lot takes. No FIFO and no other rule "
+        "SnapTrade does not state: a position whose purchases do not account for it (a sale, "
+        "a transfer, a corporate action) gets no lot, and says why; SnapTrade's average "
+        "purchase price is beside each position, as reported, never a lot. For an account "
+        "the person may read, named as the deployment names it."
     ),
 )
 async def proposed_lots(request: meridian.Request) -> meridian.Response:

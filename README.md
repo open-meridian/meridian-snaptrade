@@ -268,15 +268,13 @@ the account's raw responses.
 **Propose lots** (`/history/lots?account=<id>`) reads the account's whole
 history (up to 10,000 activities) and, for each position of its last
 statement that SnapTrade lists no tax lots for, proposes lots, each naming
-its source, never confirmed:
+its source, never confirmed. A lot is specific (the product owner,
+2026-10-04): one purchase as the activity states it.
 
 - **From its purchases** (`BUY`, or `REI`, a reinvested dividend): one lot
   per purchase, its units, the amount paid and its trade date ("SnapTrade
   activities, BUY on 2025-12-02, <activity id>"), where those purchases are
   all of the position and nothing else in its history moved it.
-- **Else from its average purchase price**: the quantity at that price,
-  worked out here, its acquisition date left for the person ("SnapTrade
-  average purchase price, 2026-09-28 15:00 UTC").
 - **Nothing it does not state**: a position its history shows sold from is
   not split into lots by FIFO or any other order; one that arrived by
   transfer, or that a corporate action changed (a split, a stock dividend,
@@ -284,6 +282,9 @@ its source, never confirmed:
   history, and says so; nor does one whose purchases do not add up to what
   it holds. A short position and an option get none, and a position
   SnapTrade lists lots for gets nothing proposed beside them.
+- **Never from the average purchase price**, which is shown beside each
+  position, as reported, for a person typing a cost themselves: nothing
+  multiplies a per-unit average by a quantity.
 
 Each proposed lot carries the fields an opening balance's lot takes
 (quantity, cost, currency, acquired, source), for the person, or an agent

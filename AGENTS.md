@@ -103,11 +103,12 @@ a deployment admin approves them.
 - **Lots are proposed, never confirmed, and never sent** (the product
   owner, 2026-10-04). `history.py` proposes lots for a position SnapTrade
   lists no tax lots for: from its purchases in the activities where they are
-  all of it and nothing else moved it, else from its average purchase price
-  (quantity times it, the acquisition date left for the person), each naming
-  its source. No FIFO or any other rule SnapTrade does not state; a position
-  that arrived by transfer or a corporate action gets no lot from history,
-  and says so; a short or an option gets none. A proposal goes to the
+  all of it and nothing else moved it, one lot per purchase (its units, the
+  amount paid, its trade date), each naming its source: a lot is specific,
+  and never made from the average purchase price, which is shown beside the
+  position as reported (W2.3's Q-A binds a proposal too). No FIFO or any other rule SnapTrade does not state; a position
+  whose purchases do not account for it (a sale, a transfer, a corporate
+  action) gets no lot, and says why; a short or an option gets none. A proposal goes to the
   person or their agent, never into a statement: the street's lots are
   SnapTrade's own, and its `average_cost` is never multiplied there. Every
   history read is kept as a raw record of the account, and named.

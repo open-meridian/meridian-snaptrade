@@ -14,12 +14,11 @@ v12), at `write` and `read`, for an account the person may read:
   most `MOST_LIMIT` activities; a refusal names the field by its path.
 - **Lots proposed, never confirmed** (`read_proposed_lots`): for each
   position of the account's last statement that SnapTrade lists no tax lots
-  for, lots proposed from what SnapTrade states, each naming its source:
-  from its purchases in the activities (each one's quantity, the amount paid
-  for it, its trade date: "SnapTrade activities, BUY on <date>, <id>"), and
-  failing that from its average purchase price (the quantity at that price,
-  its acquisition date left for the person: "SnapTrade average purchase
-  price, <read at>"). Its fields are those an opening balance's lot takes
+  for, lots proposed from its purchases in the activities, each naming its
+  source: a lot is specific (the product owner, 2026-10-04: "lots need to be
+  specific"), one purchase, its units, the amount paid for it and its trade
+  date, as the activity states them ("SnapTrade activities, BUY on <date>,
+  <id>"). Its fields are those an opening balance's lot takes
   (the sample operations plugin's `LotDraft`: quantity, cost, currency,
   acquired, source), for a person or an agent to carry into the draft and
   answer for there; nothing here sends a lot anywhere, and the statement
@@ -34,16 +33,17 @@ or acquisition date for it, and says so. A position whose purchases do not
 add up to what it holds -- its history starting after it was bought -- gets
 none from them either. A short position and an option get none at all:
 nothing SnapTrade reports states a short lot's terms, and an option's
-average is per share while its quantity counts contracts, which nothing here
-multiplies by a contract's size. A position SnapTrade lists lots for gets
-nothing proposed: its lots are the statement's.
+activities name it by its option symbol, which is not matched here. A
+position SnapTrade lists lots for gets nothing proposed: its lots are the
+statement's. A position that gets no lot says why.
 
 **The average purchase price** is SnapTrade's `cost_basis` on a position
 from `positions/all`, its average per unit, which the statement already
 carries as reported (`average_cost`, contract v7, its raw record beside
-it). A lot proposed from it is the quantity at that price, multiplied here
-and said so in its source; it is a proposal for the person, never a value
-on the street, where nothing multiplies an average by a quantity (W2.3).
+it). It is shown beside each position, as reported, for a person typing a
+cost themselves, and never made into a lot: nothing multiplies a per-unit
+average by a quantity (W2.3's Q-A, which binds a proposal too: the product
+owner, 2026-10-04).
 
 **The edge keeps its own** (decisions/028): every page of activities read
 here is kept as a read of the account in the plugin's raw records (raw.py),
@@ -58,7 +58,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from .normalise import Holding, Side, to_decimal, wire_decimal
+from .normalise import Holding, Side, to_decimal
 from .raw import activities_call, activities_failed
 from .venue import MOST_PER_PAGE, Json, Venue, VenueError
 
@@ -105,7 +105,6 @@ CASH_ONLY = frozenset(
 
 #: A proposal's origin, as `PositionLots.proposed_from` says it.
 FROM_ACTIVITIES = "activities"
-FROM_AVERAGE = "average purchase price"
 
 
 # ── What the tools take and answer ──────────────────────────────────────────
@@ -238,9 +237,7 @@ class PositionLots:
     )
     average_source: str
     lots_reported: int = field(metadata={"description": "the tax lots SnapTrade lists"})
-    proposed_from: str = field(
-        metadata={"description": "activities, average purchase price, or empty: none proposed"}
-    )
+    proposed_from: str = field(metadata={"description": "activities, or empty: none proposed"})
     proposed: list[ProposedLot] = field(default_factory=list)
     said: list[str] = field(default_factory=list)
 
@@ -448,30 +445,6 @@ def from_activities(
     return lots, ""
 
 
-def from_average(holding: Holding, read_at: datetime) -> tuple[list[ProposedLot], str]:
-    """One lot at SnapTrade's average purchase price: the quantity at that
-    price, its acquisition date left for the person; or none, and why."""
-    average = holding.average_cost
-    if average is None:
-        return [], (
-            "SnapTrade reports no average purchase price for it, so no lot is proposed: its "
-            "lots are the person's to supply."
-        )
-    try:
-        cost = wire_decimal(holding.quantity * Decimal(average.amount), "its cost")
-    except ValueError as refused:
-        return [], f"No lot from its average purchase price: {refused}."
-    return [
-        ProposedLot(
-            quantity=holding.quantity,
-            cost=cost,
-            currency=average.currency_code,
-            acquired=None,
-            source=f"SnapTrade average purchase price, {moment(read_at)}",
-        )
-    ], ""
-
-
 def propose(
     holding: Holding,
     history: Sequence[Activity] | None,
@@ -479,9 +452,10 @@ def propose(
     history_from: str,
     read_at: datetime,
 ) -> PositionLots:
-    """One position's lots proposed, or why none is: from its history, else
-    from its average purchase price. `history` is the account's whole
-    history, None where it could not be read whole (`unread` says why)."""
+    """One position's lots proposed from its history, or why none is.
+    `history` is the account's whole history, None where it could not be
+    read whole (`unread` says why). Its average purchase price is beside it,
+    as reported, never a lot."""
     average = holding.average_cost
     said: list[str] = []
     proposed: list[ProposedLot] = []
@@ -528,8 +502,8 @@ def propose(
         return answer()
     if holding.kind == "option":
         said.append(
-            "An option: SnapTrade states its average per share and its quantity in "
-            "contracts, and nothing here multiplies by a contract's size, so none is proposed."
+            "An option: SnapTrade names its activities by option symbol, which is not "
+            "matched here, so none is proposed."
         )
         return answer()
     if history is None:
@@ -540,18 +514,12 @@ def propose(
             proposed, proposed_from = lots, FROM_ACTIVITIES
             return answer()
         said.append(why)
-    lots, why = from_average(holding, read_at)
-    if lots:
-        proposed, proposed_from = lots, FROM_AVERAGE
-        said.append(
-            "Proposed from its average purchase price: the quantity at that price, worked out "
-            "here; when it was acquired is for the person to supply."
+    said.append(
+        "Its lots are the person's to supply."
+        + (
+            " SnapTrade's average purchase price is beside it, as reported, never a lot."
+            if average is not None
+            else ""
         )
-        if holding.currency_assumed:
-            said.append(
-                f"SnapTrade stated no currency for it; {holding.currency} is derived: the "
-                "account's only cash currency, or US dollars."
-            )
-    else:
-        said.append(why)
+    )
     return answer()
