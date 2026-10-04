@@ -409,6 +409,9 @@ class Holding:
     average_cost: meridian.Money | None = None
     # The venue's lots, in its order; none where it lists none.
     lots: tuple[Lot, ...] = ()
+    # True where SnapTrade listed lots this plugin could not read exactly, so
+    # none is sent: not "no lots", and nothing is proposed in their place.
+    lots_unread: bool = False
     # SnapTrade's price per unit, kept for netting a fund out of its cash;
     # never sent, and never made into a market value.
     price: Decimal | None = None
@@ -452,6 +455,9 @@ class AccountView:
     statement: Statement | None
     withheld: str = ""
     problems: tuple[str, ...] = ()
+    # How far back SnapTrade holds the account's history: the date of its
+    # first transaction, as its sync status reports it; "" where it says none.
+    history_from: str = ""
 
 
 @dataclass(frozen=True)
@@ -727,6 +733,15 @@ def freshness(
     return said(SyncState.CURRENT, "")
 
 
+def first_transaction(account: Json) -> str:
+    """The date of the account's first transaction SnapTrade holds, as its
+    sync status reports it (`transactions.first_transaction_date`): how far
+    back its history goes. "" where it reports none, or not a date."""
+    history = _dict(_dict(account.get("sync_status")).get("transactions"))
+    day = _day(history.get("first_transaction_date"))
+    return day.isoformat() if day is not None else ""
+
+
 def _withheld(account: Json) -> str:
     """Why nothing is recorded for an account this time, or empty."""
     holdings = _dict(_dict(account.get("sync_status")).get("holdings"))
@@ -792,11 +807,12 @@ def position_holding(
             )
         except ValueError as refused:
             said.append(f"{refused}; it is not sent")
+    lots_unread = False
     try:
         lots = _lots(position.get("tax_lots"), side, currency, named)
     except ValueError as refused:
         said.append(f"{refused}; none of {named}'s lots is sent")
-        lots = ()
+        lots, lots_unread = (), True
     price: Decimal | None = None
     if position.get("price") is not None:
         try:
@@ -830,6 +846,7 @@ def position_holding(
         asset_class=asset_class(kind),
         average_cost=average_cost,
         lots=lots,
+        lots_unread=lots_unread,
         price=price,
         closed=tuple(closed),
     )
@@ -938,6 +955,10 @@ def _merged(holdings: Iterable[Holding]) -> tuple[tuple[Holding, ...], tuple[str
             cash_equivalent=held.cash_equivalent or holding.cash_equivalent,
             average_cost=None,
             lots=held.lots + holding.lots if held.lots and holding.lots else (),
+            # Part of a list is not the list: lots dropped here are not "none".
+            lots_unread=held.lots_unread
+            or holding.lots_unread
+            or bool(held.lots) != bool(holding.lots),
         )
     return tuple(rows.values()), tuple(problems)
 
@@ -1214,7 +1235,7 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
                 # on the page (the custody audit's Q1).
                 withheld = str(unclean)
         by_connection.setdefault(account.connection_id, []).append(
-            AccountView(account, fresh, made, withheld, problems)
+            AccountView(account, fresh, made, withheld, problems, first_transaction(raw))
         )
     # An account whose connection SnapTrade did not list is still shown, under
     # a connection known only by its ID.

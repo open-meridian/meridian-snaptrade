@@ -71,7 +71,8 @@ import asyncio
 import http.server
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import parse_qs, urlencode
@@ -79,9 +80,10 @@ from urllib.parse import parse_qs, urlencode
 import meridian
 from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 
+from . import history, records
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
-from .raw import CALLS, Record, dumps, parse_record_key
+from .raw import CALLS, Record, activities_call, dumps, history_taken, parse_record_key
 from .settings import label
 from .sync import ATTENTION, Status, Syncer
 from .venue import VenueError
@@ -113,6 +115,9 @@ CONNECTIONS = "/admin/connections"
 ACCOUNTS = "/admin/accounts"
 # A kept read of SnapTrade's, as a JSON file to save.
 RAW_DOWNLOAD = f"{RAW}/download"
+# An account's history, and the lots proposed from it (history.py).
+HISTORY = "/history"
+LOTS = f"{HISTORY}/lots"
 # The actions, each a POST.
 READ = "/read"
 CONNECT = "/admin/connect"
@@ -129,6 +134,8 @@ pages.environment.globals["paths"] = {
     "reconnect": RECONNECT,
     "link": LINK,
     "raw": RAW,
+    "history": HISTORY,
+    "lots": LOTS,
 }
 
 # The longest name a new account is given here, and the longest custodian or
@@ -418,12 +425,55 @@ def _connections(notice: Notice | None = None, portal: str | None = None) -> mer
     )
 
 
-@pages.page(CONNECTIONS, "Connections", levels="admin")
+def _connections_read(status: Status) -> records.ConnectionsRead:
+    """The Connections tab as data: each connection the last read reached,
+    how it is and what to do, and how many accounts it reaches; no account's
+    data."""
+    return records.ConnectionsRead(
+        read_at=status.read_at.isoformat() if status.read_at else "",
+        mode=status.mode,
+        error=status.error,
+        connections=[
+            records.ConnectionRead(
+                connection_id=c.connection_id,
+                name=c.name,
+                institution=c.institution,
+                state=_STATE_LABEL[c.state],
+                detail=c.detail,
+                remedy="" if c.state is SyncState.CURRENT else REMEDY[c.state],
+                serving=c.serving.value,
+                disabled_at=c.disabled_at.isoformat() if c.disabled_at else "",
+                accounts=len(c.accounts),
+            )
+            for c in status.connections
+        ],
+    )
+
+
+@pages.page(
+    CONNECTIONS,
+    "Connections",
+    levels="admin",
+    answers=records.ConnectionsRead,
+    name="read_connections",
+    description=(
+        "The SnapTrade connections the last read reached: each one's state, what to do "
+        "about it, whether SnapTrade serves it in real time or on a delay (only a delayed "
+        "one can be refreshed), and how many accounts it reaches. No account's data."
+    ),
+)
 async def connections(request: meridian.Request) -> meridian.Response:
+    if request.tool_name:
+        return pages.answer("connections.html", _connections_read(_now().syncer.status))
     return _connections()
 
 
-@pages.route("/admin", levels="admin")
+@pages.route(
+    "/admin",
+    levels="admin",
+    tool=False,
+    why="a browser's way in to Connections; an agent reads them with read_connections",
+)
 async def admin(request: meridian.Request) -> meridian.Response:
     """The first page under Manage. The frame's theme rides the query on first
     load; it goes along."""
@@ -445,38 +495,102 @@ async def _asking(work: Awaitable[_Answer]) -> tuple[_Answer | None, Notice | No
 
 
 _NO_VENUE = Notice("Nothing to ask SnapTrade until its settings are given.")
+# What a tool is told of the Connection Portal it opened, or of synthetic
+# mode's, which has none.
+PORTAL_READY = (
+    "SnapTrade's Connection Portal is ready: the person signs in to the brokerage at the "
+    "link, once, in their browser; the connection appears on the next read."
+)
+NO_PORTAL = (
+    "Synthetic mode has no Connection Portal; it opens once SnapTrade's settings are given."
+)
 
 
-@pages.route(CONNECT, levels="admin", methods=["POST"])
+def _portal(
+    request: meridian.Request, portal: str | None, failed: Notice | None
+) -> meridian.Response:
+    """The Connection Portal as an action answers it: for a tool, its link
+    or SnapTrade's failure; for a browser, Connections with it."""
+    if not request.tool_name:
+        return _connections(failed, portal)
+    if failed is not None:
+        pages.refuse(failed.text, reason="unavailable")
+    return pages.answer(
+        "connections.html", records.Portal(portal or "", PORTAL_READY if portal else NO_PORTAL)
+    )
+
+
+def _no_venue(request: meridian.Request) -> meridian.Response:
+    if request.tool_name:
+        pages.refuse(_NO_VENUE.text, reason="unavailable")
+    return _connections(_NO_VENUE)
+
+
+@pages.route(
+    CONNECT,
+    levels="admin",
+    methods=["POST"],
+    params=records.Connecting,
+    answers=records.Portal,
+    name="open_connection_portal",
+)
 async def connect(request: meridian.Request) -> meridian.Response:
-    """SnapTrade's Connection Portal, to connect a brokerage."""
+    """Open SnapTrade's Connection Portal, to connect a brokerage: a link the
+    person signs in to the brokerage at, once, in their browser."""
     if (refused := _oversized(request)) is not None:
         return refused
     venue = _now().syncer.venue
     if venue is None:
-        return _connections(_NO_VENUE)
+        return _no_venue(request)
     portal, failed = await _asking(venue.connection_portal())
-    return _connections(failed, portal)
+    return _portal(request, portal, failed)
 
 
 def _connection_asked(request: meridian.Request) -> str | meridian.Response:
-    """The connection a form names, among those the last read reached; or the
-    answer that says it is not one of them."""
-    connection_id = request.form.get("connection_id", "").strip()
+    """The connection a form or a tool names, among those the last read
+    reached; or the answer that says it is not one of them."""
+    asked = request.params
+    connection_id = asked.connection_id.strip() if asked is not None else ""
     reached = {c.connection_id for c in _now().syncer.status.connections}
-    return connection_id if connection_id in reached else _said("No such connection.", 404)
+    if connection_id in reached:
+        return connection_id
+    if request.tool_name:
+        pages.refuse(
+            "No such connection.",
+            ("connection_id", "not a connection the last read reached"),
+            reason="not_found",
+        )
+    return _said("No such connection.", 404)
 
 
-@pages.route(REFRESH, levels="admin", methods=["POST"])
+def _refreshed(
+    request: meridian.Request, asked: str, notice: Notice, outcome: str = "made"
+) -> meridian.Response:
+    if request.tool_name:
+        return pages.answer(
+            "connections.html", records.Refreshed(asked, notice.text), outcome=outcome
+        )
+    return _connections(notice)
+
+
+@pages.route(
+    REFRESH,
+    levels="admin",
+    methods=["POST"],
+    params=records.ConnectionAsked,
+    answers=records.Refreshed,
+    name="refresh_connection",
+)
 async def refresh(request: meridian.Request) -> meridian.Response:
-    """Ask SnapTrade to read a connection's brokerage again, where that means
-    something; its refusal is said plainly."""
+    """Ask SnapTrade to read a delayed connection's brokerage again (it may
+    charge for each); a real-time connection has nothing to refresh, and
+    SnapTrade's refusal is said plainly."""
     if (refused := _oversized(request)) is not None:
         return refused
     held = _now()
     venue = held.syncer.venue
     if venue is None:
-        return _connections(_NO_VENUE)
+        return _no_venue(request)
     asked = _connection_asked(request)
     if isinstance(asked, meridian.Response):
         return asked
@@ -484,34 +598,51 @@ async def refresh(request: meridian.Request) -> meridian.Response:
     if serving[asked] is Serving.REAL_TIME:
         # Offered no Refresh; a form from an older page is answered without
         # asking SnapTrade.
-        return _connections(Notice(REAL_TIME))
+        return _refreshed(request, asked, Notice(REAL_TIME), "unchanged")
     try:
         said = await asyncio.wait_for(venue.refresh(asked), _ASKING_SECONDS)
     except VenueError as failed:
         # SnapTrade's refusal (Real-time plans refuse a refresh), said
         # plainly; any other failure is shown as every other is.
         if failed.status != 403:
+            if request.tool_name:
+                pages.refuse(str(failed), reason="unavailable")
             return _connections(Notice(str(failed), "bad"))
+        if request.tool_name:
+            pages.refuse(
+                REFRESH_REFUSED, ("connection_id", REFRESH_REFUSED), reason="not_refreshable"
+            )
         return _connections(Notice(REFRESH_REFUSED))
     except Exception as failed:
-        return _connections(Notice(f"That failed: {type(failed).__name__}", "bad"))
+        said = f"That failed: {type(failed).__name__}"
+        if request.tool_name:
+            pages.refuse(said, reason="unavailable")
+        return _connections(Notice(said, "bad"))
     held.wake.set()
-    return _connections(Notice(said))
+    return _refreshed(request, asked, Notice(said))
 
 
-@pages.route(RECONNECT, levels="admin", methods=["POST"])
+@pages.route(
+    RECONNECT,
+    levels="admin",
+    methods=["POST"],
+    params=records.ConnectionAsked,
+    answers=records.Portal,
+    name="reconnect_connection",
+)
 async def reconnect(request: meridian.Request) -> meridian.Response:
-    """SnapTrade's Connection Portal, to sign in to a connection's brokerage again."""
+    """Open SnapTrade's Connection Portal to sign in to a connection's
+    brokerage again: a link the person signs in at, once, in their browser."""
     if (refused := _oversized(request)) is not None:
         return refused
     venue = _now().syncer.venue
     if venue is None:
-        return _connections(_NO_VENUE)
+        return _no_venue(request)
     asked = _connection_asked(request)
     if isinstance(asked, meridian.Response):
         return asked
     portal, failed = await _asking(venue.connection_portal(reconnect=asked))
-    return _connections(failed, portal)
+    return _portal(request, portal, failed)
 
 
 # ── Account links, at admin ─────────────────────────────────────────────────
@@ -711,8 +842,44 @@ async def _accounts(
     )
 
 
-@pages.page(ACCOUNTS, "Account links", levels="admin")
+def _links_read(status: Status) -> records.LinksRead:
+    """The Account links tab as data: each external account the last read
+    reached, by its identity alone, and its link; no account's data."""
+    links = _links_of(status)
+    return records.LinksRead(
+        [
+            records.LinkRead(
+                external_account_id=view.account.external_account_id,
+                name=view.account.name,
+                institution=connection.institution,
+                connection_id=connection.connection_id,
+                number=view.account.number,
+                stable=view.account.stable,
+                linked=(link := links[view.account.external_account_id]).state is Link.LINKED,
+                account_id=link.account_id,
+                account_name=link.account_name,
+            )
+            for connection in status.connections
+            for view in connection.accounts
+        ]
+    )
+
+
+@pages.page(
+    ACCOUNTS,
+    "Account links",
+    levels="admin",
+    answers=records.LinksRead,
+    name="read_account_links",
+    description=(
+        "The external accounts SnapTrade's connections reach, by identity alone -- name, "
+        "institution, the brokerage's number where SnapTrade gives it, whether its ID is "
+        "stable -- each linked to one of the deployment's accounts or not. No account's data."
+    ),
+)
 async def accounts(request: meridian.Request) -> meridian.Response:
+    if request.tool_name:
+        return pages.answer("accounts.html", _links_read(_now().syncer.status))
     return await _accounts(request)
 
 
@@ -781,6 +948,76 @@ async def link(request: meridian.Request) -> meridian.Response:
                 "good",
             )
     return await _accounts(request, notice)
+
+
+@pages.tool(
+    replaces=LINK,
+    params=records.LinkAsked,
+    answers=records.Linked,
+    name="link_account",
+    description=(
+        "Link one of the external accounts read_account_links lists to one of the "
+        "deployment's accounts (intent link, with account_id; a link to another account "
+        "replaces the one standing), create a new account for it and link it (intent "
+        "create, with new_account_name: a deployment admin alone), or unlink it (intent "
+        "unlink). Each of the deployment's accounts takes one external account."
+    ),
+)
+async def link_tool(request: meridian.Request) -> meridian.Response:
+    """The Account links form's one link, as an agent's call."""
+    asked: records.LinkAsked = request.params
+    held, caller = _now(), request.caller
+    views = {view.account.external_account_id: view for view in held.syncer.status.accounts}
+    external_id = asked.external_account_id.strip()
+    if external_id not in views:
+        pages.refuse(
+            "No such account.",
+            ("external_account_id", "not an account the last read reached"),
+            reason="not_found",
+        )
+    if not asked.intent:
+        pages.refuse("Say what to do.", ("intent", "link, create or unlink"))
+    named = views[external_id].account.name or external_id
+    account_id = asked.account_id.strip() if asked.intent == "link" else ""
+    name = asked.new_account_name.strip() if asked.intent == "create" else ""
+    if asked.intent == "link" and not account_id:
+        pages.refuse("Choose the account to link it to.", ("account_id", "name the account"))
+    if asked.intent == "create" and not caller.deployment_admin:
+        pages.refuse(
+            ONLY_DEPLOYMENT_ADMINS,
+            ("intent", ONLY_DEPLOYMENT_ADMINS),
+            reason="permission_denied",
+        )
+    if asked.intent == "create" and not name:
+        pages.refuse("Name the new account.", ("new_account_name", "name the new account"))
+    try:
+        linked_to = await asyncio.wait_for(
+            held.links.link(
+                caller.header,
+                external_id,
+                account_id,
+                name,
+                asked.new_account_custodian.strip() if asked.intent == "create" else "",
+                asked.new_account_type.strip() if asked.intent == "create" else "",
+            ),
+            _ASKING_SECONDS,
+        )
+    except meridian.MeridianError as refused_link:
+        pages.refuse(f"The sidecar refused this: {refusal(refused_link)}")
+    except Exception as failed:
+        pages.refuse(f"That failed: {type(failed).__name__}", reason="unavailable")
+    # Read again, so its rows follow the link.
+    held.wake.set()
+    now = held.links.of(external_id)
+    to = now.account_name if now.account_id == linked_to else ""
+    said = (
+        f"Unlinked {named}."
+        if asked.intent == "unlink"
+        else f"Created {name} and linked {named} to it."
+        if asked.intent == "create"
+        else f"Linked {named} to {to or linked_to}."
+    )
+    return pages.answer("accounts.html", records.Linked(external_id, linked_to, to, said))
 
 
 # Links still being sent after the page answering them stopped waiting: held
@@ -910,6 +1147,8 @@ _ROW_COLUMNS = (
     Column("instrument", "Instrument", type="code", hint="identifiers"),
     Column("quantity", "Quantity", type="decimal", group=True),
     Column("currency", "Currency"),
+    # SnapTrade's average per unit, as reported (`average_cost` on the street).
+    Column("average", "Average price", type="decimal", blank="not reported"),
     Column("side", "Side"),
     Column("description", "Description", hint="notes"),
     Column("kind", "Kind", blank="not given"),
@@ -1028,6 +1267,9 @@ def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
         # Exact, as read: a decimal string, never a float.
         "quantity": format(holding.quantity, "f"),
         "currency": holding.currency,
+        "average": format(Decimal(holding.average_cost.amount), "f")
+        if holding.average_cost
+        else "",
     }
 
 
@@ -1120,9 +1362,545 @@ def _statements(caller: meridian.Caller, notice: Notice | None = None) -> meridi
     )
 
 
-@pages.page(STATEMENTS, "Statements", levels=["write", "read"])
+def _statements_read(caller: meridian.Caller) -> records.StatementsRead:
+    """Statements as data: each account linked to one the caller may read,
+    its sync state and its last statement's rows, as recorded."""
+    status = _now().syncer.status
+    links = _links_of(status)
+    shown = visible(status, links, caller) if caller.read else []
+    made: list[records.StatementRead] = []
+    for _, view in shown:
+        fresh, statement = view.freshness, view.statement
+        recorded, _, _ = _recorded(view, status)
+        made.append(
+            records.StatementRead(
+                account=links[view.account.external_account_id].account_id,
+                external_account_id=view.account.external_account_id,
+                name=view.account.name,
+                state=_STATE_LABEL[fresh.state],
+                detail=fresh.detail or view.withheld,
+                holdings_as_of=fresh.holdings_as_of.isoformat() if fresh.holdings_as_of else "",
+                history_as_of=fresh.history_as_of.isoformat() if fresh.history_as_of else "",
+                history_from=view.history_from,
+                as_of_date=statement.as_of_date if statement is not None else "",
+                recorded=recorded,
+                rows=[_row_read(holding) for holding in statement.holdings]
+                if statement is not None
+                else [],
+            )
+        )
+    return records.StatementsRead(
+        read_at=status.read_at.isoformat() if status.read_at else "",
+        mode=status.mode,
+        statements=made,
+    )
+
+
+def _row_read(holding: Holding) -> records.RowRead:
+    shown = next(
+        (i for i in holding.identifiers if i.scheme == "symbol"), holding.identifiers[0]
+    )
+    return records.RowRead(
+        instrument=shown.value,
+        description=holding.description,
+        kind=holding.kind,
+        side=holding.side.value,
+        quantity=holding.quantity,
+        settled=holding.settle_date_quantity,
+        currency=holding.currency,
+        average_purchase_price=Decimal(holding.average_cost.amount)
+        if holding.average_cost
+        else None,
+        lots=[
+            records.LotRead(
+                quantity=lot.quantity,
+                cost=Decimal(lot.cost.amount) if lot.cost else None,
+                acquired=lot.acquired_date,
+            )
+            for lot in holding.lots
+        ],
+    )
+
+
+@pages.page(
+    STATEMENTS,
+    "Statements",
+    levels=["write", "read"],
+    answers=records.StatementsRead,
+    name="read_statements",
+    description=(
+        "Each account linked to one the person may read: its sync state, how far back "
+        "SnapTrade holds its history, and its last statement's rows as recorded -- quantity, "
+        "settled quantity, SnapTrade's average purchase price per unit and its tax lots, as "
+        "reported."
+    ),
+)
 async def statements(request: meridian.Request) -> meridian.Response:
+    if request.tool_name:
+        return pages.answer("statements.html", _statements_read(request.caller))
     return _statements(request.caller)
+
+
+# ── History, at write and read ──────────────────────────────────────────────
+#
+# An account's activities over a range, read from SnapTrade when asked, and
+# the lots proposed from its whole history and its average purchase prices
+# (history.py): for each account linked to one the person may read, by the
+# deployment's account, as the opening balance names it. Each read is kept
+# as a raw record of the account's (raw.py), and named in what it answers.
+
+# How long the whole of an account's history may take to read, within the
+# time the page's server gives a view.
+_HISTORY_SECONDS = REQUEST_SECONDS - 15
+
+
+# An account's activities, one grid; and a position's proposed lots, one each.
+_ACTIVITY_COLUMNS = (
+    Column("trade_date", "Traded"),
+    Column("type", "Type", type="code"),
+    Column("symbol", "Symbol", type="code", hint="description", blank="none"),
+    Column("units", "Units", type="decimal", blank="not given"),
+    Column("price", "Price", type="decimal", blank="not given"),
+    Column("amount", "Amount", type="decimal", blank="not given"),
+    Column("currency", "Currency"),
+    Column("settlement_date", "Settles"),
+)
+_PROPOSED_COLUMNS = (
+    Column("quantity", "Quantity", type="decimal"),
+    Column("cost", "Cost", type="decimal", blank="not stated"),
+    Column("currency", "Currency"),
+    Column("acquired", "Acquired", blank="for the person to supply"),
+    Column("source", "Source"),
+)
+
+
+def _figure(value: Decimal | None) -> str:
+    """A number as the page shows it: as written, never a float."""
+    return "" if value is None else format(value, "f")
+
+
+def _grid(
+    grid_id: str,
+    caption: str,
+    empty: str,
+    columns: Sequence[Column],
+    rows: list[dict[str, str]],
+) -> dict[str, Any]:
+    return {
+        "id": grid_id,
+        "caption": caption,
+        "empty": empty,
+        "rows": rows,
+        "data": {"columns": [c.declared() for c in columns], "rows": rows},
+    }
+
+
+def _activity_grid(data: history.Activities) -> dict[str, Any]:
+    rows = [
+        {
+            "key": f"{index}:{each.id}",
+            "trade_date": each.trade_date[:10],
+            "type": each.type,
+            "symbol": each.symbol or each.option_symbol,
+            "description": each.description,
+            "units": _figure(each.units),
+            "price": _figure(each.price),
+            "amount": _figure(each.amount),
+            "currency": each.currency,
+            "settlement_date": each.settlement_date[:10],
+        }
+        for index, each in enumerate(data.activities)
+    ]
+    return _grid(
+        "activities",
+        "Activities",
+        "No activities traded in this range.",
+        _ACTIVITY_COLUMNS,
+        rows,
+    )
+
+
+def _history_href(data: history.Activities, offset: int) -> str:
+    return _raw_href(
+        HISTORY,
+        account=data.account,
+        start=data.start.isoformat(),
+        end=data.end.isoformat(),
+        limit=data.limit,
+        offset=offset,
+    )
+
+
+def _page_href(data: history.Activities, *, earlier: bool) -> str:
+    """The link to the page before this one, or the one after, where there is one."""
+    if earlier:
+        return _history_href(data, max(data.offset - data.limit, 0)) if data.offset else ""
+    more = (
+        data.offset + len(data.activities) < data.total
+        if data.total is not None
+        else len(data.activities) == data.limit
+    )
+    return _history_href(data, data.offset + data.limit) if more else ""
+
+
+def _shown_positions(data: history.ProposedLots) -> list[dict[str, Any]]:
+    return [
+        {
+            "instrument": each.instrument,
+            "description": each.description,
+            "side": each.side,
+            "quantity": _figure(each.quantity),
+            "currency": each.currency,
+            "average": _figure(each.average_purchase_price),
+            "said": each.said,
+            "grid": _grid(
+                f"lots-{index}",
+                f"{each.instrument}: lots proposed",
+                "No lot proposed.",
+                _PROPOSED_COLUMNS,
+                [
+                    {
+                        "key": f"{index}:{n}",
+                        "quantity": _figure(lot.quantity),
+                        "cost": _figure(lot.cost),
+                        "currency": lot.currency,
+                        "acquired": lot.acquired.isoformat() if lot.acquired else "",
+                        "source": lot.source,
+                    }
+                    for n, lot in enumerate(each.proposed)
+                ],
+            ),
+        }
+        for index, each in enumerate(data.positions)
+    ]
+
+
+@dataclass(frozen=True)
+class Found:
+    """An account the person may read, and the external account linked to it
+    as the last read reached it."""
+
+    account: str
+    connection: ConnectionView
+    view: AccountView
+
+
+@dataclass(frozen=True)
+class NotFound:
+    """Why an account asked for is not one to read here: the refusal's
+    words, its field's, and its reason."""
+
+    detail: str
+    message: str
+    reason: str
+
+
+def _readable_accounts(caller: meridian.Caller) -> list[dict[str, str]]:
+    """The deployment's accounts the caller may read that one of SnapTrade's
+    is linked to, as the History tab offers them."""
+    status = _now().syncer.status
+    links = _links_of(status)
+    offered = []
+    for connection, view in visible(status, links, caller):
+        link = links[view.account.external_account_id]
+        offered.append(
+            {
+                "account_id": link.account_id,
+                "label": f"{link.account_name or link.account_id} "
+                f"({view.account.name}, {connection.institution or 'Unknown brokerage'})",
+            }
+        )
+    return offered
+
+
+def _found(caller: meridian.Caller, account: str) -> Found | NotFound:
+    """The account asked for, linked and reached; or why not, the same for
+    an account that is not the caller's and one that does not exist."""
+    if not account:
+        return NotFound(
+            "Name the account.", "the deployment's account, one you may read", "refused"
+        )
+    if not caller.may_read(account):
+        return NotFound(
+            "Not an account you may read.", "not an account you may read", "permission_denied"
+        )
+    status = _now().syncer.status
+    links = _links_of(status)
+    for connection in status.connections:
+        for view in connection.accounts:
+            link = links[view.account.external_account_id]
+            if link.state is Link.LINKED and link.account_id == account:
+                return Found(account, connection, view)
+    return NotFound(
+        "No account SnapTrade's last read reached is linked to it.",
+        "no SnapTrade account is linked to it",
+        "not_linked",
+    )
+
+
+def _history_context(request: meridian.Request, account: str) -> dict[str, Any]:
+    status = _now().syncer.status
+    return {
+        "dot": _dot(status, setup=False),
+        "nothing": not request.caller.read,
+        "accounts": _readable_accounts(request.caller),
+        "chosen": account,
+        "mode": _MODE[status.mode],
+        "most_days": history.MOST_DAYS,
+        "most_limit": history.MOST_LIMIT,
+    }
+
+
+def _history_refused(
+    request: meridian.Request,
+    template: str,
+    account: str,
+    detail: str,
+    *fields: tuple[str, str],
+    reason: str = "refused",
+) -> meridian.Response:
+    """A refusal by path for a tool; for a browser, the page saying it."""
+    if request.tool_name:
+        pages.refuse(detail, *fields, reason=reason)
+    words = "; ".join([detail] + [f"{path}: {message}" for path, message in fields])
+    return _html(
+        pages.render(
+            template,
+            data=None,
+            notice=Notice(words, "warn"),
+            **_history_context(request, account),
+        )
+    )
+
+
+def _kept(found: Found, calls: list[dict[str, Any]]) -> str:
+    """The raw record a history read is kept as, named as a row names its
+    own (the account, the read and the call); "" where nothing is kept."""
+    if not calls:
+        return ""
+    held = _now()
+    key = held.syncer.keep_history(
+        history_taken(
+            found.view.account, held.syncer.now(), calls, held.syncer.config.synthetic
+        )
+    )
+    return f"{found.view.account.external_account_id}/{key}/activities" if key else ""
+
+
+def _connection_named(connection: ConnectionView) -> str:
+    return _connection_label(connection) + f" ({connection.connection_id})"
+
+
+@pages.page(
+    HISTORY,
+    "History",
+    levels=["write", "read"],
+    params=history.HistoryAsked,
+    answers=history.Activities,
+    name="read_account_activities",
+    description=(
+        "An account's activities as SnapTrade reports them -- buys, sells, transfers, "
+        "dividends, each with its type, dates, symbol, units, price, amount and currency as "
+        f"written -- traded from start to end (at most {history.MOST_DAYS} days; the "
+        f"{history.DEFAULT_DAYS} days to today by default), limit of them from offset (at "
+        f"most {history.MOST_LIMIT}), for an account the person may read, named as the "
+        "deployment names it. history_from is the account's first transaction SnapTrade "
+        "holds: nothing before it can be read."
+    ),
+)
+async def account_history(request: meridian.Request) -> meridian.Response:
+    """An account's activities over a range, as SnapTrade reports them."""
+    asked = request.params or history.HistoryAsked()
+    account = asked.account.strip()
+    held = _now()
+    template = "history.html"
+    if not request.tool_name:
+        if request.param_errors:
+            fields = tuple((p.path, p.message) for p in request.param_errors)
+            return _history_refused(request, template, account, "Check the range.", *fields)
+        if not account:
+            return _html(
+                pages.render(template, data=None, notice=None, **_history_context(request, ""))
+            )
+    today = held.syncer.now().date()
+    end = asked.end or today
+    start = asked.start or end - timedelta(days=history.DEFAULT_DAYS)
+    if end > today:
+        return _history_refused(
+            request, template, account, "The range ends after today.", ("end", f"after {today}")
+        )
+    if start > end:
+        return _history_refused(
+            request,
+            template,
+            account,
+            "The range starts after it ends.",
+            ("start", f"after {end}"),
+        )
+    if (end - start).days >= history.MOST_DAYS:
+        return _history_refused(
+            request,
+            template,
+            account,
+            f"The range is longer than {history.MOST_DAYS} days.",
+            (
+                "start",
+                f"more than {history.MOST_DAYS - 1} days before end; read a year at a time",
+            ),
+        )
+    found = _found(request.caller, account)
+    if isinstance(found, NotFound):
+        return _history_refused(
+            request,
+            template,
+            account,
+            found.detail,
+            ("account", found.message),
+            reason=found.reason,
+        )
+    venue = held.syncer.venue
+    if venue is None:
+        return _history_refused(
+            request, template, account, _NO_VENUE.text, reason="unavailable"
+        )
+    snaptrade_id = found.view.account.snaptrade_account_id
+    try:
+        got = await asyncio.wait_for(
+            venue.activity_page(snaptrade_id, start, end, asked.offset, asked.limit),
+            _ASKING_SECONDS,
+        )
+    except VenueError as failed:
+        return _history_refused(request, template, account, str(failed), reason="unavailable")
+    except Exception as failed:
+        said = f"That failed: {type(failed).__name__}"
+        return _history_refused(request, template, account, said, reason="unavailable")
+    note = history.range_note(start, end, asked.offset, asked.limit)
+    ref = _kept(found, [activities_call(got.body, note)])
+    rows = [history.activity(each) for each in got.activities]
+    words = [
+        f"{len(rows)} of {got.total if got.total is not None else 'an unstated number of'} "
+        f"activities traded from {start} to {end}, from {asked.offset}."
+    ]
+    since = found.view.history_from
+    if since and start.isoformat() < since:
+        words.append(f"SnapTrade holds this account's history from {since}; nothing before it.")
+    elif not since:
+        words.append("SnapTrade states no first transaction date for this account.")
+    data = history.Activities(
+        account=account,
+        external_account_id=found.view.account.external_account_id,
+        connection=_connection_named(found.connection),
+        history_from=since,
+        start=start,
+        end=end,
+        offset=asked.offset,
+        limit=asked.limit,
+        total=got.total,
+        activities=rows,
+        raw_record=ref,
+        said=" ".join(words),
+    )
+    return pages.answer(
+        template,
+        data,
+        notice=None,
+        grid=_activity_grid(data),
+        columns=_ACTIVITY_COLUMNS,
+        earlier=_page_href(data, earlier=True),
+        later=_page_href(data, earlier=False),
+        **_history_context(request, account),
+    )
+
+
+@pages.route(
+    LOTS,
+    levels=["write", "read"],
+    params=history.LotsAsked,
+    answers=history.ProposedLots,
+    name="read_proposed_lots",
+    description=(
+        "Lots proposed, never confirmed, for each position of an account's last statement "
+        "that SnapTrade lists no tax lots for: from its purchases in SnapTrade's activities "
+        "(each one's quantity, the amount paid and its trade date), else from SnapTrade's "
+        "average purchase price (the quantity at that price, acquired left empty), each "
+        "naming its source, in the fields an opening balance's lot takes. No FIFO and no "
+        "other rule SnapTrade does not state: a position sold from, or that arrived by "
+        "transfer or a corporate action, gets no lot from its history, and says why. For an "
+        "account the person may read, named as the deployment names it."
+    ),
+)
+async def proposed_lots(request: meridian.Request) -> meridian.Response:
+    """Lots proposed for an account's positions that SnapTrade lists none for."""
+    asked = request.params or history.LotsAsked()
+    account = asked.account.strip()
+    held = _now()
+    template = "lots.html"
+    found = _found(request.caller, account)
+    if isinstance(found, NotFound):
+        return _history_refused(
+            request,
+            template,
+            account,
+            found.detail,
+            ("account", found.message),
+            reason=found.reason,
+        )
+    statement = found.view.statement
+    status = held.syncer.status
+    if statement is None or status.read_at is None:
+        said = f"No statement on the last read: {found.view.withheld or 'nothing was read'}."
+        return _history_refused(request, template, account, said, reason="no_statement")
+    venue = held.syncer.venue
+    since = found.view.history_from
+    start = date.fromisoformat(since) if since else None
+    end = held.syncer.now().date()
+    if venue is None:
+        whole = history.Whole(None, [], "SnapTrade is not being read")
+    else:
+        try:
+            whole = await asyncio.wait_for(
+                history.read_whole(venue, found.view.account.snaptrade_account_id, start, end),
+                _HISTORY_SECONDS,
+            )
+        except TimeoutError:
+            whole = history.Whole(
+                None, [], f"SnapTrade did not answer within {round(_HISTORY_SECONDS)} seconds"
+            )
+    ref = _kept(found, whole.calls)
+    positions = [
+        history.propose(holding, whole.activities, whole.said, since, status.read_at)
+        for holding in statement.holdings
+        if holding.kind != "cash"
+    ]
+    proposing = sum(1 for each in positions if each.proposed)
+    data = history.ProposedLots(
+        account=account,
+        external_account_id=found.view.account.external_account_id,
+        statement=statement.external_statement_id,
+        as_of=statement.as_of_date,
+        read_at=status.read_at.isoformat(),
+        history_from=since,
+        history_read=(
+            f"{whole.said}, traded from {since or 'the first SnapTrade holds'} to {end}"
+            if whole.activities is not None
+            else f"not read whole: {whole.said}"
+        ),
+        raw_record=ref,
+        positions=positions,
+        said=(
+            f"Lots proposed for {proposing} of {len(positions)} positions: proposals, never "
+            "confirmed here. Each names its source; the person checks them and answers for "
+            "them in the opening balance."
+        ),
+    )
+    return pages.answer(
+        template,
+        data,
+        notice=None,
+        shown=_shown_positions(data),
+        columns=_PROPOSED_COLUMNS,
+        **_history_context(request, account),
+    )
 
 
 # ── Raw responses, at write and read ────────────────────────────────────────
@@ -1299,7 +2077,17 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     )
 
 
-@pages.page(RAW, "Raw responses", levels=["write", "read"])
+@pages.page(
+    RAW,
+    "Raw responses",
+    levels=["write", "read"],
+    tool=False,
+    why=(
+        "SnapTrade's answers as received, any JSON it sent, which no typed record holds; "
+        "an agent reads what they came to with read_statements, read_account_activities "
+        "and read_proposed_lots, each naming its raw record"
+    ),
+)
 async def raw_responses(request: meridian.Request) -> meridian.Response:
     return _raw(request)
 
@@ -1309,7 +2097,12 @@ def _filename(external_account_id: str, key: str) -> str:
     return f"snaptrade-raw-{plain}-{key}.json"
 
 
-@pages.route(RAW_DOWNLOAD, levels=["write", "read"])
+@pages.route(
+    RAW_DOWNLOAD,
+    levels=["write", "read"],
+    tool=False,
+    why="a file for a person to save: SnapTrade's answers as received, as kept",
+)
 async def raw_download(request: meridian.Request) -> meridian.Response:
     """One kept read of one account the person may read, as the JSON file it
     is kept as, to save: the read the query names, or the latest."""
@@ -1336,7 +2129,21 @@ async def raw_download(request: meridian.Request) -> meridian.Response:
 # ── Reading now: Refresh ────────────────────────────────────────────────────
 
 
-@pages.route(READ, levels=["admin", "write"], methods=["POST"])
+READING = "Reading SnapTrade now. Reload in a moment."
+
+
+@pages.route(
+    READ,
+    levels=["admin", "write"],
+    methods=["POST"],
+    params=records.ReadAsked,
+    answers=records.ReadStarted,
+    name="read_snaptrade_now",
+    description=(
+        "Read SnapTrade now, every connection and account, and record what it reads; "
+        "read_statements shows it once the read is done. Changes nothing at SnapTrade."
+    ),
+)
 async def read_now(request: meridian.Request) -> meridian.Response:
     """Read SnapTrade now: Refresh, in the Connections card beside + Add, and
     in the head on Statements and Raw responses under Open (View acts on
@@ -1345,8 +2152,11 @@ async def read_now(request: meridian.Request) -> meridian.Response:
     if (refused := _oversized(request)) is not None:
         return refused
     _now().wake.set()
-    notice = Notice("Reading SnapTrade now. Reload in a moment.")
-    back = request.form.get("back", "").strip()
+    if request.tool_name:
+        return pages.answer("statements.html", records.ReadStarted(READING))
+    notice = Notice(READING)
+    asked = request.params
+    back = asked.back.strip() if asked is not None else ""
     if not request.caller.admin:
         if back == RAW:
             return _raw(request, notice)

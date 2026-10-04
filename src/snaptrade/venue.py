@@ -35,6 +35,8 @@ Json = dict[str, Any]
 # How far back the activities are read for trades not yet settled: a
 # settlement cycle and a long weekend.
 ACTIVITIES_DAYS = 10
+# The most activities SnapTrade answers in one page of an account's history.
+MOST_PER_PAGE = 1000
 
 
 class VenueError(Exception):
@@ -87,6 +89,15 @@ class Venue(Protocol):
         (contract v11: what the settled and pending quantities come from)."""
         ...
 
+    async def activity_page(
+        self, account_id: str, start: date | None, end: date, offset: int, limit: int
+    ) -> ActivityPage:
+        """One page of `GET /accounts/{accountId}/activities`: the account's
+        activities dated from `start` (from the first SnapTrade holds, where
+        None) to `end`, `limit` of them from `offset`, as SnapTrade answers
+        them, with the total it says there are."""
+        ...
+
     async def connection_portal(self, reconnect: str | None = None) -> str:
         """A Connection Portal link: to connect a brokerage, or to reconnect one."""
         ...
@@ -98,6 +109,30 @@ class Venue(Protocol):
         may be charged. On a Real-time plan SnapTrade refuses one for a
         real-time connection: a VenueError whose `status` is 403."""
         ...
+
+
+@dataclass(frozen=True)
+class ActivityPage:
+    """One page of an account's activities: each as SnapTrade reports it,
+    the total it says the range holds (None where it says none), and its
+    answer whole, as received, for the raw record."""
+
+    activities: list[Json]
+    total: int | None
+    body: Any
+
+
+def activity_page_of(body: Any) -> ActivityPage:
+    """A page from SnapTrade's answer: paged as `{"data": [...],
+    "pagination": {"total": n}}`, or a plain list, as its API has it."""
+    data = body.get("data") if isinstance(body, dict) else body
+    total: int | None = None
+    if isinstance(body, dict):
+        said = body.get("pagination")
+        given = said.get("total") if isinstance(said, dict) else None
+        if isinstance(given, int) and not isinstance(given, bool) and given >= 0:
+            total = given
+    return ActivityPage(_objects(data), total, body)
 
 
 @dataclass(frozen=True)
@@ -277,6 +312,24 @@ class SnapTradeVenue:
         if isinstance(body, dict):
             body = body.get("data")
         return _objects(body)
+
+    async def activity_page(
+        self, account_id: str, start: date | None, end: date, offset: int, limit: int
+    ) -> ActivityPage:
+        def call() -> Any:
+            ask = getattr(self._sdk.account_information, "get_account_activities", None)
+            if ask is None:
+                raise AttributeError("this SnapTrade SDK reads no account activities")
+            return ask(
+                account_id=account_id,
+                **({"start_date": start.isoformat()} if start is not None else {}),
+                end_date=end.isoformat(),
+                offset=offset,
+                limit=limit,
+                **self._user(),
+            )
+
+        return activity_page_of(await self._call("reading activities", call))
 
     async def connection_portal(self, reconnect: str | None = None) -> str:
         body = await self._call(

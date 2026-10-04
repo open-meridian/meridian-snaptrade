@@ -3,7 +3,7 @@ SnapTrade's own models, from its official SDK, and exercises the rules."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 import meridian
@@ -13,6 +13,7 @@ from snaptrade_client.model.all_account_positions_response import (
 )
 from snaptrade_client.model.balance import Balance
 from snaptrade_client.model.brokerage_authorization import BrokerageAuthorization
+from snaptrade_client.model.paginated_universal_activity import PaginatedUniversalActivity
 from snaptrade_client.model.tax_lot import TaxLot
 
 from snaptrade.normalise import Lot, Serving, Side, SyncState, views
@@ -41,6 +42,23 @@ async def test_every_response_is_valid_by_snaptrades_own_models() -> None:
         for balance in await venue.balances(account_id):
             Balance.from_openapi_data_oapg(balance, _configuration=None)
     assert lots == 6
+    # Every activity each account holds, a page as SnapTrade answers one.
+    held = 0
+    for account_id in (ALPACA_MARGIN, IBKR_INDIVIDUAL):
+        page = await venue.activity_page(account_id, None, NOW.date(), 0, 1000)
+        PaginatedUniversalActivity.from_openapi_data_oapg(page.body, _configuration=None)
+        held += len(page.activities)
+    assert held == 8
+
+
+async def test_a_read_of_activities_gets_those_traded_in_its_range() -> None:
+    venue = SyntheticVenue(clock())
+    recent = await venue.activities(
+        IBKR_INDIVIDUAL, NOW.date() - timedelta(days=10), NOW.date()
+    )
+    assert [a["symbol"]["symbol"] for a in recent] == ["SAP.DE"]
+    page = await venue.activity_page(IBKR_INDIVIDUAL, date(2025, 1, 6), NOW.date(), 1, 2)
+    assert page.total == 7 and [a["id"][-4:] for a in page.activities] == ["f004", "f005"]
 
 
 async def test_each_rule_has_something_to_act_on() -> None:

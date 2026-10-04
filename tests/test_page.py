@@ -48,6 +48,7 @@ from snaptrade.page import (
     CONNECT,
     CONNECTIONS,
     DELAYED,
+    HISTORY,
     KIT,
     LINK,
     ONLY_DEPLOYMENT_ADMINS,
@@ -288,13 +289,14 @@ def flat(body: str) -> str:
 
 
 def test_each_page_is_declared_once_with_the_levels_it_serves() -> None:
-    # Connections and Account links at admin (Manage); Statements and Raw
-    # responses at write and read (Open and View), each adapting by the
-    # session's level.
+    # Connections and Account links at admin (Manage); Statements, History
+    # and Raw responses at write and read (Open and View), each adapting by
+    # the session's level.
     assert [(page.path, page.title, tuple(page.levels)) for page in pages.declared] == [
         (CONNECTIONS, "Connections", (ADMIN_LEVEL,)),
         (ACCOUNTS, "Account links", (ADMIN_LEVEL,)),
         (STATEMENTS, "Statements", (WRITE_LEVEL, READ_LEVEL)),
+        (HISTORY, "History", (WRITE_LEVEL, READ_LEVEL)),
         (RAW, "Raw responses", (WRITE_LEVEL, READ_LEVEL)),
     ]
     # What registration sends: one list, the actions not among its tabs.
@@ -303,6 +305,7 @@ def test_each_page_is_declared_once_with_the_levels_it_serves() -> None:
         (CONNECTIONS, [ADMIN_LEVEL]),
         (ACCOUNTS, [ADMIN_LEVEL]),
         (STATEMENTS, [WRITE_LEVEL, READ_LEVEL]),
+        (HISTORY, [WRITE_LEVEL, READ_LEVEL]),
         (RAW, [WRITE_LEVEL, READ_LEVEL]),
     ]
 
@@ -323,6 +326,9 @@ def test_each_page_is_served_at_its_levels_and_refused_at_the_others(
         (STATEMENTS, "admin"): 403,
         (STATEMENTS, "write"): 200,
         (STATEMENTS, "read"): 200,
+        (HISTORY, "admin"): 403,
+        (HISTORY, "write"): 200,
+        (HISTORY, "read"): 200,
         (RAW, "admin"): 403,
         (RAW, "write"): 200,
         (RAW, "read"): 200,
@@ -1707,10 +1713,10 @@ def test_the_tab_row_on_its_own_is_the_sessions_levels() -> None:
         name: re.findall(r'<a class="tab[^"]*" href="([^"]+)"', page)
         for name, page in shown.items()
     }
-    # Under Manage, its two tabs; under Open and View, its two others.
+    # Under Manage, its two tabs; under Open and View, its three others.
     assert tabs["connections"] == tabs["accounts"] == [CONNECTIONS, ACCOUNTS]
-    assert tabs["statements-open"] == tabs["statements-view"] == [STATEMENTS, RAW]
-    assert tabs["raw-open"] == tabs["raw-view"] == [STATEMENTS, RAW]
+    assert tabs["statements-open"] == tabs["statements-view"] == [STATEMENTS, HISTORY, RAW]
+    assert tabs["raw-open"] == tabs["raw-view"] == [STATEMENTS, HISTORY, RAW]
     assert 'class="tab on" href="/admin/accounts" aria-current="page"' in shown["accounts"]
 
 

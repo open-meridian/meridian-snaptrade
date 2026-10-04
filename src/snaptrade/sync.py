@@ -27,7 +27,7 @@ from meridian.bounds import PLUGIN_FIGURE_WHY_LENGTH
 from .contract import Outcome, Recorder
 from .declaration import seen
 from .normalise import AccountView, ConnectionView, SyncState, ns, views
-from .raw import RawStore, taken
+from .raw import RawStore, Taken, taken
 from .settings import Config
 from .synthetic import SyntheticVenue
 from .venue import Snapshot, SnapTradeVenue, Venue, VenueError, read, utc_now
@@ -130,6 +130,20 @@ class Syncer:
         self.config = Config()
         self.venue: Venue | None = None
         self.status = Status()
+
+    def now(self) -> datetime:
+        """The time, by the clock this syncer reads by."""
+        return self._now()
+
+    def keep_history(self, one: Taken) -> str:
+        """An account's history read on its own (history.py), kept as any
+        read is, its credentials redacted: the key it was kept under, or ""
+        where nothing is kept."""
+        if self.raw is None:
+            return ""
+        config = self.config
+        secrets = config.credentials.secrets() if config.credentials is not None else ()
+        return self.raw.keep_one(one, secrets)
 
     def configure(self, config: Config) -> None:
         self.config = config

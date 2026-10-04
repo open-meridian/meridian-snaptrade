@@ -33,8 +33,8 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:502c27c@sha256:1b13774610b26ac5a3467b6b3c85a9f32c800f5b71e1c94f6eca6792874c434f
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:502c27c@sha256:49d833b22959d5a6f42c327dc1346a5852b2618b5979363484259ad4bda6207d
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:04cdcf9@sha256:cda4317f3ee02764a311cf9acec9eb804fbb3887465c586c52eff0eb57b5af02
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:04cdcf9@sha256:3a530813651c92cd4d30b6a2cd38881b3af8fb48f05916ed596aec298f678892
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
@@ -71,7 +71,7 @@ help:
 	@echo "  make ci-remote      what ci.yaml runs: lint and tests"
 	@echo "  make test           the tests, in a container"
 	@echo "  make lint           ruff and mypy, strict"
-	@echo "  make check          what check.yaml runs: meridian plugin check --run-tests, in a container"
+	@echo "  make check          what check.yaml runs: meridian plugin check --verified --run-tests, in a container"
 	@echo "  make image          build the plugin's image, as upload would, and check it"
 	@echo "  make e2e            the plugin, synthetic, on the plugin harness of the runtime it pins: its rows in the street store"
 	@echo "  make preview        write preview/: each page on synthetic data, linking the kit"
@@ -115,9 +115,9 @@ check:
 		-t $(PLUGIN_CHECK) . >/dev/null 2>&1 \
 		|| { echo "check FAILED to build; see it with:" >&2; \
 		     echo "  DOCKER_BUILDKIT=1 docker build $(SDK_CONTEXT) -f Dockerfile.check --target check --build-arg MERIDIAN_VERSION=$(MERIDIAN_VERSION) --progress=plain ." >&2; exit 1; }
-	@out="$$(docker run --rm -v "$(CURDIR)":/w:ro $(PLUGIN_CHECK) meridian plugin check --run-tests 2>&1)" \
+	@out="$$(docker run --rm -v "$(CURDIR)":/w:ro $(PLUGIN_CHECK) meridian plugin check --verified --run-tests 2>&1)" \
 		|| { echo "check FAILED:" >&2; echo "$$out" >&2; exit 1; }
-	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --run-tests, every rule holds"
+	@echo "check OK: meridian $(MERIDIAN_VERSION) plugin check --verified --run-tests, every rule holds"
 
 # The image `meridian plugin upload` builds from this Dockerfile, checked for
 # what a plugin's image must be: it starts as 65532, imports itself and

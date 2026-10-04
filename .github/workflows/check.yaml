@@ -1,6 +1,7 @@
 # The framework's check, on every push and pull request: `meridian plugin
-# check --run-tests` holds the plugin to the rules every Meridian plugin is
-# built to, and runs its tests. It is the check AGENTS.md has a coding agent
+# check --verified --run-tests` holds the plugin to the rules every Meridian
+# plugin is built to, every route that changes something offered to agents
+# as a tool, and runs its tests. It is the check AGENTS.md has a coding agent
 # run after each change, so a failure here is one that run would have shown.
 #
 # The job is named for the make target that runs it locally: `make check`,
@@ -26,7 +27,7 @@ env:
   # into it. Move it deliberately, as the SDK's pin is moved, since a newer
   # one may hold a rule this plugin does not keep yet. `make check` reads it
   # from here.
-  MERIDIAN_VERSION: 0.1.25
+  MERIDIAN_VERSION: 0.1.30
 
 jobs:
   check:
@@ -48,5 +49,7 @@ jobs:
           curl -fsSL "https://raw.githubusercontent.com/open-meridian/meridian-cli/v${MERIDIAN_VERSION}/install.sh" \
             | MERIDIAN_INSTALL_DIR="$HOME/.local/bin" sh
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: meridian plugin check --run-tests
-        run: meridian plugin check --run-tests
+      # --verified: every route that changes something is a tool for agents
+      # (contract v12), none kept from them.
+      - name: meridian plugin check --verified --run-tests
+        run: meridian plugin check --verified --run-tests

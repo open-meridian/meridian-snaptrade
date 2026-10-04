@@ -19,7 +19,10 @@ a deployment admin approves them.
   for somebody who may read none
   (intent/a-custody-plugin-serves-its-statement-receivers); Raw responses,
   at `/raw`, at `write` and `read` too, is what SnapTrade answered each read
-  for those same accounts (below). `venue.py` is
+  for those same accounts (below); History, at `/history`, at `write` and
+  `read`, reads an account's activities over a range from SnapTrade when
+  asked, and proposes lots for positions SnapTrade lists none for
+  (`history.py`, below). `venue.py` is
   SnapTrade behind a small interface and the only module importing its SDK;
   `synthetic.py` stands in for it. `normalise.py` turns SnapTrade's shapes
   into the platform's convention; `contract.py` sends them through the SDK;
@@ -88,6 +91,26 @@ a deployment admin approves them.
   the flat figures, never a margin requirement, never a sum across
   currencies. A number that would not cross the wire exactly (18 places, 38
   digits) is caught in `normalise.py`, before its statement opens.
+- **Every route is a tool, or says why not** (contract v12, SDK 0.17.0;
+  the product owner, 2026-10-03). Each route declares its inputs as one
+  typed record (`params=`, in `records.py` or `history.py`), named as its
+  form's inputs; a read declares its typed answer (`answers=`) and answers
+  with `pages.answer`; a refusal names each field by its path with
+  `pages.refuse`. A route that cannot be a tool says `tool=False, why=`,
+  and none that changes something may (`meridian plugin check --verified`,
+  which `make check` runs). A new route gets its record and a test calling
+  it as a tool (`PageClient.call_tool`).
+- **Lots are proposed, never confirmed, and never sent** (the product
+  owner, 2026-10-04). `history.py` proposes lots for a position SnapTrade
+  lists no tax lots for: from its purchases in the activities where they are
+  all of it and nothing else moved it, else from its average purchase price
+  (quantity times it, the acquisition date left for the person), each naming
+  its source. No FIFO or any other rule SnapTrade does not state; a position
+  that arrived by transfer or a corporate action gets no lot from history,
+  and says so; a short or an option gets none. A proposal goes to the
+  person or their agent, never into a statement: the street's lots are
+  SnapTrade's own, and its `average_cost` is never multiplied there. Every
+  history read is kept as a raw record of the account, and named.
 - `make ci-local` before calling anything done. The README says what each
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles

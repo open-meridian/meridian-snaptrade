@@ -1,0 +1,36 @@
+{#- Lots proposed, never confirmed, for an account's positions that
+    SnapTrade lists no tax lots for: from the purchases in its history, else
+    from its average purchase price, each naming its source; and why none is
+    where none is. For an account the person may read. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block content %}
+{% if nothing %}
+<section class="panel padded narrow">
+<h2>Nothing here for you</h2>
+<p>This plugin brings brokerage accounts into this deployment through SnapTrade, and you may read none of them. If you should, ask whoever administers this deployment.</p>
+</section>
+{% else %}
+{% if mode %}<div class="notice warn" role="status">{{ mode | trim }}</div>{% endif %}
+{{ kit.notices(notice) }}
+{% if data %}
+<div class="notice info" role="status">{{ data.said }}</div>
+<p class="hint">Statement {{ data.statement }}, as of {{ data.as_of }}. History {{ data.history_read }}.{% if data.history_from %} SnapTrade holds it from {{ data.history_from }}.{% endif %} <a href="{{ paths.history }}?account={{ data.account | urlencode }}">Activities</a></p>
+{% for position in shown %}
+<section class="panel" data-instrument="{{ position.instrument }}">
+<div class="list-row"><div class="grow">
+<div class="row"><span class="title"><code>{{ position.instrument }}</code></span> {{ position.description }}</div>
+<div class="meta">{{ position.side | capitalize }} {{ position.quantity }} {{ position.currency }} · average purchase price {% if position.average %}{{ position.average }}{% else %}<span class="faint">not reported</span>{% endif %}</div>
+{% for line in position.said %}<span class="hint">{{ line }}</span>{% endfor %}
+</div></div>
+{% if position.grid.rows %}{{ kit.grid(position.grid, columns, "key") }}{% endif %}
+</section>
+{% else %}
+<section class="panel"><div class="empty-state"><strong>No positions</strong><p>The last statement holds nothing but cash.</p></div></section>
+{% endfor %}
+{% else %}
+<p class="hint"><a href="{{ paths.history }}">Choose an account</a> to propose its lots.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,46 @@
+{#- History, at write and read: an account's activities over a range, as
+    SnapTrade reports them, read when asked, with how far back its history
+    goes; and the way to the lots proposed from it. For each account linked
+    to one the person may read. -#}
+{% extends "meridian/base.html" %}
+{% import "_kit.html" as kit with context %}
+{% block status %}{{ kit.status_dot(dot) }}{% endblock %}
+{% block content %}
+{% if nothing %}
+<section class="panel padded narrow">
+<h2>Nothing here for you</h2>
+<p>This plugin brings brokerage accounts into this deployment through SnapTrade, and you may read none of them. If you should, ask whoever administers this deployment.</p>
+</section>
+{% else %}
+{% if mode %}<div class="notice warn" role="status">{{ mode | trim }}</div>{% endif %}
+{{ kit.notices(notice) }}
+<section class="panel padded">
+<form method="get" action="{{ paths.history }}" class="filters">
+<label class="field"><span>Account</span>
+<select name="account" required>
+<option value="">Choose an account</option>
+{% for account in accounts %}<option value="{{ account.account_id }}"{% if account.account_id == chosen %} selected{% endif %}>{{ account.label }}</option>{% endfor %}
+</select></label>
+<label class="field"><span>Traded from</span><input type="date" name="start" value="{{ data.start if data else '' }}"></label>
+<label class="field"><span>to</span><input type="date" name="end" value="{{ data.end if data else '' }}"></label>
+<label class="field"><span>At most</span><input type="number" name="limit" min="1" max="{{ most_limit }}" value="{{ data.limit if data else 100 }}"></label>
+<button class="primary">Read</button>
+</form>
+<p class="hint">Read from SnapTrade when asked, at most {{ most_days }} days at a time; each read is kept with this account's raw responses. The 30 days to today where no range is given.</p>
+{% if not accounts %}<p class="hint">None of the accounts you may read has a SnapTrade account linked to it yet.</p>{% endif %}
+</section>
+{% if data %}
+<section class="panel" data-account="{{ data.external_account_id }}">
+<div class="list-row"><div class="grow">
+<div class="row"><span class="title">{{ data.connection }}</span></div>
+<div class="meta">History from {% if data.history_from %}<strong>{{ data.history_from }}</strong>, the first transaction SnapTrade holds for this account{% else %}<span class="faint">not stated by SnapTrade</span>{% endif %}</div>
+<span class="hint">{{ data.said }}</span>
+</div>
+<a class="button" href="{{ paths.lots }}?account={{ data.account | urlencode }}">Propose lots</a>
+</div>
+{{ kit.grid(grid, columns, "key") }}
+{% if later or earlier %}<p class="hint">{% if earlier %}<a href="{{ earlier }}">Earlier page</a>{% endif %}{% if later %} <a href="{{ later }}">Next page</a>{% endif %}</p>{% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -207,6 +207,34 @@ class Taken:
     record: Json
 
 
+def history_taken(
+    account: Any, read_at: datetime, calls: Sequence[Json], synthetic: bool
+) -> Taken:
+    """An account's history read on its own, asked for by a person or an
+    agent (history.py): each page of its activities as SnapTrade answered
+    it, the range and the page in the call's note, kept as any read is."""
+    return Taken(
+        account.external_account_id,
+        {
+            "external_account_id": account.external_account_id,
+            "snaptrade_account_id": account.snaptrade_account_id,
+            "read_at": read_at.isoformat(),
+            "source": "synthetic" if synthetic else "snaptrade",
+            "calls": list(calls),
+        },
+    )
+
+
+def activities_call(body: Any, note: str) -> Json:
+    """One page of an account's activities, as a record keeps it."""
+    return _call(ACTIVITIES, body, note)
+
+
+def activities_failed(said: str, note: str) -> Json:
+    """A page of an account's activities that could not be read, and why."""
+    return {"call": ACTIVITIES[0], "request": ACTIVITIES[1], "note": note, "failed": said}
+
+
 def _call(asked: tuple[str, str], body: Any, note: str = "") -> Json:
     call: Json = {"call": asked[0], "request": asked[1]}
     if note:
@@ -363,7 +391,17 @@ class RawStore:
         self.failure = ""
         return written
 
-    def _write(self, one: Taken, record: Json) -> None:
+    def keep_one(self, one: Taken, secrets: Iterable[str] = ()) -> str:
+        """Write one account's record, its credentials redacted first: the
+        key it was kept under, or "" where it could not be written, logged
+        by the error's type, as `keep` does."""
+        try:
+            return self._write(one, redact(one.record, tuple(secrets)))
+        except OSError as failed:
+            log.warning("a raw response was not kept: %s", type(failed).__name__)
+            return ""
+
+    def _write(self, one: Taken, record: Json) -> str:
         directory = self._directory(one.external_account_id)
         directory.mkdir(parents=True, exist_ok=True)
         base = _key_of(datetime.fromisoformat(str(record["read_at"])))
@@ -382,6 +420,7 @@ class RawStore:
         except BaseException:
             Path(written).unlink(missing_ok=True)
             raise
+        return key
 
     def prune(self, now: datetime) -> int:
         """Remove every record read before `now` less the retention, and what

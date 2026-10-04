@@ -17,7 +17,13 @@ Three connections, chosen so each normalising rule has something to act on:
 - Interactive Brokers, a business day late by design and the one SnapTrade
   serves on a delay, so the one a refresh applies to: a euro listing whose
   lots add up to less than its quantity (recorded as reported), a position
-  whose currency SnapTrade does not state, and negative dollar cash.
+  whose currency SnapTrade does not state, and negative dollar cash. Three
+  positions with no tax lots and a history behind them, for the lots
+  proposed from it (history.py): SYNQ, bought twice and held since, so its
+  buys are its lots; SYNB, transferred in from another brokerage, so its
+  history states no cost and only its average purchase price proposes one;
+  and SYNV, bought and partly sold, which no rule SnapTrade states splits
+  into lots (no FIFO), so its average purchase price proposes one too.
 - Schwab, served in real time but disabled five days ago and serving what it
   last read, so needing sign-in, with an account SnapTrade gives no
   institution_account_id for, and no tax lots.
@@ -32,7 +38,7 @@ from datetime import date, datetime, timedelta
 from string import Template
 from typing import Any
 
-from .venue import Json, VenueError, parse_exact, utc_now
+from .venue import ActivityPage, Json, VenueError, activity_page_of, parse_exact, utc_now
 
 USER_ID = "synthetic-user"
 
@@ -226,7 +232,22 @@ _POSITIONS: dict[str, Template] = {
     {"instrument": {"kind": "other", "id": "00000000-0000-4000-8000-00000000d007",
                     "symbol": "SYNX", "raw_symbol": "SYNX",
                     "description": "A position SnapTrade names no currency for"},
-     "units": "7", "price": null, "cost_basis": null, "currency": null}
+     "units": "7", "price": null, "cost_basis": null, "currency": null},
+    {"instrument": {"kind": "etf", "id": "00000000-0000-4000-8000-00000000d009",
+                    "symbol": "SYNQ", "raw_symbol": "SYNQ",
+                    "description": "Synthetic leveraged index ETF, bought twice",
+                    "currency": "USD", "exchange": "XNAS"},
+     "units": "30", "price": "52.10", "cost_basis": "41.25", "currency": "USD"},
+    {"instrument": {"kind": "stock", "id": "00000000-0000-4000-8000-00000000d010",
+                    "symbol": "SYNB", "raw_symbol": "SYNB",
+                    "description": "Synthetic bank shares, transferred in",
+                    "currency": "USD", "exchange": "XNYS"},
+     "units": "100", "price": "21.05", "cost_basis": "18.40", "currency": "USD"},
+    {"instrument": {"kind": "stock", "id": "00000000-0000-4000-8000-00000000d011",
+                    "symbol": "SYNV", "raw_symbol": "SYNV",
+                    "description": "Synthetic shares, bought and partly sold",
+                    "currency": "USD", "exchange": "XNYS"},
+     "units": "30", "price": "12.40", "cost_basis": "10.00", "currency": "USD"}
   ],
   "data_freshness": {"as_of": "$yesterday"}
 }"""),
@@ -262,32 +283,80 @@ _BALANCES: dict[str, str] = {
 }
 
 
-# Each account's recent activities, as SnapTrade's account activities answer
-# them (contract v11: the settled and pending quantities come from these).
-# Alpaca's last trade settled long ago, so all it holds is settled; IBKR
-# bought 5 SAP.DE yesterday, settling tomorrow, so 5 of its 30 and the euros
-# paying for them are pending; Schwab's activities cannot be read, so its
-# settled quantities say so.
-_ACTIVITIES: dict[str, Template] = {
-    ALPACA_MARGIN: Template("""{"data": [
-  {"id": "00000000-0000-4000-8000-00000000f001", "type": "BUY",
+# Each account's activities, as SnapTrade's account activities answer them,
+# every one SnapTrade holds: a read asks for a range, and gets those traded
+# in it. The last ten days are what the settled and pending quantities come
+# from (contract v11): Alpaca's last trade settled long ago, so all it holds
+# is settled; IBKR bought 5 SAP.DE yesterday, settling tomorrow, so 5 of its
+# 30 and the euros paying for them are pending; Schwab's activities cannot be
+# read, so its settled quantities say so. Before them, IBKR's history: SYNQ
+# bought twice, with a dividend since; SYNB transferred in, with no cost
+# stated; SYNV bought, then partly sold.
+_ACTIVITIES: dict[str, list[str]] = {
+    ALPACA_MARGIN: [
+        """{"id": "00000000-0000-4000-8000-00000000f001", "type": "BUY",
    "symbol": {"symbol": "AAPL", "description": "Apple Inc"},
-   "units": "2.5", "price": "234.50", "amount": "-586.25",
+   "units": 2.5, "price": 234.50, "amount": -586.25, "fee": 0,
    "currency": {"code": "USD"}, "trade_date": "$nine_days_ago_date",
-   "settlement_date": "$eight_days_ago_date", "description": "Bought 2.5 AAPL"}
-], "pagination": {"offset": 0, "limit": 1000, "total": 1}}"""),
-    IBKR_INDIVIDUAL: Template("""{"data": [
-  {"id": "00000000-0000-4000-8000-00000000f002", "type": "BUY",
+   "settlement_date": "$eight_days_ago_date", "description": "Bought 2.5 AAPL"}""",
+    ],
+    IBKR_INDIVIDUAL: [
+        """{"id": "00000000-0000-4000-8000-00000000f003", "type": "BUY",
+   "symbol": {"symbol": "SYNQ", "description": "Synthetic leveraged index ETF"},
+   "units": 20, "price": 38.00, "amount": -760.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_300",
+   "settlement_date": "$days_ago_299", "description": "Bought 20 SYNQ"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f004", "type": "BUY",
+   "symbol": {"symbol": "SYNV", "description": "Synthetic shares"},
+   "units": 50, "price": 10.00, "amount": -500.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_250",
+   "settlement_date": "$days_ago_249", "description": "Bought 50 SYNV"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f005",
+   "type": "EXTERNAL_ASSET_TRANSFER_IN",
+   "symbol": {"symbol": "SYNB", "description": "Synthetic bank shares"},
+   "units": 100, "price": 0, "amount": null, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_200",
+   "settlement_date": "$days_ago_200",
+   "description": "100 SYNB received from another brokerage"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f006", "type": "BUY",
+   "symbol": {"symbol": "SYNQ", "description": "Synthetic leveraged index ETF"},
+   "units": 10, "price": 47.75, "amount": -477.50, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_120",
+   "settlement_date": "$days_ago_119", "description": "Bought 10 SYNQ"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f007", "type": "SELL",
+   "symbol": {"symbol": "SYNV", "description": "Synthetic shares"},
+   "units": -20, "price": 12.00, "amount": 240.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_90",
+   "settlement_date": "$days_ago_89", "description": "Sold 20 SYNV"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f008", "type": "DIVIDEND",
+   "symbol": {"symbol": "SYNQ", "description": "Synthetic leveraged index ETF"},
+   "units": 0, "price": 0, "amount": 3.20, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "$days_ago_60",
+   "settlement_date": "$days_ago_60", "description": "SYNQ dividend"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f002", "type": "BUY",
    "symbol": {"symbol": "SAP.DE", "description": "SAP SE"},
-   "units": "5", "price": "212.00", "amount": "-1060.00",
-   "currency": {"code": "EUR"}, "trade_date": "$yesterday_date",
-   "settlement_date": "$tomorrow_date", "description": "Bought 5 SAP.DE"}
-], "pagination": {"offset": 0, "limit": 1000, "total": 1}}"""),
+   "units": 5, "price": 212.00, "amount": -1060.00, "fee": 0,
+   "currency": {"code": "EUR"}, "trade_date": "$yesterday_midnight",
+   "settlement_date": "$tomorrow_date", "description": "Bought 5 SAP.DE"}""",
+    ],
 }
 
 
 def _stamp(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+
+
+def _midnight(moment: datetime) -> str:
+    """A day as SnapTrade writes an activity's date: midnight UTC."""
+    return moment.strftime("%Y-%m-%dT00:00:00.000Z")
+
+
+def _traded(activity: Json) -> date | None:
+    said = activity.get("trade_date")
+    try:
+        return date.fromisoformat(said[:10]) if isinstance(said, str) else None
+    except ValueError:
+        return None
 
 
 class SyntheticVenue:
@@ -312,9 +381,14 @@ class SyntheticVenue:
             "yesterday_date": yesterday.date().isoformat(),
             "five_days_ago": _stamp(five_days_ago),
             "five_days_ago_date": five_days_ago.date().isoformat(),
-            "nine_days_ago_date": (now - timedelta(days=9)).date().isoformat(),
-            "eight_days_ago_date": (now - timedelta(days=8)).date().isoformat(),
-            "tomorrow_date": (now + timedelta(days=1)).date().isoformat(),
+            "nine_days_ago_date": _midnight(now - timedelta(days=9)),
+            "eight_days_ago_date": _midnight(now - timedelta(days=8)),
+            "tomorrow_date": _midnight(now + timedelta(days=1)),
+            "yesterday_midnight": _midnight(yesterday),
+            **{
+                f"days_ago_{days}": _midnight(now - timedelta(days=days))
+                for days in (300, 299, 250, 249, 200, 120, 119, 90, 89, 60)
+            },
         }
 
     def _json(self, template: Template) -> Any:
@@ -344,16 +418,35 @@ class SyntheticVenue:
         body: list[Json] = parse_exact(_BALANCES.get(account_id, "[]"))
         return body
 
-    async def activities(self, account_id: str, start: date, end: date) -> list[Json]:
+    def _activities(self, account_id: str, start: date | None, end: date) -> list[Json]:
+        """The account's activities traded from `start` to `end`, in the
+        order SnapTrade lists them."""
         if account_id == SCHWAB_BROKERAGE:
             # The one account whose activities cannot be read: its settled
-            # quantities say so.
+            # quantities say so, and its history cannot be read either.
             raise VenueError("reading activities")
-        template = _ACTIVITIES.get(account_id)
-        body: Json = self._json(template) if template else {"data": []}
-        data = body.get("data")
-        return (
-            [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+        listed = [self._json(Template(each)) for each in _ACTIVITIES.get(account_id, [])]
+        return [
+            activity
+            for activity in listed
+            if (traded := _traded(activity)) is not None
+            and (start is None or start <= traded)
+            and traded <= end
+        ]
+
+    async def activities(self, account_id: str, start: date, end: date) -> list[Json]:
+        return self._activities(account_id, start, end)
+
+    async def activity_page(
+        self, account_id: str, start: date | None, end: date, offset: int, limit: int
+    ) -> ActivityPage:
+        found = self._activities(account_id, start, end)
+        page = found[offset : offset + limit]
+        return activity_page_of(
+            {
+                "data": page,
+                "pagination": {"offset": offset, "limit": limit, "total": len(found)},
+            }
         )
 
     async def connection_portal(self, reconnect: str | None = None) -> str:

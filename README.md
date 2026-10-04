@@ -5,12 +5,15 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.9.1. How a plugin like it is built is documented at
+0.10.0. How a plugin like it is built is documented at
 [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.16.0`, which declares
-contract v11, the edge keeps its own (meridian-design
-tasks/sdk-contract/the-edge-keeps-its-own), and carries the whole
+It is built on the SDK it pins, `open-meridian==0.17.0`, which declares
+contract v12, the deployment serves its MCP (meridian-design
+tasks/sdk-contract/a-deployment-serves-its-mcp-contract): every route is typed
+and offered to agents as a tool, or says why not ("Offered to agents",
+below). Since contract v11, the edge keeps its own (meridian-design
+tasks/sdk-contract/the-edge-keeps-its-own), and it carries the whole
 account-side contract (spec/the-account-side-fits-every-venue): a holding's
 side, a market value left unset, each asset counted once (a fund SnapTrade
 counts in cash too is kept, and the cash sent net of it), the settled
@@ -58,6 +61,13 @@ It holds nothing between reads that it needs: a restart reads again. What
 SnapTrade answered each read is kept beside, per account, for its retention,
 for the Raw responses tab ("Raw responses: what SnapTrade said", below);
 nothing is ever read back from it into what is recorded.
+
+When a person or an agent asks, it also reads an account's history from
+SnapTrade -- its activities over a range, back to the first transaction
+SnapTrade holds -- and proposes lots for the positions SnapTrade lists no
+tax lots for (the History tab, below). Neither is sent to the street: the
+proposals are for the person to carry into an opening balance and answer
+for there.
 
 ### How SnapTrade's shapes become the platform's
 
@@ -197,6 +207,7 @@ the page's code runs.
 | Connections | `/admin/connections` | `admin` | Manage |
 | Account links | `/admin/accounts` | `admin` | Manage |
 | Statements | `/` | `write`, `read` | Open, View |
+| History | `/history` | `write`, `read` | Open, View |
 | Raw responses | `/raw` | `write`, `read` | Open, View |
 
 Setup is under Manage, and daily work under Open and View
@@ -237,6 +248,47 @@ or removed, or a linked account is renamed or closed. So a reader sees every
 account linked to one they may read, before a restart and after it. Nothing
 is stored to remember a link: the plugin holds the latest delivery, and
 plugins are ephemeral.
+
+Each row shows SnapTrade's average purchase price per unit, as reported
+(its `cost_basis` on a position, sent as the holding's `average_cost`), or
+"not reported".
+
+### History, under Open and View
+
+**History** (`/history`) reads an account's activities from SnapTrade when
+asked -- buys, sells, transfers, dividends, each with its type, dates,
+symbol, units, price, amount and currency as SnapTrade wrote them -- traded
+from a start to an end date (at most 366 days at a time; the 30 days to
+today by default), a page of at most 1,000 at a time, for an account linked
+to one the person may read, chosen by the deployment's account. It says how
+far back the account's history goes: the first transaction SnapTrade holds
+for it (`first_transaction_date` in its sync status). Each read is kept with
+the account's raw responses.
+
+**Propose lots** (`/history/lots?account=<id>`) reads the account's whole
+history (up to 10,000 activities) and, for each position of its last
+statement that SnapTrade lists no tax lots for, proposes lots, each naming
+its source, never confirmed:
+
+- **From its purchases** (`BUY`, or `REI`, a reinvested dividend): one lot
+  per purchase, its units, the amount paid and its trade date ("SnapTrade
+  activities, BUY on 2025-12-02, <activity id>"), where those purchases are
+  all of the position and nothing else in its history moved it.
+- **Else from its average purchase price**: the quantity at that price,
+  worked out here, its acquisition date left for the person ("SnapTrade
+  average purchase price, 2026-09-28 15:00 UTC").
+- **Nothing it does not state**: a position its history shows sold from is
+  not split into lots by FIFO or any other order; one that arrived by
+  transfer, or that a corporate action changed (a split, a stock dividend,
+  an adjustment, an option exercised or assigned), gets no lot from its
+  history, and says so; nor does one whose purchases do not add up to what
+  it holds. A short position and an option get none, and a position
+  SnapTrade lists lots for gets nothing proposed beside them.
+
+Each proposed lot carries the fields an opening balance's lot takes
+(quantity, cost, currency, acquired, source), for the person, or an agent
+acting for them, to carry into the opening balance, where they check it and
+answer for it. Nothing here sends a lot anywhere.
 
 ### Raw responses, under Open and View
 
@@ -469,6 +521,34 @@ twice, an hour apart, in a temporary directory). They link the kit at `/.meridia
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
+## Offered to agents
+
+On SDK 0.17.0 (contract v12) each route declares its inputs as one typed
+record (`src/snaptrade/records.py`, `src/snaptrade/history.py`), so the SDK
+derives a tool from it on the deployment's MCP surface, at the route's
+levels, and `meridian plugin check --verified` holds every route that
+changes something to being one:
+
+| Tool | Route | Levels | Does |
+|---|---|---|---|
+| `read_connections` | `GET /admin/connections` | `admin` | each connection's state, what to do, how SnapTrade serves it |
+| `open_connection_portal` | `POST /admin/connect` | `admin` | a Connection Portal link, to connect a brokerage |
+| `refresh_connection` | `POST /admin/connections/refresh` | `admin` | ask SnapTrade to read a delayed connection again |
+| `reconnect_connection` | `POST /admin/connections/reconnect` | `admin` | a Connection Portal link, to sign in again |
+| `read_account_links` | `GET /admin/accounts` | `admin` | each external account, by identity, and its link |
+| `link_account` | `POST /admin/accounts/link` | `admin` | link, create and link, or unlink one account |
+| `read_statements` | `GET /` | `write`, `read` | each readable account's statement, average price and lots |
+| `read_account_activities` | `GET /history` | `write`, `read` | an account's activities over a range |
+| `read_proposed_lots` | `GET /history/lots` | `write`, `read` | lots proposed for positions with none |
+| `read_snaptrade_now` | `POST /read` | `admin`, `write` | read SnapTrade now |
+
+`link_account` replaces the tool the Account links form's route would give
+(`@pages.tool(replaces=...)`), since the map's form also posts several links
+at once. A refusal names each field by its path (`start`, `limit`,
+`connection_id`). Kept from agents, each saying why: `/admin`, a browser's
+redirect to Connections; Raw responses and its download, SnapTrade's
+answers as received, which no typed record holds.
+
 ## Raw responses: what SnapTrade said
 
 The product owner, debugging duplicate positions (2026-10-02), asked to see
@@ -536,8 +616,8 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.16.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.16.0`.
+The SDK is pinned exactly, `open-meridian==0.17.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.17.0`.
 Where the sibling `meridian-python` checkout carries exactly that version,
 one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
 and the check's containers install it from source, and the image is built on
@@ -573,7 +653,11 @@ from the activities, the raw-record references, the declaration and the
 custody suite (`tests/test_suite.py`, every case from SnapTrade's own words,
 none declared not presented since 0.9.1) were done by hand.
 `meridian.figures.LONGEST_WHY` is `meridian.bounds.PLUGIN_FIGURE_WHY_LENGTH`
-now.
+now. Moving to 0.17.0 (contract v12) ran `meridian plugin migrate`, which
+moved the pins and rewrote nothing, finding the five routes that change
+something with no typed record; each was typed by hand, the reads given
+typed answers, and `check.yaml` holds the plugin to `meridian` 0.1.30's
+`plugin check --verified`.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -587,7 +671,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `502c27c`, contract v11).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `04cdcf9`, contract v12).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -661,7 +745,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.9.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.10.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

@@ -14,7 +14,14 @@ from typing import Any
 import pytest
 
 from snaptrade.settings import Credentials
-from snaptrade.venue import SnapTradeVenue, VenueError, exact_body, read
+from snaptrade.venue import (
+    ActivityPage,
+    SnapTradeVenue,
+    VenueError,
+    activity_page_of,
+    exact_body,
+    read,
+)
 
 from conftest import NOW, clock
 
@@ -58,6 +65,11 @@ class FakeSdk:
             get_user_account_balance=self._answer(
                 "balances", b'[{"currency": {"code": "USD"}, "cash": 0.1}]'
             ),
+            get_account_activities=self._answer(
+                "activities",
+                b'{"data": [{"id": "x1", "type": "BUY", "units": 2.5, "amount": -586.25}], '
+                b'"pagination": {"offset": 0, "limit": 1000, "total": 1}}',
+            ),
         )
         self.connections = SimpleNamespace(
             list_brokerage_authorizations=self._answer("connections", b'[{"id": "c1"}]'),
@@ -86,6 +98,46 @@ async def test_numbers_are_read_from_the_bytes_received_never_as_floats() -> Non
     assert usd["cash"] == Decimal("0.1") and isinstance(usd["cash"], Decimal)
     positions = await venue.positions("a1")
     assert positions["results"][0]["units"] == "12.50"
+
+
+async def test_a_page_of_history_asks_its_range_and_page_and_reads_exactly() -> None:
+    sdk = FakeSdk()
+    venue = SnapTradeVenue(COMMERCIAL, sdk=sdk)
+    page = await venue.activity_page("a1", date(2025, 1, 6), date(2026, 9, 28), 1000, 1000)
+    assert page.total == 1
+    assert page.activities[0]["units"] == Decimal("2.5")
+    assert page.activities[0]["amount"] == Decimal("-586.25")
+    # Its whole answer, as received, for the raw record.
+    assert page.body["pagination"]["total"] == 1
+    # From the first SnapTrade holds where no start is given.
+    await SnapTradeVenue(PERSONAL, sdk=sdk).activity_page("a1", None, date(2026, 9, 28), 0, 10)
+    assert [kwargs for _, kwargs in sdk.asked] == [
+        {
+            "account_id": "a1",
+            "start_date": "2025-01-06",
+            "end_date": "2026-09-28",
+            "offset": 1000,
+            "limit": 1000,
+            "user_id": "u-1",
+            "user_secret": SECRET,
+        },
+        {"account_id": "a1", "end_date": "2026-09-28", "offset": 0, "limit": 10},
+    ]
+
+
+def test_a_page_of_history_is_paged_or_listed_as_snaptrade_answers() -> None:
+    assert activity_page_of([{"id": "x"}, 3]).activities == [{"id": "x"}]
+    assert activity_page_of([{"id": "x"}]).total is None
+    assert activity_page_of({"data": [], "pagination": {"total": True}}).total is None
+    assert activity_page_of(None).activities == []
+
+
+async def test_history_that_fails_says_what_was_asked_and_never_the_secret() -> None:
+    venue = SnapTradeVenue(COMMERCIAL, sdk=FakeSdk(fail=True))
+    with pytest.raises(VenueError) as failed:
+        await venue.activity_page("a1", None, date(2026, 9, 28), 0, 10)
+    assert str(failed.value) == "reading activities failed: ApiException (HTTP 401)"
+    assert SECRET not in "".join(traceback.format_exception(failed.value))
 
 
 def test_without_raw_bytes_the_sdks_body_is_used() -> None:
@@ -156,6 +208,11 @@ class OneAccountFails:
 
     async def activities(self, account_id: str, start: date, end: date) -> list[dict[str, Any]]:
         return []
+
+    async def activity_page(
+        self, account_id: str, start: date | None, end: date, offset: int, limit: int
+    ) -> ActivityPage:
+        return activity_page_of({"data": []})
 
     async def connection_portal(self, reconnect: str | None = None) -> str:
         return ""
