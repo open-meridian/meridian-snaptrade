@@ -35,6 +35,21 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
   units at its price, derived by that rule. A fund larger than its cash, a
   fund in a currency with no cash, or one with no price is a statement this
   plugin cannot serve clean, and withholds, saying why.
+- **A deposit is cash** (the product owner, 2026-10-05). A custodian may
+  hold an account's cash as a position SnapTrade lists, as Fidelity holds a
+  Traditional IRA's core position as an FDIC-insured bank deposit. Where
+  SnapTrade marks a position a cash equivalent and it is no fund, it is sent
+  as the cash of its currency: SnapTrade counts what it marks so in that cash
+  already (its `cash_equivalent`: "also counted in account cash balance"), so
+  the cash row stands for it, never adding it twice, derived by that rule
+  with the position's symbol and description as reported. Where SnapTrade
+  does not mark it, an admin of the plugin may list it in the
+  `counted_as_cash` setting (counted_as_cash.py): its units at its price are
+  added to the cash of the row's currency, derived by that rule and supplied
+  by the person who listed it, when. Never decided from what a symbol looks
+  like, and a fund stays a fund, whatever lists it. A deposit marked so that
+  is worth more than its cash, or whose currency has no cash, is a statement
+  this plugin cannot serve clean, and withholds, as for a fund.
 - **The account's kind** (contract v11, Q13): `raw_type` margin is margin,
   cash is cash, a retirement account's type (an IRA, a Roth, a 401(k), an
   RRSP and the like) is retirement; any other type -- INDIVIDUAL, Brokerage,
@@ -100,7 +115,7 @@ The rules, each from the spec or the broker survey (reference/broker-apis.md):
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
@@ -108,7 +123,9 @@ from enum import Enum
 from typing import Any
 
 import meridian
+from meridian.bounds import PROVENANCE_RULE_LENGTH
 
+from .counted_as_cash import CountedAsCash, row_for
 from .venue import Json, Snapshot
 
 SOURCE = "snaptrade"
@@ -121,6 +138,10 @@ SECURITY_TYPE_SCHEME = "snaptrade:security-type"
 # The rules this plugin closes a value by, each named as its provenance says
 # it (contract v11): never presented as SnapTrade's.
 RULE_NET_CASH = "cash net of the money market funds the brokerage counts in cash"
+RULE_DEPOSIT_FLAGGED = (
+    "the cash SnapTrade reports, counting a deposit it marks a cash equivalent that is no fund"
+)
+RULE_DEPOSIT_LISTED = "the cash plus a deposit an admin of the plugin counts as cash"
 RULE_SETTLED = "the quantity less the account's trades not settled at the as-of date"
 RULE_SETTLED_UNREAD = (
     "the quantity, no trade being known pending: SnapTrade's activities could not be read"
@@ -363,6 +384,8 @@ class Closed:
     kind: str
     rule: str = ""
     call: str = ""
+    # Who supplied it, and when, for a value a person supplied.
+    person: str = ""
 
 
 @dataclass(frozen=True)
@@ -375,6 +398,26 @@ class Netted:
     gross: Decimal
     funds: tuple[tuple[str, Decimal, Decimal], ...]
     net: Decimal
+
+
+@dataclass(frozen=True)
+class AsCash:
+    """A position sent as the cash of its currency, not as a holding: what
+    the Statements tab shows beside the cash row."""
+
+    symbol: str
+    # SnapTrade's description of it, as reported.
+    description: str
+    currency: str
+    units: Decimal
+    price: Decimal
+    # Its units at its price, in the currency.
+    amount: Decimal
+    # "flag": SnapTrade marks it a cash equivalent and it is no fund, so its
+    # cash counts it already; "setting": a person listed it, and it is added.
+    by: str
+    # Who listed it, and when, for one a person listed.
+    person: str = ""
 
 
 class Withheld(ValueError):
@@ -441,6 +484,8 @@ class Statement:
     closed: tuple[Closed, ...] = ()
     # Each currency whose cash was sent net of a fund (contract v11).
     netted: tuple[Netted, ...] = ()
+    # Each position sent as cash rather than as a holding.
+    as_cash: tuple[AsCash, ...] = ()
     # Whether SnapTrade's activities were read for the settled quantities.
     activities_read: bool = False
 
@@ -976,10 +1021,12 @@ def statement(
     freshness: Freshness,
     total: Any = None,
     activities: list[Json] | None = None,
+    counted_as_cash: Sequence[CountedAsCash] = (),
 ) -> tuple[Statement, tuple[str, ...]]:
     """The statement for one account, and what could not be put in it.
     `total` is the account's `balance.total` as SnapTrade listed it;
-    `activities` its trades, None where they could not be read. Raises
+    `activities` its trades, None where they could not be read;
+    `counted_as_cash` the positions people listed as cash. Raises
     `Withheld` for a statement this plugin cannot serve clean."""
     problems: list[str] = []
     cash: list[Holding] = []
@@ -1008,7 +1055,10 @@ def statement(
             problems.append(str(refused))
     holdings, merging = _merged(rows + cash)
     problems.extend(merging)
-    holdings, netted = _counted_once(holdings)
+    holdings, as_cash = _deposits(
+        holdings, account.external_account_id, counted_as_cash, problems
+    )
+    holdings, netted = _counted_once(holdings, as_cash)
     closed: list[Closed] = []
     as_of = _day(_dict(positions.get("data_freshness")).get("as_of"))
     if as_of is None and freshness.holdings_as_of is not None:
@@ -1040,35 +1090,157 @@ def statement(
             net_liquidation=net_liquidation,
             closed=tuple(closed),
             netted=netted,
+            as_cash=as_cash,
             activities_read=activities is not None,
         ),
         tuple(problems),
     )
 
 
-def _counted_once(
+def _symbol(holding: Holding) -> str:
+    """SnapTrade's own symbol for a holding, or ""."""
+    return next((i.value for i in holding.identifiers if i.scheme == "symbol"), "")
+
+
+def _deposits(
     holdings: tuple[Holding, ...],
+    external_account_id: str,
+    listed: Sequence[CountedAsCash],
+    problems: list[str],
+) -> tuple[tuple[Holding, ...], tuple[AsCash, ...]]:
+    """The positions sent as cash, taken out of the holdings: each SnapTrade
+    marks a cash equivalent that is no fund, then each a person listed in
+    `counted_as_cash` (the product owner, 2026-10-05). A fund stays a fund,
+    whatever lists it, and a listed position this plugin cannot count is
+    kept as the holding it is, with why in `problems`. Raises `Withheld` for
+    a marked one with no price, as for a fund."""
+    kept: list[Holding] = []
+    as_cash: list[AsCash] = []
+    for holding in holdings:
+        symbol = _symbol(holding)
+        named = symbol or holding.identifiers[-1].value
+        if holding.kind == "cash":
+            kept.append(holding)
+            continue
+        if holding.cash_equivalent and holding.asset_class != "fund":
+            # SnapTrade's own flag first: no fund, so a deposit, counted in
+            # the cash of its currency, by SnapTrade's own definition.
+            if holding.price is None:
+                raise Withheld(
+                    f"SnapTrade gives no price for {named}, which it marks a cash equivalent "
+                    f"counted in {holding.currency} cash, so it cannot be sent as that cash"
+                )
+            as_cash.append(_as_cash(holding, named, holding.currency, holding.price, "flag"))
+            continue
+        row = row_for(listed, external_account_id, symbol) if symbol else None
+        if row is None:
+            kept.append(holding)
+            continue
+        said = f"{named} is listed as cash in the plugin's settings"
+        if holding.asset_class == "fund":
+            problems.append(f"{said}, but SnapTrade reports it a fund: a fund stays a fund")
+        elif not row.currency:
+            problems.append(
+                f"{said} in {row.given or 'no currency'!r}, which is no ISO 4217 code: it is "
+                "sent as the holding it is"
+            )
+        elif not holding.currency_assumed and holding.currency != row.currency:
+            problems.append(
+                f"{said} in {row.currency}, but SnapTrade states it in {holding.currency}: it "
+                "is sent as the holding it is"
+            )
+        elif holding.price is None:
+            problems.append(
+                f"{said}, but SnapTrade gives no price for it, so its cash is not known: it "
+                "is sent as the holding it is"
+            )
+        else:
+            as_cash.append(
+                _as_cash(holding, named, row.currency, holding.price, "setting", row.person)
+            )
+            continue
+        kept.append(holding)
+    return tuple(kept), tuple(as_cash)
+
+
+def _as_cash(
+    holding: Holding, named: str, currency: str, price: Decimal, by: str, person: str = ""
+) -> AsCash:
+    return AsCash(
+        symbol=named,
+        description=holding.description,
+        currency=currency,
+        units=holding.quantity,
+        price=price,
+        amount=holding.quantity * price,
+        by=by,
+        person=person,
+    )
+
+
+def _naming(rule: str, deposit: AsCash) -> str:
+    """A rule as a provenance names it for one deposit: the rule, then the
+    deposit's symbol and SnapTrade's description as reported, within the
+    rule's bound (the description cut short where it must be)."""
+    most = PROVENANCE_RULE_LENGTH.most
+    head = f"{rule}: {deposit.symbol}, as reported "
+    said = f'{head}"{deposit.description}"'
+    if len(said) <= most:
+        return said
+    room = max(most - len(head) - 5, 0)
+    return f'{head}"{deposit.description[:room]}..."'[:most]
+
+
+def _counted_once(
+    holdings: tuple[Holding, ...], as_cash: tuple[AsCash, ...] = ()
 ) -> tuple[tuple[Holding, ...], tuple[Netted, ...]]:
     """Each asset once (contract v11): the cash of each currency net of the
-    money market funds SnapTrade counts in it, the net derived by the rule.
-    Raises `Withheld` where it cannot be served clean."""
+    money market funds SnapTrade counts in it, the net derived by the rule;
+    standing for the deposits SnapTrade marks cash equivalents, which it
+    counts in that cash already; and plus the deposits people listed as
+    cash, a cash row made for them where SnapTrade reports none. Raises
+    `Withheld` where it cannot be served clean."""
     funds: dict[str, list[Holding]] = {}
     for holding in holdings:
         if holding.cash_equivalent and holding.kind != "cash":
             funds.setdefault(holding.currency, []).append(holding)
-    if not funds:
+    deposits: dict[str, list[AsCash]] = {}
+    for deposit in as_cash:
+        deposits.setdefault(deposit.currency, []).append(deposit)
+    if not funds and not deposits:
         return holdings, ()
     netted: list[Netted] = []
-    out: list[Holding] = []
     cash = {h.currency: h for h in holdings if h.kind == "cash"}
-    for currency, counted in sorted(funds.items()):
+    made: list[Holding] = []
+    sent: dict[str, Holding] = {}
+    for currency in sorted(set(funds) | set(deposits)):
+        counted = funds.get(currency, [])
+        marked = [d for d in deposits.get(currency, []) if d.by == "flag"]
+        added = [d for d in deposits.get(currency, []) if d.by == "setting"]
         held = cash.get(currency)
-        named = ", ".join(fund.identifiers[-1].value for fund in counted)
-        if held is None:
+        named = ", ".join(
+            [fund.identifiers[-1].value for fund in counted] + [d.symbol for d in marked]
+        )
+        if held is None and (counted or marked):
             raise Withheld(
                 f"SnapTrade counts {named} in {currency} cash and reports no {currency} cash, "
                 "so the cash cannot be sent net of it; nothing is sent until it can"
             )
+        if held is None:
+            # Only deposits a person listed: the cash they are, in a row of
+            # their own, converted from the positions they were listed in.
+            held = Holding(
+                identifiers=(Identifier("iso4217", currency),),
+                description=f"{currency} cash",
+                kind="cash",
+                asset_class="cash",
+                side=Side.LONG,
+                quantity=Decimal(0),
+                currency=currency,
+                market_value=meridian.Money(Decimal(0), currency),
+                call=POSITIONS_CALL,
+            )
+            made.append(held)
         values: list[tuple[str, Decimal, Decimal]] = []
         for fund in counted:
             if fund.price is None:
@@ -1077,36 +1249,50 @@ def _counted_once(
                     f"counts in {currency} cash, so the cash cannot be sent net of it"
                 )
             values.append((fund.identifiers[-1].value, fund.quantity, fund.price))
-        net = _at_scale_of(
-            held.quantity - sum((units * price for _, units, price in values), Decimal(0)),
-            held.quantity,
-        )
-        if net < 0:
+        in_funds = sum((units * price for _, units, price in values), Decimal(0))
+        in_marked = sum((d.amount for d in marked), Decimal(0))
+        if held.quantity - in_funds - in_marked < 0:
             raise Withheld(
-                f"the money market funds SnapTrade counts in {currency} cash ({named}) are "
-                f"worth more than that cash, {held.quantity}; it cannot be sent net of "
-                "them, and nothing is sent rather than a double count"
+                f"what SnapTrade counts in {currency} cash ({named}) is worth more than that "
+                f"cash, {held.quantity}; it cannot be sent net of it, and nothing is sent "
+                "rather than a double count"
             )
-        netted.append(Netted(currency, held.quantity, tuple(values), net))
-    by_currency = {n.currency: n for n in netted}
-    for holding in holdings:
-        done = by_currency.get(holding.currency) if holding.kind == "cash" else None
-        if done is None:
-            out.append(holding)
-            continue
-        out.append(
-            replace(
-                holding,
-                quantity=done.net,
-                side=_side(done.net),
-                market_value=meridian.Money(done.net, holding.currency),
-                closed=holding.closed
-                + (
-                    Closed("quantity", "derived", RULE_NET_CASH),
-                    Closed("market_value", "derived", RULE_NET_CASH),
-                ),
+        # A marked deposit is in SnapTrade's cash already and is that cash:
+        # netted out as each asset once would, and back in as what it is.
+        net = held.quantity - in_funds
+        if counted:
+            netted.append(
+                Netted(currency, held.quantity, tuple(values), _at_scale_of(net, held.quantity))
             )
+        total = _at_scale_of(net + sum((d.amount for d in added), Decimal(0)), held.quantity)
+        closed: list[Closed] = []
+        if counted:
+            closed += [
+                Closed("quantity", "derived", RULE_NET_CASH),
+                Closed("market_value", "derived", RULE_NET_CASH),
+            ]
+        for deposit in marked:
+            rule = _naming(RULE_DEPOSIT_FLAGGED, deposit)
+            closed += [
+                Closed("quantity", "derived", rule),
+                Closed("market_value", "derived", rule),
+            ]
+        for deposit in added:
+            rule = _naming(RULE_DEPOSIT_LISTED, deposit)
+            closed += [
+                Closed("quantity", "derived", rule),
+                Closed("quantity", "supplied", person=deposit.person),
+                Closed("market_value", "derived", rule),
+                Closed("market_value", "supplied", person=deposit.person),
+            ]
+        sent[currency] = replace(
+            held,
+            quantity=total,
+            side=_side(total),
+            market_value=meridian.Money(total, currency),
+            closed=held.closed + tuple(closed),
         )
+    out = [sent.get(h.currency, h) if h.kind == "cash" else h for h in (*holdings, *made)]
     return tuple(out), tuple(netted)
 
 
@@ -1199,8 +1385,13 @@ def _total(total: Any) -> meridian.Money | None:
 # ── A whole read ─────────────────────────────────────────────────────────────
 
 
-def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, ...]:
-    """Every connection, with its accounts, as this read saw them."""
+def views(
+    snapshot: Snapshot,
+    stale_after: timedelta,
+    counted_as_cash: Sequence[CountedAsCash] = (),
+) -> tuple[ConnectionView, ...]:
+    """Every connection, with its accounts, as this read saw them, with the
+    positions people listed as cash counted so."""
     by_connection: dict[str, list[AccountView]] = {}
     connections = {_text(c.get("id")): c for c in snapshot.connections}
     for raw in snapshot.accounts:
@@ -1229,6 +1420,7 @@ def views(snapshot: Snapshot, stale_after: timedelta) -> tuple[ConnectionView, .
                     fresh,
                     _dict(raw.get("balance")).get("total"),
                     snapshot.activities.get(account.snaptrade_account_id),
+                    counted_as_cash,
                 )
             except Withheld as unclean:
                 # A statement it cannot serve clean is withheld, and said why

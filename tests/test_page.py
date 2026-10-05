@@ -407,7 +407,7 @@ def test_the_connections_tab_has_no_tiles_but_its_card_rows_and_actions(
     # Schwab's, needing sign-in, led to Reconnect.
     assert "<h2>Connections</h2>" in body
     assert ">Refresh</button>" in body and ">+ Add</button>" in body
-    assert body.count('<div class="list-row">') == 3
+    assert body.count('<div class="list-row">') == 4
     assert '<button class="primary">Reconnect</button>' in body
     assert "Holdings read" not in body and "statement" not in body
     # What the page no longer shows went on the heartbeat with the read.
@@ -712,10 +712,12 @@ def test_refresh_is_offered_only_where_snaptrade_serves_on_a_delay(server: int) 
     # Interactive Brokers is served on a delay: Refresh, and that it may be charged.
     assert refresh_button(synthetic.IBKR) in body
     assert DELAYED in body and "may charge for each refresh" in body
-    # Alpaca and Schwab are served in real time: a plain line, and no Refresh.
+    # Alpaca, Schwab and Fidelity are served in real time: a plain line, and
+    # no Refresh.
     assert refresh_button(synthetic.ALPACA) not in body
     assert refresh_button(synthetic.SCHWAB) not in body
-    assert body.count(REAL_TIME) == 2
+    assert refresh_button(synthetic.FIDELITY) not in body
+    assert body.count(REAL_TIME) == 3
     # Reconnecting is offered to each; it leads where the connection is disabled.
     for key in (synthetic.ALPACA, synthetic.IBKR):
         assert f"{reconnect_button(key)}>Reconnect</button>" in body
@@ -987,7 +989,7 @@ def test_after_a_restart_every_link_is_named_from_the_first_delivery(
     ]
     assert "Linked to Household (<code>ACC-1</code>)." in row_of(body, ALPACA)
     assert "Linked to Spare (<code>ACC-3</code>)." in row_of(body, IBKR)
-    assert "2 linked, 1 not linked." in body
+    assert "2 linked, 2 not linked." in body
     assert links_sent(sidecar) == []
 
 

@@ -50,6 +50,7 @@ K = meridian.ActivityKind
 ALPACA = "ALPACA:SYN-ALP-1001"
 IBKR = "INTERACTIVE-BROKERS-FLEX:SYN-IB-2002"
 SCHWAB = f"snaptrade:{synthetic.SCHWAB_BROKERAGE}"
+FIDELITY = "FIDELITY:SYN-FID-4004"
 # Alpaca's history, on fixed dates from its first transaction (synthetic.py).
 ALPACA_HISTORY = 16
 
@@ -406,7 +407,12 @@ def test_the_sync_status_carries_history_from(tmp_path: Path) -> None:
     sidecar = Sidecar()
     asyncio.run(syncer_for(sidecar, tmp_path).run_once())
     stated = {s.external_account_id: s.history_from for s in sidecar.sent("ReportSyncStatus")}
-    assert stated == {ALPACA: "2025-06-02", IBKR: "2025-01-06", SCHWAB: "2026-03-03"}
+    assert stated == {
+        ALPACA: "2025-06-02",
+        IBKR: "2025-01-06",
+        SCHWAB: "2026-03-03",
+        FIDELITY: "2026-04-01",
+    }
 
 
 def test_after_the_backfill_each_read_reports_what_it_fetched(tmp_path: Path) -> None:
@@ -483,7 +489,7 @@ def test_the_read_and_its_health_are_as_they_were(tmp_path: Path) -> None:
     asyncio.run(syncer_for(sidecar, tmp_path).run_once())
     assert sidecar.reports[-1] == (
         True,
-        "read 3 accounts through 3 connections (synthetic)",
+        "read 4 accounts through 4 connections (synthetic)",
     )
 
 

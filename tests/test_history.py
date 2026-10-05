@@ -537,12 +537,14 @@ def test_manage_reads_connections_and_links_and_no_accounts_data(
         "Alpaca": "real_time",
         "Interactive Brokers": "delayed",
         "Schwab": "real_time",
+        "Fidelity": "real_time",
     }
     links = admin.call_tool("read_account_links").data["accounts"]
     assert {(each["external_account_id"], each["account_id"]) for each in links} == {
         (ALPACA, "ACC-1"),
         (IBKR, "ACC-3"),
         (SCHWAB, "ACC-4"),
+        ("FIDELITY:SYN-FID-4004", ""),
     }
     # Identities and links only: no holding, quantity or cash of an account.
     said = json.dumps([connections.json, links])

@@ -174,6 +174,8 @@ meridian-design.
 | account `balance.total` | the statement's net liquidation, the account's total value as the brokerage gave it (the product owner, 2026-10-01); none where SnapTrade gives none |
 | (the statement's figures) | one set with no segment, the account's as a whole, holding the two above; none where neither is reported. SnapTrade reports no margin requirement, maintenance excess, initial or variation margin, or collateral, so none is sent |
 | `cash_equivalent: true` (money-market funds) | kept as a position, stated a money market fund on its resolve, and the cash of its currency sent net of it, units times SnapTrade's `price`, with that provenance (the street counts each asset once). The Statements tab shows the gross cash, the funds and the net. With no price, or a fund worth more than the cash, the statement is withheld rather than a double count |
+| `cash_equivalent: true` on a position that is no fund (an `instrument.kind` not mapped to `fund`: a bank deposit, say, of kind `other`) | the cash of its currency, not a holding (the product owner, 2026-10-05). SnapTrade defines the flag as a position "also counted in account cash balance", so the cash row it reports stands for the deposit, never adding it twice; its quantity and market value carry the provenance, derived by the rule "the cash SnapTrade reports, counting a deposit it marks a cash equivalent that is no fund", naming the deposit's symbol and SnapTrade's description as reported. With no price, no cash in its currency, or a deposit worth more than that cash, the statement is withheld, as for a fund |
+| a position SnapTrade does not mark, listed in `counted_as_cash` (below) | the cash of the row's currency, not a holding: its units at SnapTrade's `price` added to that currency's cash row (one made where SnapTrade reports no cash in it), derived by the rule "the cash plus a deposit an admin of the plugin counts as cash", naming its symbol and description as reported, and supplied by the person who changed the row, when (its `changed_by`, `changed_at`). A fund stays a fund, whatever lists it; a row whose currency is no ISO 4217 code, or differs from one SnapTrade states for the position, or a position with no price, counts nothing and is said. Never decided from what a symbol looks like |
 | every JSON number | a `Decimal` read from its text; a float anywhere is `Decimal(repr(x))` |
 | connection `data_freshness_mode.snaptrade` (`realtime` or `delayed`) | how SnapTrade serves the connection: whether the Connections tab offers Refresh (below); unknown when absent |
 | (the read) | a statement per account, its ID `snaptrade:<account>:<read time in ns>`, as of `data_freshness.as_of` |
@@ -235,6 +237,7 @@ without any of them.
 | `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept for `activity_retention_days`, whatever this says |
 | `activity_retention_days` | Keep activity records for | number, days | no | no | how long the record of each activity SnapTrade reported is kept, from when it was received; default 2555 (seven years), at most 36500. Never shorter than the history SnapTrade reported: the Activity records view refuses a shorter value, and one set shorter in this form is kept to that, which the view says. Also set on the Account links tab |
 | `plan_code_links` | Plan-code links | table: account, plan code, instrument | no | no | each plan's own fund code on an account, linked to the instrument record it is; at most 200 rows. Each row arrives with who changed it and when |
+| `counted_as_cash` | Positions counted as cash | table: symbol (text), currency (text, an ISO 4217 code), account (external account, optional) | no | no | positions a custodian holds as cash that SnapTrade does not mark a cash equivalent, such as Fidelity's FDIC-insured deposit as an IRA's core position (`FDIC99532`): each is sent as the cash of its currency, naming who listed it and when (above). The symbol as SnapTrade names it; a blank account is every account holding it, and a row naming the account comes first; at most 200 rows. A fund stays a fund. Where SnapTrade marks the position itself, its own flag decides and the row is not read |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
@@ -263,15 +266,20 @@ With `synthetic` on, the plugin serves built-in responses shaped like
 SnapTrade's documented API (`src/snaptrade/synthetic.py`; the tests validate
 each against SnapTrade's own models). It records them through the sidecar like
 real ones, so it can be developed live on a deployment before any key exists.
-Every value is invented. Three connections, chosen so each rule has something
+Every value is invented. Four connections, chosen so each rule has something
 to act on: Alpaca (current; long and short stock, an option, a money-market
 fund, crypto to nine decimals, cash in two currencies; tax lots on Apple,
 the short and Bitcoin, one with no cost or date), Interactive Brokers
 (delayed by design; a euro listing whose lots add up to less than it, a
 position with no stated currency, negative cash), and Schwab (disabled, so
-needing sign-in, with no stable account ID, and no lots). SnapTrade serves
-Alpaca and Schwab in real time and Interactive Brokers on a delay, so only
-Interactive Brokers is offered Refresh; refreshing it in synthetic mode asks
+needing sign-in, with no stable account ID, and no lots), and Fidelity (a
+Traditional IRA shaped like the one whose core position is an FDIC-insured
+deposit: SYNDP, a deposit SnapTrade marks a cash equivalent and counts in the
+USD cash of 10.00, sent as that cash; and SYNFD, 2.99 at a price of 1,
+unmarked, sent as a holding until listed in `counted_as_cash`, then added to
+the cash, 12.99). SnapTrade serves Alpaca, Schwab and Fidelity in real time
+and Interactive Brokers on a delay, so only Interactive Brokers is offered
+Refresh; refreshing it in synthetic mode asks
 nothing of SnapTrade.
 
 ## Its pages
@@ -334,7 +342,10 @@ plugins are ephemeral.
 
 Each row shows SnapTrade's average purchase price per unit, as reported
 (its `cost_basis` on a position, sent as the holding's `average_cost`), or
-"not reported".
+"not reported". A cash row standing for a deposit says which, beside it: its
+symbol, SnapTrade's description, its units and price, and whether SnapTrade
+marks it (counted in the cash already) or a person listed it (added, naming
+them and when).
 
 ### History, under Open and View
 
@@ -809,7 +820,7 @@ this plugin's own page, it:
    prints the store with the harness's `store street` and compares it with
    `e2e/expected.street`;
 6. asks the dashboard how many accounts the plugin reported and nothing
-   links: 2, Interactive Brokers' and Schwab's;
+   links: 3, Interactive Brokers', Schwab's and Fidelity's;
 7. waits until the street's activity holds Alpaca's sixteen activities,
    prints it with the harness's `store activity` and compares it with
    `e2e/expected.activity` (contract v14): Alpaca's history backfilled back
@@ -839,7 +850,16 @@ this plugin's own page, it:
     linking IBKR's plan code `OQKR` to SYNXX's record (contract v14), and
     finds the Settings tab naming who changed it; then links IBKR to a new
     account, **E2E IBKR**, whose first read's backfill reports the
-    reinvestment under `OQKR` as SYNXX's record, resolved through the link.
+    reinvestment under `OQKR` as SYNXX's record, resolved through the link;
+13. links Fidelity's IRA to a new account, **E2E IRA**, whose statement is
+    `e2e/expected.ira-marked`: three rows, SYNDP not among them but the USD
+    cash of 10.00 that counts it, its quantity and market value derived;
+    then lists SYNFD in the table setting `counted_as_cash` (symbol SYNFD,
+    currency USD, account `FIDELITY:SYN-FID-4004`), and finds the next
+    statement `e2e/expected.ira-listed`: two rows, USD cash 12.99, its
+    quantity and market value derived and supplied, and no SYNFD (the street
+    keeps SYNFD's position as the earlier statement left it, which a reader
+    of the account's latest statement takes as absent).
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The

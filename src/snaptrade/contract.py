@@ -4,7 +4,8 @@ Each part of the account-side contract (spec/the-account-side-fits-every-venue)
 as the pinned SDK takes it (contract v11): a holding's side, its settled
 quantity and its pending quantities by value date, a market value left unset
 where none was reported, each asset once -- the cash of a currency net of a
-money market fund SnapTrade counts in it -- its average cost and lots as
+money market fund SnapTrade counts in it, and with the deposits sent as cash
+-- its average cost and lots as
 reported, the raw record it was converted from, and the provenance of each
 value this plugin closed rather than read; a statement naming its external
 account and institution, with its figures as the one set for the account as a
@@ -248,11 +249,14 @@ class Recorder:
         self, closed: Sequence[Closed], account: ExternalAccount, read_at_ns: int
     ) -> list[meridian.Provenance]:
         """Each value this plugin closed, as its provenance: derived by the
-        rule it names, or reported by SnapTrade in another of its raw records
-        (the account's activities)."""
+        rule it names, reported by SnapTrade in another of its raw records
+        (the account's activities), or supplied by the person named (a
+        position they listed as cash, in the plugin's settings)."""
         made: list[meridian.Provenance] = []
         for held in closed:
-            if held.kind == "reported":
+            if held.kind == "supplied":
+                made.append(supplied(held.field, held.person))
+            elif held.kind == "reported":
                 made.append(
                     reported(
                         held.field,

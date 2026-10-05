@@ -7,7 +7,7 @@ real account. Instruments are named as SnapTrade would name them, with the
 FIGI the design fixtures already use for Apple, and one ticker nothing
 resolves (ZZTOP, the fixtures' unresolvable), so a placeholder shows too.
 
-Three connections, chosen so each normalising rule has something to act on:
+Four connections, chosen so each normalising rule has something to act on:
 
 - Alpaca, current and served in real time: long and short stock, an option,
   a money-market fund also counted in cash, crypto to nine decimals, and cash
@@ -27,6 +27,13 @@ Three connections, chosen so each normalising rule has something to act on:
 - Schwab, served in real time but disabled five days ago and serving what it
   last read, so needing sign-in, with an account SnapTrade gives no
   institution_account_id for, and no tax lots.
+- Fidelity, current, a Traditional IRA shaped like the one whose core
+  position is an FDIC-insured bank deposit (the product owner, 2026-10-05):
+  SYNDP, a deposit SnapTrade marks a cash equivalent and counts in the
+  account's dollar cash, as its definition says, so sent as that cash; and
+  SYNFD, a deposit of kind `other` at a price of 1 SnapTrade does not mark,
+  beside the cash it is not counted in, sent as a holding until an admin of
+  the plugin lists it in `counted_as_cash`, then as cash.
 
 Alpaca's history, on fixed dates from its first transaction, holds one
 activity of each type the plugin converts to a kind and one it converts to
@@ -49,10 +56,12 @@ USER_ID = "synthetic-user"
 ALPACA = "00000000-0000-4000-8000-00000000a001"
 IBKR = "00000000-0000-4000-8000-00000000a002"
 SCHWAB = "00000000-0000-4000-8000-00000000a003"
+FIDELITY = "00000000-0000-4000-8000-00000000a004"
 
 ALPACA_MARGIN = "00000000-0000-4000-8000-00000000b001"
 IBKR_INDIVIDUAL = "00000000-0000-4000-8000-00000000b002"
 SCHWAB_BROKERAGE = "00000000-0000-4000-8000-00000000b003"
+FIDELITY_IRA = "00000000-0000-4000-8000-00000000b004"
 
 _CONNECTIONS = Template("""[
   {
@@ -98,6 +107,21 @@ _CONNECTIONS = Template("""[
     "type": "read",
     "disabled": true,
     "disabled_date": "$five_days_ago",
+    "meta": {},
+    "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"}
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000a004",
+    "created_date": "2026-04-01T10:00:00.000Z",
+    "updated_date": "$recent",
+    "brokerage": {"id": "00000000-0000-4000-8000-00000000c004", "slug": "FIDELITY",
+                  "name": "Fidelity", "display_name": "Fidelity", "enabled": true,
+                  "maintenance_mode": false, "is_degraded": false,
+                  "is_real_time_connection": true},
+    "name": "Connection 4",
+    "type": "read",
+    "disabled": false,
+    "disabled_date": null,
     "meta": {},
     "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"}
   }
@@ -161,6 +185,25 @@ _ACCOUNTS = Template("""[
     "institution_account_id": null,
     "status": "open",
     "raw_type": "Brokerage",
+    "account_category": "INVESTMENT"
+  },
+  {
+    "id": "00000000-0000-4000-8000-00000000b004",
+    "brokerage_authorization": "00000000-0000-4000-8000-00000000a004",
+    "name": "Fidelity Traditional IRA",
+    "number": "SYN4004004",
+    "institution_name": "Fidelity",
+    "created_date": "2026-04-01T10:00:00.000Z",
+    "sync_status": {
+      "transactions": {"initial_sync_completed": true, "last_successful_sync": "$today",
+                       "first_transaction_date": "2026-04-01"},
+      "holdings": {"initial_sync_completed": true, "last_successful_sync": "$recent"}
+    },
+    "balance": {"total": {"amount": 413.99, "currency": "USD"}},
+    "is_paper": true,
+    "institution_account_id": "SYN-FID-4004",
+    "status": "open",
+    "raw_type": "Traditional IRA",
     "account_category": "INVESTMENT"
   }
 ]""")
@@ -265,6 +308,28 @@ _POSITIONS: dict[str, Template] = {
   ],
   "data_freshness": {"as_of": "$five_days_ago"}
 }"""),
+    FIDELITY_IRA: Template("""{
+  "results": [
+    {"instrument": {"kind": "other", "id": "00000000-0000-4000-8000-00000000d013",
+                    "symbol": "SYNDP", "raw_symbol": "SYNDP",
+                    "description": "SYNTHETIC FDIC INSURED DEPOSIT MARKED A CASH EQUIVALENT",
+                    "currency": "USD"},
+     "units": "10.00", "price": "1", "cost_basis": "1", "currency": "USD",
+     "cash_equivalent": true},
+    {"instrument": {"kind": "other", "id": "00000000-0000-4000-8000-00000000d014",
+                    "symbol": "SYNFD", "raw_symbol": "SYNFD",
+                    "description": "SYNTHETIC FDIC INSURED DEPOSIT IRA NOT COVERD BY SIPC",
+                    "currency": "USD"},
+     "units": "2.99", "price": "1", "cost_basis": "1", "currency": "USD",
+     "cash_equivalent": false},
+    {"instrument": {"kind": "etf", "id": "00000000-0000-4000-8000-00000000d015",
+                    "symbol": "SYNI", "raw_symbol": "SYNI",
+                    "description": "Synthetic total market index ETF",
+                    "currency": "USD", "exchange": "ARCX"},
+     "units": "4", "price": "100.25", "cost_basis": "92.00", "currency": "USD"}
+  ],
+  "data_freshness": {"as_of": "$recent"}
+}"""),
 }
 
 _BALANCES: dict[str, str] = {
@@ -283,6 +348,12 @@ _BALANCES: dict[str, str] = {
     SCHWAB_BROKERAGE: """[
   {"currency": {"id": "00000000-0000-4000-8000-00000000e840", "code": "USD",
                 "name": "US Dollar"}, "cash": 42.00, "buying_power": 42.00}
+]""",
+    # SYNDP's 10.00 is in the cash, as SnapTrade counts what it marks a cash
+    # equivalent; SYNFD's 2.99 is not.
+    FIDELITY_IRA: """[
+  {"currency": {"id": "00000000-0000-4000-8000-00000000e840", "code": "USD",
+                "name": "US Dollar"}, "cash": 10.00, "buying_power": 10.00}
 ]""",
 }
 

@@ -33,6 +33,8 @@ from datetime import timedelta
 
 import meridian
 
+from . import counted_as_cash
+from .counted_as_cash import CountedAsCash, rows_of
 from .plan_codes import ACCOUNT, CODE, INSTRUMENT, PlanCodeLink, links_of
 
 KEY_TYPE = "snaptrade_key_type"
@@ -45,6 +47,7 @@ STALE_AFTER_HOURS = "stale_after_hours"
 RAW_RETENTION_DAYS = "raw_retention_days"
 ACTIVITY_RETENTION_DAYS = "activity_retention_days"
 PLAN_CODE_LINKS = "plan_code_links"
+COUNTED_AS_CASH = "counted_as_cash"
 SYNTHETIC = "synthetic"
 # 0.1.0's on/off for a personal key, replaced by KEY_TYPE.
 PERSONAL_KEY = "snaptrade_personal_key"
@@ -182,6 +185,37 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
+        COUNTED_AS_CASH,
+        list,
+        label="Positions counted as cash",
+        columns=(
+            meridian.Column(
+                counted_as_cash.SYMBOL,
+                label="Symbol",
+                required=True,
+                description="As SnapTrade names the position, such as FDIC99532.",
+            ),
+            meridian.Column(
+                counted_as_cash.CURRENCY,
+                label="Currency",
+                required=True,
+                description="The ISO 4217 code of the cash it is, such as USD.",
+            ),
+            meridian.Column(
+                counted_as_cash.ACCOUNT,
+                "external_account",
+                label="Account",
+                description="Blank for every account holding it.",
+            ),
+        ),
+        most_rows=200,
+        description=(
+            "Positions a custodian holds as cash that SnapTrade does not mark as a cash "
+            "equivalent, such as a bank deposit as an IRA's core position: each is sent as "
+            "cash in its currency, naming who listed it. A fund stays a fund."
+        ),
+    ),
+    meridian.Setting(
         SYNTHETIC,
         bool,
         label="Synthetic mode",
@@ -243,6 +277,9 @@ class Config:
     # The plan-code links people made, as the settings deliver them
     # (plan_codes.py).
     plan_codes: tuple[PlanCodeLink, ...] = ()
+    # The positions people listed as cash, as the settings deliver them
+    # (counted_as_cash.py).
+    counted_as_cash: tuple[CountedAsCash, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -344,6 +381,7 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
             else min(activity_kept, MOST_ACTIVITY_RETENTION_DAYS)
         ),
         plan_codes=links_of(values.get(PLAN_CODE_LINKS)),
+        counted_as_cash=rows_of(values.get(COUNTED_AS_CASH)),
     )
 
 

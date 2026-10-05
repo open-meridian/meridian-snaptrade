@@ -67,5 +67,5 @@
 {% endif %}
 </om-account-map>
 </section>
-<p class="hint one-line">Set in the plugin's Settings, in the dashboard: {{ settings_said.plan_codes }} plan-code {{ "link" if settings_said.plan_codes == 1 else "links" }}; each activity's record kept {{ settings_said.kept_for_days }} days{% if settings_said.kept_for_days > settings_said.activity_retention_days %}, not the {{ settings_said.activity_retention_days }} set, since the history SnapTrade reported reaches back {{ settings_said.history_reach_days }} days{% endif %}.</p>
+<p class="hint one-line">Set in the plugin's Settings, in the dashboard: {{ settings_said.plan_codes }} plan-code {{ "link" if settings_said.plan_codes == 1 else "links" }}; {{ settings_said.counted_as_cash }} {{ "position" if settings_said.counted_as_cash == 1 else "positions" }} counted as cash; each activity's record kept {{ settings_said.kept_for_days }} days{% if settings_said.kept_for_days > settings_said.activity_retention_days %}, not the {{ settings_said.activity_retention_days }} set, since the history SnapTrade reported reaches back {{ settings_said.history_reach_days }} days{% endif %}.</p>
 {% endblock %}

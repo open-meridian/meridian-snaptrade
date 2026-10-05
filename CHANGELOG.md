@@ -36,6 +36,26 @@ plans/the-custodians-activity-explains-a-break, build 5).
   storage declaration now asks for) on the dashboard's Settings form; never
   shorter than the history SnapTrade reported, which a shorter value is kept
   to, as the Account links tab says.
+- **A custodian's deposit is cash** (the product owner, 2026-10-05;
+  meridian-design tasks/sdk-contract/snaptrade-counts-a-core-deposit-as-cash).
+  A position SnapTrade marks `cash_equivalent` that is no fund (Fidelity's
+  FDIC-insured deposit as an IRA's core position, say) is sent as the cash
+  of its currency, not a holding: SnapTrade counts what it marks so in that
+  cash already, so the cash row stands for it and nothing is added twice,
+  derived by a named rule with the deposit's symbol and description as
+  reported. A money market fund stays a fund, its cash net of it as before.
+- **`counted_as_cash`**, a table setting (symbol, currency, optionally the
+  account), set by an admin of the plugin on the dashboard's Settings form:
+  a position SnapTrade does not mark, listed there, is added to the cash of
+  the row's currency, derived by a named rule and supplied by the person who
+  changed the row, when. SnapTrade's own flag decides first; a fund stays a
+  fund; a row that cannot count (no currency code, a currency SnapTrade
+  contradicts, no price) is said, and the position sent as it is. Never
+  decided from what a symbol looks like.
+- Synthetic Fidelity: a Traditional IRA with a deposit SnapTrade marks a
+  cash equivalent (SYNDP) and one it does not (SYNFD, 2.99 at 1); `make e2e`
+  links it, then lists SYNFD, and its next statement is USD cash 12.99 and
+  no SYNFD.
 - **The sync status carries `history_from`**, the first date SnapTrade's
   history of the account reaches.
 - **Raw-record retention covers what was reported:** each reported

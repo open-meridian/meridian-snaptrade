@@ -74,18 +74,19 @@ async def test_synthetic_mode_records_every_account_it_can() -> None:
     running.configure(config_from({SYNTHETIC: True}))
     status = await running.run_once()
     assert status.mode == "synthetic" and status.error == ""
-    assert len(sidecar.sent("ReportSyncStatus")) == 3
+    assert len(sidecar.sent("ReportSyncStatus")) == 4
     (reported,) = sidecar.sent("ReportExternalAccounts")
-    assert len(reported.accounts) == 3
+    assert len(reported.accounts) == 4
     opened = sidecar.sent("RecordHoldingsStatement")
-    assert len(opened) == 3
+    assert len(opened) == 4
     rows = sidecar.sent("RecordHolding")
     assert len(rows) == sum(statement.expected_rows for statement in opened)
     assert all(outcome.recorded == outcome.rows for outcome in status.outcomes.values())
     ((healthy, detail),) = sidecar.reports
-    assert healthy and detail == "read 3 accounts through 3 connections (synthetic)"
+    assert healthy and detail == "read 4 accounts through 4 connections (synthetic)"
     states = sorted(ops.SyncState.Name(s.state) for s in sidecar.sent("ReportSyncStatus"))
     assert states == [
+        "SYNC_STATE_CURRENT",
         "SYNC_STATE_CURRENT",
         "SYNC_STATE_DELAYED_BY_DESIGN",
         "SYNC_STATE_NEEDS_SIGN_IN",
@@ -202,11 +203,11 @@ NOT_READ = [
 SYNTHETIC_READ = [
     Figure(
         "Connections",
-        3,
+        4,
         state="warn",
         why="0 stale, 1 needing sign-in, 0 disabled, 0 with holdings unavailable",
     ),
-    Figure("Accounts reached", 3),
+    Figure("Accounts reached", 4),
     Figure("Last read", NOW),
 ]
 FAILED = [
@@ -226,7 +227,7 @@ async def test_a_read_reports_its_figures_with_its_health() -> None:
     assert sidecar.heartbeats == [
         heartbeat(
             healthy=True,
-            detail="read 3 accounts through 3 connections (synthetic)",
+            detail="read 4 accounts through 4 connections (synthetic)",
             figures=SYNTHETIC_READ,
         )
     ]

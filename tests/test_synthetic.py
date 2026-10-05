@@ -17,12 +17,18 @@ from snaptrade_client.model.paginated_universal_activity import PaginatedUnivers
 from snaptrade_client.model.tax_lot import TaxLot
 
 from snaptrade.normalise import Lot, Serving, Side, SyncState, views
-from snaptrade.synthetic import ALPACA_MARGIN, IBKR_INDIVIDUAL, SCHWAB_BROKERAGE, SyntheticVenue
+from snaptrade.synthetic import (
+    ALPACA_MARGIN,
+    FIDELITY_IRA,
+    IBKR_INDIVIDUAL,
+    SCHWAB_BROKERAGE,
+    SyntheticVenue,
+)
 from snaptrade.venue import read
 
 from conftest import NOW, clock
 
-ACCOUNTS = (ALPACA_MARGIN, IBKR_INDIVIDUAL, SCHWAB_BROKERAGE)
+ACCOUNTS = (ALPACA_MARGIN, IBKR_INDIVIDUAL, SCHWAB_BROKERAGE, FIDELITY_IRA)
 
 
 async def test_every_response_is_valid_by_snaptrades_own_models() -> None:
@@ -72,12 +78,14 @@ async def test_each_rule_has_something_to_act_on() -> None:
         "Alpaca": SyncState.CURRENT,
         "Interactive Brokers": SyncState.DELAYED_BY_DESIGN,
         "Schwab": SyncState.NEEDS_SIGN_IN,
+        "Fidelity": SyncState.CURRENT,
     }
     # Real time for most; the IBKR one on a delay, the one a refresh applies to.
     assert {c.institution: c.serving for c in connections} == {
         "Alpaca": Serving.REAL_TIME,
         "Interactive Brokers": Serving.DELAYED,
         "Schwab": Serving.REAL_TIME,
+        "Fidelity": Serving.REAL_TIME,
     }
     by_name = {view.account.name: view for c in connections for view in c.accounts}
 

@@ -167,7 +167,13 @@ image:
 # the admin links IBKR's plan code OQKR to SYNXX's record in the plugin's
 # Settings form, a table setting (contract v14, W6.11), the Settings tab
 # naming who changed it, and links IBKR: its first read's backfill reports
-# the reinvestment under OQKR as SYNXX's record. Every instrument is a placeholder there, since the harness has no
+# the reinvestment under OQKR as SYNXX's record. Then it links Fidelity's IRA:
+# its statement holds SYNDP, a deposit SnapTrade marks a cash equivalent, as
+# the USD cash that counts it (e2e/expected.ira-marked); the admin lists SYNFD
+# in the counted_as_cash table setting, and the next statement holds two rows,
+# USD cash 12.99, SYNFD's 2.99 added, supplied by the admin, and no SYNFD
+# (e2e/expected.ira-listed; the street keeps SYNFD's position as the earlier
+# statement left it, which a reader of the latest statement takes as absent). Every instrument is a placeholder there, since the harness has no
 # platform, so the file names each row by the identifiers this plugin sent.
 # Its own project and no published port; nothing outlives it.
 e2e: image
@@ -210,8 +216,8 @@ e2e: image
 	done; \
 	diff -u e2e/expected.street .e2e/street >&2 \
 		|| fail "the street store is not e2e/expected.street"; \
-	unlinked="$$($(E2E_RUN) unlinked --expect 2 2>>.e2e/runner.log)" \
-		|| fail "the dashboard did not count the two accounts left unlinked"; \
+	unlinked="$$($(E2E_RUN) unlinked --expect 3 2>>.e2e/runner.log)" \
+		|| fail "the dashboard did not count the three accounts left unlinked"; \
 	for i in $$(seq 1 60); do \
 		$(E2E_ACTIVITY) >.e2e/activity 2>>.e2e/components.log || fail "store activity did not print the street's activity"; \
 		[ "$$(grep -c '^activity|E2E Alpaca|' .e2e/activity)" -ge $(E2E_ALPACA_ACTIVITIES) ] && break; \
@@ -259,7 +265,31 @@ e2e: image
 	planned="$$(grep '^activity|E2E IBKR|snaptrade|00000000-0000-4000-8000-00000000f116|' .e2e/activity-linked)"; \
 	echo "$$planned" | grep -q "|local(symbol:SYNXX@snaptrade)|2026-07-31|1.5$$" \
 		|| fail "IBKR's reinvestment under OQKR did not resolve through the link to SYNXX's record: $$planned"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then OQKR linked to SYNXX's record in the plugin's settings ($$saved), and IBKR's next read's reinvestment under OQKR resolved through it"
+	$(E2E_RUN) form --level admin --page /admin/accounts --post /admin/accounts/link \
+		intent=create external_account_id=FIDELITY:SYN-FID-4004 'new_account_name=E2E IRA' \
+		--expect "Created E2E IRA and linked" >>.e2e/runner.log 2>&1 \
+		|| fail "the Account links form did not create and link E2E IRA"; \
+	for i in $$(seq 1 60); do \
+		$(E2E_STREET) >.e2e/street-ira 2>>.e2e/components.log || fail "store street did not print the street store"; \
+		grep -q '^statement|E2E IRA|snaptrade|3|complete|' .e2e/street-ira && break; \
+		[ "$$i" = 60 ] && fail "E2E IRA's statement never reached the street"; \
+		sleep 1; \
+	done; \
+	grep '|E2E IRA|' .e2e/street-ira | diff -u e2e/expected.ira-marked - >&2 \
+		|| fail "E2E IRA's statement is not e2e/expected.ira-marked: SYNDP, marked a cash equivalent, as the cash"; \
+	listed="$$($(E2E_RUN) settings 'counted_as_cash[0].symbol=SYNFD' 'counted_as_cash[0].currency=USD' \
+		'counted_as_cash[0].account=FIDELITY:SYN-FID-4004' --expect 'Last changed by' 2>>.e2e/runner.log)" \
+		|| fail "SYNFD was not listed as cash in the plugin's settings form"; \
+	printf '%s\n' "$$listed" >>.e2e/runner.log; \
+	for i in $$(seq 1 60); do \
+		$(E2E_STREET) >.e2e/street-listed 2>>.e2e/components.log || fail "store street did not print the street store"; \
+		grep -q '^statement|E2E IRA|snaptrade|2|complete|' .e2e/street-listed && break; \
+		[ "$$i" = 60 ] && fail "E2E IRA's statement with SYNFD as cash never reached the street"; \
+		sleep 1; \
+	done; \
+	grep '|E2E IRA|' .e2e/street-listed | diff -u e2e/expected.ira-listed - >&2 \
+		|| fail "E2E IRA's statement once SYNFD is listed is not e2e/expected.ira-listed"; \
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then OQKR linked to SYNXX's record in the plugin's settings ($$saved), and IBKR's next read's reinvestment under OQKR resolved through it; E2E IRA's deposit SnapTrade marks a cash equivalent sent as its cash, and once SYNFD is listed in the plugin's settings ($$listed) the next statement is two rows, USD cash 12.99, supplied by who listed it, and no SYNFD"
 
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1

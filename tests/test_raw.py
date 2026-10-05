@@ -208,7 +208,7 @@ def test_a_record_is_written_whole(tmp_path: Path) -> None:
     files = list(store.root.rglob("*"))
     assert not [f for f in files if f.name.endswith(".tmp")]
     kept = [f for f in files if f.is_file() and f.parent.name != ACTIVITY_DIRECTORY]
-    assert len(kept) == 3 and all(f.name.endswith(".json.gz") for f in kept)
+    assert len(kept) == 4 and all(f.name.endswith(".json.gz") for f in kept)
     # No path is made from an account's ID, nor from an activity's.
     assert all(re.fullmatch(r"a-[0-9a-f]{32}", f.parent.name) for f in kept)
     activities = [f for f in files if f.is_file() and f.parent.name == ACTIVITY_DIRECTORY]

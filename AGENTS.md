@@ -77,7 +77,14 @@ a deployment admin approves them.
   detail (it has no provenance field); the holdings are as of what the read
   returned (`data_freshness.as_of`, else the last sync), stale past the
   setting, never as of the read; and no suite case is declared not
-  presented. A statement that cannot be served clean is withheld
+  presented. A deposit is cash (the product owner, 2026-10-05): a position
+  SnapTrade marks `cash_equivalent` that is no fund is the cash row of its
+  currency, which SnapTrade counts it in already, never added twice; one it
+  does not mark is cash only where an admin of the plugin lists it in the
+  table setting `counted_as_cash` (`counted_as_cash.py`), added to that
+  cash, supplied by who changed the row, when. SnapTrade's flag decides
+  first, a fund stays a fund, and never from what a symbol looks like. A
+  statement that cannot be served clean is withheld
   (`normalise.Withheld`), never sent with a double count. An account's kind is converted from
   SnapTrade's type, or not known with the type as reported; SnapTrade's
   type is never sent as the venue's. Otherwise nothing is derived. A

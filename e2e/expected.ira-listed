@@ -1,0 +1,13 @@
+closed|E2E IRA|local(iso4217:USD)|long|market_value|derived
+closed|E2E IRA|local(iso4217:USD)|long|market_value|derived
+closed|E2E IRA|local(iso4217:USD)|long|market_value|supplied
+closed|E2E IRA|local(iso4217:USD)|long|quantity|derived
+closed|E2E IRA|local(iso4217:USD)|long|quantity|derived
+closed|E2E IRA|local(iso4217:USD)|long|quantity|supplied
+closed|E2E IRA|local(iso4217:USD)|long|settle_date_quantity|derived
+closed|E2E IRA|local(symbol:SYNFD@snaptrade)|long|settle_date_quantity|derived
+closed|E2E IRA|local(symbol:SYNI@snaptrade)|long|settle_date_quantity|derived
+position|E2E IRA|local(iso4217:USD)|long|12.99|12.99|12.99 USD|
+position|E2E IRA|local(symbol:SYNFD@snaptrade)|long|2.99|2.99||
+position|E2E IRA|local(symbol:SYNI@snaptrade)|long|4|4||
+statement|E2E IRA|snaptrade|2|complete|10.00 USD|||false

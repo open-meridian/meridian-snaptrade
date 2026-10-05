@@ -869,10 +869,15 @@ def _plan_code_reads(links: Sequence[PlanCodeLink]) -> list[records.PlanCodeRead
 
 def _settings_said() -> dict[str, Any]:
     """What the plugin's settings hold that this tab speaks of, read only:
-    the plan-code links, and how long each activity's record is kept -- as
-    set, and as kept, never shorter than the history SnapTrade reported."""
+    the plan-code links, the positions counted as cash, and how long each
+    activity's record is kept -- as set, and as kept, never shorter than the
+    history SnapTrade reported."""
     held = _now()
-    return {"plan_codes": len(held.syncer.config.plan_codes), **_retention_read()}
+    return {
+        "plan_codes": len(held.syncer.config.plan_codes),
+        "counted_as_cash": len(held.syncer.config.counted_as_cash),
+        **_retention_read(),
+    }
 
 
 def _links_read(status: Status) -> records.LinksRead:
@@ -1288,6 +1293,26 @@ def _holding_row(view: AccountView, holding: Holding) -> dict[str, str]:
             f"a money market fund SnapTrade counts in {holding.currency} cash too: sent as a "
             "fund, and the cash net of it"
         )
+    for deposit in (
+        statement.as_cash if statement is not None and holding.kind == "cash" else ()
+    ):
+        if deposit.currency != holding.currency:
+            continue
+        held = (
+            f'{deposit.symbol}, "{deposit.description}", {format(deposit.units, "f")} at '
+            f"{format(deposit.price, 'f')}"
+        )
+        if deposit.by == "flag":
+            notes.append(
+                f"{held}: a deposit SnapTrade marks a cash equivalent and counts in this cash; "
+                "sent as this cash, not as a holding: derived, the cash SnapTrade reports, "
+                "counting it"
+            )
+        else:
+            notes.append(
+                f"{held}: listed as cash in the plugin's settings by {deposit.person}; "
+                f"{format(deposit.amount, 'f')} added to this cash, not sent as a holding"
+            )
     if holding.pending:
         pending = ", ".join(
             f"{format(p.quantity, 'f')} on {p.value_date}" for p in holding.pending
