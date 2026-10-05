@@ -33,8 +33,8 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:1d16c52@sha256:e40edf9361f7e646b602a1349106df1bfe648c568a6f730e8a411fcbce5e0af7
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:1d16c52@sha256:f959ec2001d3621080480d73ce7ea30bc690f56d43782ac4ed1901b2b1c03a34
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:7d4ce0f@sha256:62a2ac12392f3fa522da2f5976fe9584654bddf457a44928249f751b23d44fbd
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:7d4ce0f@sha256:76dade7128001105d7f6ba5970aeea027beaa2f15726308e9eb567bf1d4675f2
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
@@ -170,7 +170,7 @@ image:
 # the reinvestment under OQKR as SYNXX's record. Then it links Fidelity's IRA:
 # its statement holds SYNDP, a deposit SnapTrade marks a cash equivalent, as
 # the USD cash that counts it (e2e/expected.ira-marked); the admin lists SYNFD
-# in the counted_as_cash table setting, and the next statement holds two rows,
+# in the Cash links table setting (counted_as_cash), and the next statement holds two rows,
 # USD cash 12.99, SYNFD's 2.99 added, supplied by the admin, and no SYNFD
 # (e2e/expected.ira-listed; the street keeps SYNFD's position as the earlier
 # statement left it, which a reader of the latest statement takes as absent). Every instrument is a placeholder there, since the harness has no
@@ -277,8 +277,8 @@ e2e: image
 	done; \
 	grep '|E2E IRA|' .e2e/street-ira | diff -u e2e/expected.ira-marked - >&2 \
 		|| fail "E2E IRA's statement is not e2e/expected.ira-marked: SYNDP, marked a cash equivalent, as the cash"; \
-	listed="$$($(E2E_RUN) settings 'counted_as_cash[0].symbol=SYNFD' 'counted_as_cash[0].currency=USD' \
-		'counted_as_cash[0].account=FIDELITY:SYN-FID-4004' --expect 'Last changed by' 2>>.e2e/runner.log)" \
+	listed="$$($(E2E_RUN) settings 'counted_as_cash[0].account=FIDELITY:SYN-FID-4004' \
+		'counted_as_cash[0].symbol=SYNFD' 'counted_as_cash[0].currency=USD' --expect 'Last changed by' 2>>.e2e/runner.log)" \
 		|| fail "SYNFD was not listed as cash in the plugin's settings form"; \
 	printf '%s\n' "$$listed" >>.e2e/runner.log; \
 	for i in $$(seq 1 60); do \

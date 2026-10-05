@@ -187,8 +187,20 @@ DECLARED: tuple[meridian.Setting, ...] = (
     meridian.Setting(
         COUNTED_AS_CASH,
         list,
-        label="Positions counted as cash",
+        label="Cash links",
+        # Account, then what SnapTrade names, then what it is: the order of
+        # Plan-code links' columns (the product owner, 2026-10-05). Rows are
+        # keyed by column name, so a row saved in another order reads the same.
         columns=(
+            meridian.Column(
+                counted_as_cash.ACCOUNT,
+                "external_account",
+                label="Account",
+                description=(
+                    "Optional: blank applies the row to every account holding the symbol; "
+                    "a row naming the account comes first."
+                ),
+            ),
             meridian.Column(
                 counted_as_cash.SYMBOL,
                 label="Symbol",
@@ -200,12 +212,6 @@ DECLARED: tuple[meridian.Setting, ...] = (
                 label="Currency",
                 required=True,
                 description="The ISO 4217 code of the cash it is, such as USD.",
-            ),
-            meridian.Column(
-                counted_as_cash.ACCOUNT,
-                "external_account",
-                label="Account",
-                description="Blank for every account holding it.",
             ),
         ),
         most_rows=200,

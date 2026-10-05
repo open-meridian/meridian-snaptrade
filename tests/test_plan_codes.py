@@ -185,7 +185,7 @@ def test_the_account_links_tab_says_what_the_settings_hold_and_how_long_records_
     hold(syncer, links, asyncio.Event())
     page = PageClient(pages, sidecar.plugin()).get(ACCOUNTS, "admin")
     assert page.status == 200
-    assert "1 plan-code link" in page.text
+    assert "1 plan-code link;" in page.text and "0 cash links;" in page.text
     assert "kept 731 days, not the 365 set" in page.text
     answered = PageClient(pages, sidecar.plugin()).call_tool(
         "read_account_links", level="admin"

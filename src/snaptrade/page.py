@@ -869,7 +869,7 @@ def _plan_code_reads(links: Sequence[PlanCodeLink]) -> list[records.PlanCodeRead
 
 def _settings_said() -> dict[str, Any]:
     """What the plugin's settings hold that this tab speaks of, read only:
-    the plan-code links, the positions counted as cash, and how long each
+    the plan-code links, the cash links, and how long each
     activity's record is kept -- as set, and as kept, never shorter than the
     history SnapTrade reported."""
     held = _now()

@@ -3,6 +3,26 @@
 What each release of the SnapTrade plugin changed. Releases before 0.11.0
 are described in their commits (`git log`) and the README's "Depends on".
 
+## 0.11.1 (not released)
+
+The two table settings read alike (the product owner, 2026-10-05). Nothing
+the plugin sends or reads changed.
+
+- **`counted_as_cash` is labelled Cash links**, beside Plan-code links: the
+  dashboard draws each table setting as its own tab under Manage, titled by
+  its label. The setting's key is unchanged.
+- **One column order for both:** Account | Plan code / Symbol | Instrument /
+  Currency. Cash links' account moves first and stays optional, a blank one
+  applying the row to every account holding the symbol, as its description
+  now says. A row is kept by column name, so one saved in 0.11.0's order
+  (symbol, currency, account) reads the same.
+- **No page sets a setting:** the README no longer says
+  `activity_retention_days` is also set on the Account links tab, or that a
+  view refuses a value. Every setting is set in the dashboard's Settings
+  form; the Account links tab only shows what they hold, now counting the
+  cash links too.
+- `make e2e` on core 7d4ce0f's runtime and harness.
+
 ## 0.11.0 (not released)
 
 Contract v14, on open-meridian 0.19.0 (meridian-design

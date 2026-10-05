@@ -81,7 +81,9 @@ a deployment admin approves them.
   SnapTrade marks `cash_equivalent` that is no fund is the cash row of its
   currency, which SnapTrade counts it in already, never added twice; one it
   does not mark is cash only where an admin of the plugin lists it in the
-  table setting `counted_as_cash` (`counted_as_cash.py`), added to that
+  table setting `counted_as_cash`, labelled Cash links, its columns
+  account, symbol, currency as Plan-code links' are account, code,
+  instrument (`counted_as_cash.py`), added to that
   cash, supplied by who changed the row, when. SnapTrade's flag decides
   first, a fund stays a fund, and never from what a symbol looks like. A
   statement that cannot be served clean is withheld

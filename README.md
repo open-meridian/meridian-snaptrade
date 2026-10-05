@@ -5,7 +5,7 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion), and each account's activity as the
-custodian states it. It holds the `custody` role. This is release 0.11.0
+custodian states it. It holds the `custody` role. This is release 0.11.1
 (CHANGELOG.md says what each release changed). How a plugin like it is built
 is documented at [open-meridian.dev](https://open-meridian.dev).
 
@@ -235,13 +235,18 @@ without any of them.
 | `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
 | `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
 | `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept for `activity_retention_days`, whatever this says |
-| `activity_retention_days` | Keep activity records for | number, days | no | no | how long the record of each activity SnapTrade reported is kept, from when it was received; default 2555 (seven years), at most 36500. Never shorter than the history SnapTrade reported: the Activity records view refuses a shorter value, and one set shorter in this form is kept to that, which the view says. Also set on the Account links tab |
+| `activity_retention_days` | Keep activity records for | number, days | no | no | how long the record of each activity SnapTrade reported is kept, from when it was received; default 2555 (seven years), at most 36500. Never shorter than the history SnapTrade reported: a shorter value is kept to that, which the Account links tab shows. Set only in this form; no page of the plugin sets it |
 | `plan_code_links` | Plan-code links | table: account, plan code, instrument | no | no | each plan's own fund code on an account, linked to the instrument record it is; at most 200 rows. Each row arrives with who changed it and when |
-| `counted_as_cash` | Positions counted as cash | table: symbol (text), currency (text, an ISO 4217 code), account (external account, optional) | no | no | positions a custodian holds as cash that SnapTrade does not mark a cash equivalent, such as Fidelity's FDIC-insured deposit as an IRA's core position (`FDIC99532`): each is sent as the cash of its currency, naming who listed it and when (above). The symbol as SnapTrade names it; a blank account is every account holding it, and a row naming the account comes first; at most 200 rows. A fund stays a fund. Where SnapTrade marks the position itself, its own flag decides and the row is not read |
+| `counted_as_cash` | Cash links | table: account (external account, optional), symbol (text), currency (text, an ISO 4217 code), the order of Plan-code links' columns | no | no | positions a custodian holds as cash that SnapTrade does not mark a cash equivalent, such as Fidelity's FDIC-insured deposit as an IRA's core position (`FDIC99532`): each is sent as the cash of its currency, naming who listed it and when (above). The symbol as SnapTrade names it; a blank account is every account holding it, and a row naming the account comes first; at most 200 rows. A fund stays a fund. Where SnapTrade marks the position itself, its own flag decides and the row is not read |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
 A developer's setting is shown in the form only on a development deployment.
+The dashboard draws each table setting as its own tab under Manage, titled by
+its label: Plan-code links and Cash links, their columns in one order
+(Account | Plan code / Symbol | Instrument / Currency; the product owner,
+2026-10-05). A row is kept by column name, so one saved before 0.11.1, when
+Cash links' account came last, reads the same.
 
 **From 0.1.0.** 0.1.0 said the key's kind with `snaptrade_personal_key`, on or
 off. While `snaptrade_key_type` is unset, a saved `snaptrade_personal_key`
@@ -440,10 +445,10 @@ admin (`PageClient(..., deployment_admin=True)`).
 - **Account links** (`/admin/accounts`): each account the connections reach,
   who it is (its name, brokerage, type, number and SnapTrade's ID) and its
   link to one of the deployment's accounts, in one account map (below); and
-  one line saying how many plan-code links the plugin's settings hold and
-  how long each activity's record is kept, as set and as kept (never
-  shorter than the history SnapTrade reported). Both are set in the
-  dashboard's Settings form, never here.
+  one line saying how many plan-code links and cash links the plugin's
+  settings hold and how long each activity's record is kept, as set and as
+  kept (never shorter than the history SnapTrade reported). Each is set in
+  the dashboard's Settings form, never here: the tab only shows them.
 
 `/admin` sends a Manage session to Connections. Each page's head shows how the
 plugin is reading as a status dot (kit 0.6.0's `om-status`), its note on
@@ -700,9 +705,9 @@ records an account a day, a few kilobytes each compressed.
 for the activity, as the read that first reported it received it, with that
 read's time and why it was made (the backfill to the account's
 `history_from`, or a read), under `<root>/a-<hash>/activities/<hash of the
-activity ID>.json.gz`, written once. It is kept seven years from when it was
-received for `activity_retention_days` (seven years by default, up to 36,500
-days), not `raw_retention_days`, and never for less than the history
+activity ID>.json.gz`, written once. It is kept from when it was received for
+`activity_retention_days` (seven years by default, up to 36,500 days, set in
+the dashboard's Settings form), not `raw_retention_days`, and never for less than the history
 SnapTrade reported: the most days any kept record's activity was traded
 before its record was received, which a shorter setting is kept to (the
 plan's question 5, and the product owner, 2026-10-05: an admin may keep them
@@ -795,7 +800,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `1d16c52`, contract v14).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `7d4ce0f`, contract v14).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -854,8 +859,8 @@ this plugin's own page, it:
 13. links Fidelity's IRA to a new account, **E2E IRA**, whose statement is
     `e2e/expected.ira-marked`: three rows, SYNDP not among them but the USD
     cash of 10.00 that counts it, its quantity and market value derived;
-    then lists SYNFD in the table setting `counted_as_cash` (symbol SYNFD,
-    currency USD, account `FIDELITY:SYN-FID-4004`), and finds the next
+    then lists SYNFD in the table setting `counted_as_cash`, Cash links
+    (account `FIDELITY:SYN-FID-4004`, symbol SYNFD, currency USD), and finds the next
     statement `e2e/expected.ira-listed`: two rows, USD cash 12.99, its
     quantity and market value derived and supplied, and no SYNFD (the street
     keeps SYNFD's position as the earlier statement left it, which a reader
@@ -897,7 +902,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.11.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.11.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

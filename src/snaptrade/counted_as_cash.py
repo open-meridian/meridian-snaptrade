@@ -8,10 +8,12 @@ SnapTrade reports as a position of kind `other`, 2.99 at a price of 1, beside
 cash of 0.00. Where SnapTrade itself marks such a position a cash equivalent,
 and it is no fund, the plugin sends it as cash by that rule (normalise.py).
 Where it does not, an admin of the plugin may say so, once, in the table
-setting `counted_as_cash`, declared in settings.py: SnapTrade's symbol for
-the position, the currency it is cash in, and optionally the external account
-it applies to (blank: every account). Nothing is ever decided from what a
-symbol looks like.
+setting `counted_as_cash`, declared in settings.py and drawn as the Cash
+links tab: optionally the external account it applies to (blank: every
+account), SnapTrade's symbol for the position, and the currency it is cash
+in, in the order of Plan-code links' columns (the product owner, 2026-10-05).
+A row is keyed by column name, so the order it was saved in does not matter.
+Nothing is ever decided from what a symbol looks like.
 
 The plugin only reads the setting, as any setting arrives, and never sets it.
 Each row arrives with `changed_by` and `changed_at`, which the conductor

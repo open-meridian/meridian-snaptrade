@@ -38,7 +38,13 @@ from snaptrade.normalise import (
     views,
 )
 from snaptrade.page import _holding_row
-from snaptrade.settings import COUNTED_AS_CASH, DECLARED, SYNTHETIC, config_from
+from snaptrade.settings import (
+    COUNTED_AS_CASH,
+    DECLARED,
+    PLAN_CODE_LINKS,
+    SYNTHETIC,
+    config_from,
+)
 from snaptrade.sync import Syncer
 from snaptrade.synthetic import SyntheticVenue
 from snaptrade.venue import read
@@ -95,16 +101,40 @@ def usd(result: Any) -> Any:
 # ── The setting ──────────────────────────────────────────────────────────────
 
 
-def test_the_setting_is_a_table_of_a_symbol_a_currency_and_an_account_or_none() -> None:
+def test_the_setting_is_a_table_of_an_account_or_none_a_symbol_and_a_currency() -> None:
     (declared,) = [s for s in DECLARED if s.name == COUNTED_AS_CASH]
     sent = declared._declared()
     assert sent.type == sidecar_pb2.SETTING_TYPE_TABLE
+    assert sent.label == "Cash links", "the tab under Manage is titled by the label"
     assert [(c.name, c.type, c.required) for c in sent.columns] == [
+        ("account", sidecar_pb2.SETTING_COLUMN_TYPE_EXTERNAL_ACCOUNT, False),
         ("symbol", sidecar_pb2.SETTING_COLUMN_TYPE_TEXT, True),
         ("currency", sidecar_pb2.SETTING_COLUMN_TYPE_TEXT, True),
-        ("account", sidecar_pb2.SETTING_COLUMN_TYPE_EXTERNAL_ACCOUNT, False),
     ]
+    assert "every account" in sent.columns[0].description, "a blank account is every one"
     assert sent.most_rows == 200 and not sent.secret
+
+
+def test_cash_links_and_plan_code_links_follow_one_column_order() -> None:
+    """Account | Plan code / Symbol | Instrument / Currency (the product
+    owner, 2026-10-05)."""
+    tables = {s.name: s._declared() for s in DECLARED}
+    plan_codes, cash = tables[PLAN_CODE_LINKS], tables[COUNTED_AS_CASH]
+    assert [c.label for c in plan_codes.columns] == ["Account", "Plan code", "Instrument"]
+    assert [c.label for c in cash.columns] == ["Account", "Symbol", "Currency"]
+    assert (plan_codes.label, cash.label) == ("Plan-code links", "Cash links")
+
+
+def test_a_row_saved_in_the_old_column_order_reads_the_same() -> None:
+    """0.11.0 declared symbol, currency, account; a row is keyed by column
+    name, so one saved then reads as it did."""
+    old = {"symbol": "FDIC99532", "currency": "USD", "account": IRA,
+           "changed_by": WHO, "changed_at": WHEN}  # fmt: skip
+    new = {"account": IRA, "symbol": "FDIC99532", "currency": "USD",
+           "changed_by": WHO, "changed_at": WHEN}  # fmt: skip
+    assert list(old)[:3] == ["symbol", "currency", "account"]
+    assert rows_of([old]) == rows_of([new]) == (LISTED,)
+    assert config_from({COUNTED_AS_CASH: [old]}).counted_as_cash == (LISTED,)
 
 
 def test_the_rows_delivered_are_read_with_who_and_when() -> None:

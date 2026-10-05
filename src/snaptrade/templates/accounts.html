@@ -1,7 +1,8 @@
 {#- Account links, at admin: each account the connections reach, linked to one
     of the deployment's here, and a line on what the plugin's settings hold
-    (its plan-code links, how long activity records are kept), which the
-    dashboard's Settings form sets. Under Manage, an account's identity and
+    (its plan-code links, its cash links, how long activity records are
+    kept), which only the dashboard's Settings form sets; this page shows
+    them. Under Manage, an account's identity and
     its link only: nothing SnapTrade read for it, no sync state, statement or
     rows. -#}
 {% extends "meridian/base.html" %}
@@ -67,5 +68,5 @@
 {% endif %}
 </om-account-map>
 </section>
-<p class="hint one-line">Set in the plugin's Settings, in the dashboard: {{ settings_said.plan_codes }} plan-code {{ "link" if settings_said.plan_codes == 1 else "links" }}; {{ settings_said.counted_as_cash }} {{ "position" if settings_said.counted_as_cash == 1 else "positions" }} counted as cash; each activity's record kept {{ settings_said.kept_for_days }} days{% if settings_said.kept_for_days > settings_said.activity_retention_days %}, not the {{ settings_said.activity_retention_days }} set, since the history SnapTrade reported reaches back {{ settings_said.history_reach_days }} days{% endif %}.</p>
+<p class="hint one-line">Set in the plugin's Settings, in the dashboard: {{ settings_said.plan_codes }} plan-code {{ "link" if settings_said.plan_codes == 1 else "links" }}; {{ settings_said.counted_as_cash }} cash {{ "link" if settings_said.counted_as_cash == 1 else "links" }}; each activity's record kept {{ settings_said.kept_for_days }} days{% if settings_said.kept_for_days > settings_said.activity_retention_days %}, not the {{ settings_said.activity_retention_days }} set, since the history SnapTrade reported reaches back {{ settings_said.history_reach_days }} days{% endif %}.</p>
 {% endblock %}
