@@ -28,6 +28,10 @@ Three connections, chosen so each normalising rule has something to act on:
   last read, so needing sign-in, with an account SnapTrade gives no
   institution_account_id for, and no tax lots.
 
+Alpaca's history, on fixed dates from its first transaction, holds one
+activity of each type the plugin converts to a kind and one it converts to
+none (contract v14, activities.py), for its backfill to report.
+
 The tests hold every response here to SnapTrade's own models.
 """
 
@@ -291,14 +295,103 @@ _BALANCES: dict[str, str] = {
 # 30 and the euros paying for them are pending; Schwab's activities cannot be
 # read, so its settled quantities say so. Before them, IBKR's history: SYNQ
 # bought twice, with a dividend since; SYNB transferred in, with no cost
-# stated; SYNV bought, then partly sold.
+# stated; SYNV bought, then partly sold. Alpaca's history, on fixed dates
+# from its first transaction (2025-06-02), holds one of each type the plugin
+# converts to a kind (contract v14, activities.py) and one it does not, an
+# option's expiry: a deposit, AAPL bought (its second tax lot), dividends
+# with tax withheld, SYNXX's dividend reinvested, interest and a fee, SYNT
+# transferred in, split 2 for 1, given a stock dividend and transferred out,
+# a withdrawal, a journal, and ZZTOP sold short.
 _ACTIVITIES: dict[str, list[str]] = {
     ALPACA_MARGIN: [
+        """{"id": "00000000-0000-4000-8000-00000000f101", "type": "CONTRIBUTION",
+   "symbol": null, "units": 0, "price": 0, "amount": 5000.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-06-02T00:00:00.000Z",
+   "settlement_date": "2025-06-02T00:00:00.000Z", "description": "Deposit"}""",
         """{"id": "00000000-0000-4000-8000-00000000f001", "type": "BUY",
    "symbol": {"symbol": "AAPL", "description": "Apple Inc"},
    "units": 2.5, "price": 234.50, "amount": -586.25, "fee": 0,
-   "currency": {"code": "USD"}, "trade_date": "$nine_days_ago_date",
-   "settlement_date": "$eight_days_ago_date", "description": "Bought 2.5 AAPL"}""",
+   "currency": {"code": "USD"}, "trade_date": "2025-06-02T00:00:00.000Z",
+   "settlement_date": "2025-06-03T00:00:00.000Z", "description": "Bought 2.5 AAPL"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f102", "type": "OPTIONEXPIRATION",
+   "symbol": null, "option_symbol": {"id": "00000000-0000-4000-8000-00000000d012",
+                     "ticker": "AAPL  250620C00300000", "option_type": "CALL",
+                     "strike_price": 300, "expiration_date": "2025-06-20",
+                     "is_mini_option": false,
+                     "underlying_symbol": {"id": "00000000-0000-4000-8000-00000000d001",
+                                           "symbol": "AAPL", "raw_symbol": "AAPL",
+                                           "description": "Apple Inc"}},
+   "units": -1, "price": 0, "amount": 0.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-06-20T00:00:00.000Z",
+   "settlement_date": "2025-06-20T00:00:00.000Z",
+   "description": "AAPL Jun 20 2025 300 Call expired"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f103", "type": "EXTERNAL_ASSET_TRANSFER_IN",
+   "symbol": {"symbol": "SYNT", "description": "Synthetic shares, split and moved on"},
+   "units": 40, "price": 0, "amount": null, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-07-01T00:00:00.000Z",
+   "settlement_date": "2025-07-01T00:00:00.000Z",
+   "description": "40 SYNT received from another brokerage"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f104", "type": "DIVIDEND",
+   "symbol": {"symbol": "AAPL", "description": "Apple Inc"},
+   "units": 0, "price": 0, "amount": 3.25, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-08-14T00:00:00.000Z",
+   "settlement_date": "2025-08-14T00:00:00.000Z", "description": "AAPL dividend"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f105", "type": "TAX",
+   "symbol": {"symbol": "AAPL", "description": "Apple Inc"},
+   "units": 0, "price": 0, "amount": -0.49, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-08-14T00:00:00.000Z",
+   "settlement_date": "2025-08-14T00:00:00.000Z",
+   "description": "AAPL dividend, tax withheld"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f106", "type": "DIVIDEND",
+   "symbol": {"symbol": "SYNXX", "description": "Synthetic Treasury Money Fund"},
+   "units": 0, "price": 0, "amount": 3.27, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-09-30T00:00:00.000Z",
+   "settlement_date": "2025-09-30T00:00:00.000Z",
+   "description": "DIVIDEND RECEIVED SYNTHETIC TREASURY MONEY FUND (SYNXX)"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f107", "type": "REI",
+   "symbol": {"symbol": "SYNXX", "description": "Synthetic Treasury Money Fund"},
+   "units": 3.27, "price": 1.00, "amount": -3.27, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-09-30T00:00:00.000Z",
+   "settlement_date": "2025-09-30T00:00:00.000Z",
+   "description": "REINVESTMENT SYNTHETIC TREASURY MONEY FUND (SYNXX)"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f108", "type": "INTEREST",
+   "symbol": null, "units": 0, "price": 0, "amount": 0.42, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-10-01T00:00:00.000Z",
+   "settlement_date": "2025-10-01T00:00:00.000Z", "description": "Interest on cash"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f109", "type": "FEE",
+   "symbol": null, "units": 0, "price": 0, "amount": -1.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-11-03T00:00:00.000Z",
+   "settlement_date": "2025-11-03T00:00:00.000Z", "description": "Account fee"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f110", "type": "SPLIT",
+   "symbol": {"symbol": "SYNT", "description": "Synthetic shares, split and moved on"},
+   "units": 40, "price": 0, "amount": 0.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-11-20T00:00:00.000Z",
+   "settlement_date": "2025-11-20T00:00:00.000Z", "description": "STOCK SPLIT 2 FOR 1"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f111", "type": "STOCK_DIVIDEND",
+   "symbol": {"symbol": "SYNT", "description": "Synthetic shares, split and moved on"},
+   "units": 1, "price": 0, "amount": 0.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2025-12-01T00:00:00.000Z",
+   "settlement_date": "2025-12-01T00:00:00.000Z", "description": "Stock dividend, 1 SYNT"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f112", "type": "EXTERNAL_ASSET_TRANSFER_OUT",
+   "symbol": {"symbol": "SYNT", "description": "Synthetic shares, split and moved on"},
+   "units": 81, "price": 0, "amount": null, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2026-01-15T00:00:00.000Z",
+   "settlement_date": "2026-01-15T00:00:00.000Z",
+   "description": "81 SYNT delivered to another brokerage"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f113", "type": "WITHDRAWAL",
+   "symbol": null, "units": 0, "price": 0, "amount": -500.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2026-02-02T00:00:00.000Z",
+   "settlement_date": "2026-02-02T00:00:00.000Z", "description": "Withdrawal"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f114", "type": "JOURNALED",
+   "symbol": null, "units": 0, "price": 0, "amount": -200.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2026-03-02T00:00:00.000Z",
+   "settlement_date": "2026-03-02T00:00:00.000Z",
+   "description": "Journal from the margin to the cash side"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f115", "type": "SELL",
+   "symbol": {"symbol": "ZZTOP", "description": "Synthetic short, nothing resolves it"},
+   "units": -40, "price": 4.02, "amount": 160.80, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2026-08-14T00:00:00.000Z",
+   "settlement_date": "2026-08-15T00:00:00.000Z", "description": "Sold short 40 ZZTOP"}""",
     ],
     IBKR_INDIVIDUAL: [
         """{"id": "00000000-0000-4000-8000-00000000f003", "type": "BUY",
@@ -381,8 +474,6 @@ class SyntheticVenue:
             "yesterday_date": yesterday.date().isoformat(),
             "five_days_ago": _stamp(five_days_ago),
             "five_days_ago_date": five_days_ago.date().isoformat(),
-            "nine_days_ago_date": _midnight(now - timedelta(days=9)),
-            "eight_days_ago_date": _midnight(now - timedelta(days=8)),
             "tomorrow_date": _midnight(now + timedelta(days=1)),
             "yesterday_midnight": _midnight(yesterday),
             **{

@@ -492,7 +492,24 @@ KNOWN_PARAMETERS = {
         "state",
         "holdings_as_of_ns",
         "history_as_of_ns",
+        # v14: the first date SnapTrade's history of the account reaches.
+        "history_from",
     },
+    # v14 (W2.10): each activity, as the custodian states it; a person's
+    # acting_for is for an activity a person reports, which this plugin's
+    # reads never are.
+    "record_activity": {"acting_for", "activity", "external_account_id", "source"},
+    # Known, and not used (v14): operations and the dashboard read the
+    # street's activity and sync statuses; custody reports them.
+    "list_activities": {
+        "account_id",
+        "cursor",
+        "page_size",
+        "since",
+        "trade_date_from",
+        "trade_date_to",
+    },
+    "list_sync_statuses": {"account_id", "cursor", "page_size", "since"},
     "record_holdings_statement": {
         "source",
         "external_statement_id",
@@ -603,6 +620,10 @@ KNOWN_PARAMETERS = {
         "break_changed",
         "account_figures_recorded",
         "account_attribute_changed",
+        # Known, and not heard (v14): the street's activity and sync statuses
+        # are delivered to operations, and custody reports them.
+        "activity_recorded",
+        "sync_status_recorded",
     },
     # Known, and not used (v8): the book of record is an operations plugin's
     # to write and five other roles' to read (operations, portfolio,

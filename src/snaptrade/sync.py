@@ -7,6 +7,16 @@ thing kept beyond it is SnapTrade's raw responses to each read, per account,
 in the plugin's own storage for their retention (raw.py, decisions/028), for
 the Raw responses tab: never read back into what is recorded.
 
+Each linked account's activities go to the street as SnapTrade states them
+(contract v14, W2.10; activities.py): on its first read in this process, a
+backfill, every activity SnapTrade holds back to the account's
+`history_from`, page by page; on each read after, the activities that read
+fetched (the last `ACTIVITIES_DAYS`). The street keeps each once, by its
+identifier, so a backfill again after a restart is answered already recorded
+and nothing is held here to remember it by. Each activity's raw record is its
+own, kept as long as the history it reported (raw.py). An account nothing
+links reports none until it is linked, and then its backfill.
+
 Each read ends in a report of the plugin's health and its figures, which core
 draws on its Summary under Manage beside its own status (the product owner,
 2026-10-01): Connections, with how many need attention; Accounts reached;
@@ -17,22 +27,45 @@ again on every heartbeat until the next read reports.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import date, datetime
 
 import meridian
 from meridian.bounds import PLUGIN_FIGURE_WHY_LENGTH
 
-from .contract import Outcome, Recorder
+from .activities import Converted, PlanCodeLink, convert
+from .contract import ActivityOutcome, Outcome, Recorder
 from .declaration import seen
-from .normalise import AccountView, ConnectionView, SyncState, ns, views
-from .raw import RawStore, Taken, taken
+from .normalise import (
+    AccountView,
+    ConnectionView,
+    ExternalAccount,
+    Holding,
+    SyncState,
+    ns,
+    views,
+)
+from .raw import RawStore, Taken, activity_key, activity_taken, taken
 from .settings import Config
 from .synthetic import SyntheticVenue
-from .venue import Snapshot, SnapTradeVenue, Venue, VenueError, read, utc_now
+from .venue import (
+    MOST_PER_PAGE,
+    Json,
+    Snapshot,
+    SnapTradeVenue,
+    Venue,
+    VenueError,
+    read,
+    utc_now,
+)
 
 log = logging.getLogger("snaptrade")
+
+#: The most pages of an account's history a backfill reads, each of
+#: MOST_PER_PAGE activities: past this, what was read is reported and the rest
+#: is said not to be.
+MOST_BACKFILL_PAGES = 50
 
 #: The connection states that ask a person to do something, each as the
 #: Connections figure counts it.
@@ -56,6 +89,8 @@ class Status:
     connections: tuple[ConnectionView, ...] = ()
     # By external account ID.
     outcomes: dict[str, Outcome] = field(default_factory=dict)
+    # By external account ID: what reporting its activities came to.
+    activities: dict[str, ActivityOutcome] = field(default_factory=dict)
     users: tuple[str, ...] = ()
     user_id: str = ""
     # Why the last read failed, when it did. Safe to show.
@@ -120,8 +155,18 @@ class Syncer:
         now: Callable[[], datetime] = utc_now,
         make_venue: Callable[[Config], Venue | None] | None = None,
         raw: RawStore | None = None,
+        linked: Callable[[str], bool] | None = None,
+        plan_codes: Callable[[], Sequence[PlanCodeLink]] | None = None,
     ) -> None:
         self._plugin = plugin
+        # Whether an external account is linked to one of the deployment's,
+        # as the plugin's links last said (linking.py): its activities are
+        # reported only then.
+        self._linked = linked or (lambda external_account_id: True)
+        # The plan-code links people made (activities.py).
+        self._plan_codes = plan_codes or (lambda: ())
+        # The external accounts whose backfill this process has reported.
+        self._backfilled: set[str] = set()
         # SnapTrade's raw responses, kept per account; None keeps none.
         self.raw = raw
         self._recorder = Recorder(plugin)
@@ -201,26 +246,32 @@ class Syncer:
             await self._recorder.report_accounts([view.account for view in accounts])
         except meridian.MeridianError as refused:
             log.warning("reporting the accounts it reaches was refused: %s", refused)
+        reported: dict[str, ActivityOutcome] = {}
         for view in accounts:
             external_id = view.account.external_account_id
             try:
-                await self._recorder.report_sync(view.account, view.freshness, observed)
+                await self._recorder.report_sync(
+                    view.account, view.freshness, observed, view.history_from
+                )
             except meridian.MeridianError as refused:
                 log.warning("sync status for %s was refused: %s", external_id, refused)
             for problem in view.problems:
                 log.warning("%s: %s", external_id, problem)
             if view.statement is None:
                 log.info("nothing recorded for %s: %s", external_id, view.withheld)
-                continue
-            outcomes[external_id] = await self._recorder.record(
-                view.account, view.statement, observed
-            )
+            else:
+                outcomes[external_id] = await self._recorder.record(
+                    view.account, view.statement, observed
+                )
+            if self._linked(external_id):
+                reported[external_id] = await self._activities(config, venue, snapshot, view)
 
         self.status = replace(
             base,
             read_at=snapshot.read_at,
             connections=connections,
             outcomes=outcomes,
+            activities=reported,
             users=users,
         )
         stopped = sum(1 for outcome in outcomes.values() if outcome.stopped)
@@ -232,6 +283,127 @@ class Syncer:
         await self._report(healthy=True, detail=detail)
         log.info("%s", detail)
         return self.status
+
+    async def _activities(
+        self, config: Config, venue: Venue, snapshot: Snapshot, view: AccountView
+    ) -> ActivityOutcome:
+        """A linked account's activities to the street: its backfill, the
+        first time this process reads it, else what this read fetched."""
+        account = view.account
+        holdings = view.statement.holdings if view.statement is not None else ()
+        if account.external_account_id not in self._backfilled:
+            outcome = await self._backfill(config, venue, snapshot, view, holdings)
+            if outcome.complete or outcome.capped:
+                # Read to the end, or as far as is read at once: not again in
+                # this process. Stopped otherwise -- SnapTrade did not answer,
+                # or the account is not linked after all -- it is tried again
+                # on the next read.
+                self._backfilled.add(account.external_account_id)
+            return outcome
+        outcome = ActivityOutcome()
+        listed = snapshot.activities.get(account.snaptrade_account_id)
+        if listed is None:
+            outcome.stopped = snapshot.unread_activities.get(
+                account.snaptrade_account_id, "its activities were not read"
+            )
+            return outcome
+        await self._send_activities(
+            config,
+            account,
+            listed,
+            snapshot.read_at,
+            f"a read at {snapshot.read_at.isoformat()}",
+            holdings,
+            outcome,
+        )
+        outcome.complete = not outcome.stopped
+        return outcome
+
+    async def _backfill(
+        self,
+        config: Config,
+        venue: Venue,
+        snapshot: Snapshot,
+        view: AccountView,
+        holdings: Sequence[Holding],
+    ) -> ActivityOutcome:
+        """Every activity SnapTrade holds for the account, back to its
+        `history_from` (from the first it holds, where it says none), page
+        by page, each page reported as it is read."""
+        account = view.account
+        outcome = ActivityOutcome(backfill=True)
+        start = date.fromisoformat(view.history_from) if view.history_from else None
+        end = snapshot.read_at.date()
+        why = (
+            f"the backfill to {view.history_from or 'the first SnapTrade holds'}, "
+            f"read at {snapshot.read_at.isoformat()}"
+        )
+        for page in range(MOST_BACKFILL_PAGES):
+            offset = page * MOST_PER_PAGE
+            try:
+                got = await venue.activity_page(
+                    account.snaptrade_account_id, start, end, offset, MOST_PER_PAGE
+                )
+            except VenueError as failed:
+                outcome.stopped = str(failed)
+                log.warning(
+                    "the backfill of %s stopped: %s", account.external_account_id, failed
+                )
+                return outcome
+            await self._send_activities(
+                config, account, got.activities, snapshot.read_at, why, holdings, outcome
+            )
+            if outcome.stopped:
+                return outcome
+            if len(got.activities) < MOST_PER_PAGE or (
+                got.total is not None and offset + len(got.activities) >= got.total
+            ):
+                outcome.complete = True
+                log.info(
+                    "backfilled %s: %d activities back to %s, %d recorded for the first time",
+                    account.external_account_id,
+                    outcome.sent,
+                    view.history_from or "the first SnapTrade holds",
+                    outcome.recorded,
+                )
+                return outcome
+        outcome.capped = True
+        outcome.stopped = (
+            f"its history holds more than {MOST_BACKFILL_PAGES * MOST_PER_PAGE} activities; "
+            "past those, only the ones each read fetches are reported"
+        )
+        log.warning("the backfill of %s: %s", account.external_account_id, outcome.stopped)
+        return outcome
+
+    async def _send_activities(
+        self,
+        config: Config,
+        account: ExternalAccount,
+        listed: Sequence[Json],
+        read_at: datetime,
+        why: str,
+        holdings: Sequence[Holding],
+        outcome: ActivityOutcome,
+    ) -> None:
+        """Each activity converted, its raw record kept, and sent."""
+        secrets = config.credentials.secrets() if config.credentials is not None else ()
+        ready: list[tuple[Converted, str]] = []
+        for given in listed:
+            converted = convert(given)
+            if isinstance(converted, str):
+                outcome.skipped.append(converted)
+                log.warning(
+                    "%s: an activity not sent: %s", account.external_account_id, converted
+                )
+                continue
+            if self.raw is not None:
+                self.raw.keep_activity(
+                    activity_taken(account, given, read_at, why, config.synthetic), secrets
+                )
+            ready.append((converted, activity_key(account, converted.external_activity_id)))
+        await self._recorder.record_activities(
+            account, ready, holdings, self._plan_codes(), outcome
+        )
 
     def _keep_raw(
         self, config: Config, snapshot: Snapshot, connections: tuple[ConnectionView, ...]

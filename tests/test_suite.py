@@ -12,6 +12,7 @@ read does. Nothing here is a stand-in for the conversion: only the sidecar is.
 from __future__ import annotations
 
 import asyncio
+import zlib
 from collections.abc import Callable, Coroutine
 from datetime import timedelta
 from decimal import Decimal
@@ -23,10 +24,13 @@ from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.suites import Recorder, run, suite
 from meridian.testing import caller_header
 
+from snaptrade.activities import Converted, PlanCodeLink, convert
+from snaptrade.contract import ActivityOutcome
 from snaptrade.contract import Recorder as Contract
 from snaptrade.declaration import seen
 from snaptrade.linking import Links
 from snaptrade.normalise import ns, views
+from snaptrade.raw import activity_key
 from snaptrade.venue import Snapshot
 
 from conftest import NOW
@@ -124,24 +128,78 @@ def snapshot(
     )
 
 
-async def sync(recorder: Recorder, read: Snapshot) -> None:
+async def sync(
+    recorder: Recorder, read: Snapshot, plan_codes: tuple[PlanCodeLink, ...] = ()
+) -> None:
     """What a read does with what SnapTrade answered (sync.py): the accounts
-    reported, each one's sync state, and the statement of each that can be
-    served clean."""
+    reported, each one's sync state with how far back its history goes, the
+    statement of each that can be served clean, and its activities, each
+    converted (activities.py) and sent with its raw record (contract v14)."""
+    recorder.answer(
+        "RecordActivity",
+        lambda params: ops.RecordActivityResult(activity_id=f"ACT-{len(recorder.sent)}"),
+    )
     contract = Contract(cast(meridian.Plugin, recorder))
     shown = [view for each in views(read, STALE_AFTER) for view in each.accounts]
     await contract.report_accounts([view.account for view in shown])
     for view in shown:
-        await contract.report_sync(view.account, view.freshness, ns(read.read_at))
+        await contract.report_sync(
+            view.account, view.freshness, ns(read.read_at), view.history_from
+        )
         if view.statement is not None:
             await contract.record(view.account, view.statement, ns(read.read_at))
+        converted = [convert(given) for given in read.activities.get(ACCOUNT_ID, [])]
+        ready = [
+            (each, activity_key(view.account, each.external_activity_id))
+            for each in converted
+            if isinstance(each, Converted)
+        ]
+        holdings = view.statement.holdings if view.statement is not None else ()
+        await contract.record_activities(
+            view.account, ready, holdings, plan_codes, ActivityOutcome()
+        )
 
 
-def reading(**read: Any) -> Callable[[Recorder], Coroutine[Any, Any, None]]:
+def reading(
+    plan_codes: tuple[PlanCodeLink, ...] = (), **read: Any
+) -> Callable[[Recorder], Coroutine[Any, Any, None]]:
     async def produce(recorder: Recorder) -> None:
-        await sync(recorder, snapshot(**read))
+        await sync(recorder, snapshot(**read), plan_codes)
 
     return produce
+
+
+def activity(kind: str, symbol: str | None = None, **changes: Any) -> Json:
+    """One of SnapTrade's activities, of SnapTrade's type `kind`, as its
+    account activities answer it."""
+    base: Json = {
+        "id": f"00000000-0000-4000-8000-{zlib.crc32(f'{kind}{symbol}'.encode()):012d}",
+        "type": kind,
+        "symbol": {"symbol": symbol, "description": f"{symbol} Inc."} if symbol else None,
+        "units": "0",
+        "price": "0",
+        "amount": "0",
+        "fee": "0",
+        "currency": {"code": "USD"},
+        "trade_date": "2026-09-15T00:00:00.000Z",
+        "settlement_date": "2026-09-16T00:00:00.000Z",
+        "description": f"{kind} {symbol or ''}".strip(),
+    }
+    return {**base, **changes}
+
+
+def reporting(
+    *activities: Json, **read: Any
+) -> Callable[[Recorder], Coroutine[Any, Any, None]]:
+    """A read of an account holding AAPL and the money market fund, whose
+    activities are these."""
+    held = [position("AAPL", "12.5"), FUND]
+    return reading(
+        positions=read.pop("positions", held),
+        balances=read.pop("balances", [balance("USD", "1523.45")]),
+        activities=list(activities),
+        **read,
+    )
 
 
 def ambiguous_for(symbol: str) -> Callable[[Recorder], Coroutine[Any, Any, None]]:
@@ -240,6 +298,65 @@ PRODUCERS: dict[str, Callable[[Recorder], Coroutine[Any, Any, None]]] = {
     ),
     "resolve-states-what-the-source-states": reading(positions=[position("AAPL", "12.5")]),
     "kind-not-converted-on-an-ambiguous-resolve": ambiguous_for("TOKN"),
+    # Contract v14: each of SnapTrade's activity types, converted to its kind.
+    "activity-purchase": reporting(
+        activity("BUY", "AAPL", units="2.5", price="234.50", amount="-586.25")
+    ),
+    "activity-sale": reporting(
+        activity("SELL", "AAPL", units="-2.5", price="225.00", amount="562.50")
+    ),
+    "activity-reinvestment": reporting(
+        activity("REI", "SYNXX", units="3.27", price="1.00", amount="-3.27")
+    ),
+    "activity-dividend": reporting(activity("DIVIDEND", "AAPL", amount="3.25")),
+    "activity-interest": reporting(activity("INTEREST", amount="0.42")),
+    "activity-fee": reporting(activity("FEE", amount="-1.00")),
+    "activity-tax": reporting(activity("TAX", "AAPL", amount="-0.49")),
+    "activity-split": reporting(activity("SPLIT", "AAPL", units="12.5")),
+    "activity-corporate-action": reporting(activity("STOCK_DIVIDEND", "AAPL", units="0.5")),
+    "activity-transfer-in": reporting(
+        activity("EXTERNAL_ASSET_TRANSFER_IN", "AAPL", units="10")
+    ),
+    "activity-transfer-out": reporting(
+        activity("EXTERNAL_ASSET_TRANSFER_OUT", "AAPL", units="10")
+    ),
+    "activity-contribution": reporting(activity("CONTRIBUTION", amount="5000.00")),
+    "activity-withdrawal": reporting(activity("WITHDRAWAL", amount="-500.00")),
+    "activity-journal": reporting(activity("JOURNALED", amount="-200.00")),
+    "activity-kind-not-converted": reporting(
+        activity(
+            "OPTIONEXPIRATION",
+            option_symbol={"ticker": "AAPL  250620C00300000"},
+            units="-1",
+        )
+    ),
+    "activity-signs": reporting(
+        activity("SELL", "AAPL", units="2.5", price="225.00", amount="562.50")
+    ),
+    "activity-moves-no-cash": reporting(activity("SPLIT", "AAPL", units="12.5")),
+    # A 401(k) whose position SnapTrade names VIGIX and whose activities name
+    # the plan's own code, OQKR: nothing joins them until a person links it.
+    "activity-plan-code-not-linked": reporting(
+        activity("REI", "OQKR", units="0.412", price="212.34", amount="-87.48"),
+        positions=[position("VIGIX", "120.5")],
+    ),
+    "activity-plan-code-linked-by-a-person": reporting(
+        activity("REI", "OQKR", units="0.412", price="212.34", amount="-87.48"),
+        positions=[position("VIGIX", "120.5")],
+        plan_codes=(PlanCodeLink("ALPACA:INST-1", "OQKR", "VIGIX", "Pat, on Account links"),),
+    ),
+    "history-from-stated": reading(
+        account_=account(
+            sync_status={
+                "holdings": {"initial_sync_completed": True, "last_successful_sync": SYNCED},
+                "transactions": {
+                    "initial_sync_completed": True,
+                    "last_successful_sync": YESTERDAY,
+                    "first_transaction_date": "2024-10-07",
+                },
+            }
+        )
+    ),
 }
 
 

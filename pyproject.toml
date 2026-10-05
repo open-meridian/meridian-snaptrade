@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "snaptrade"
-version = "0.10.0"
+version = "0.11.0"
 description = "Holdings, cash and sync state from brokerages through SnapTrade, for an Open Meridian deployment"
 license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
@@ -15,7 +15,7 @@ requires-python = ">=3.11"
 # SnapTrade's own SDK is the one third-party dependency, pinned exactly too,
 # and only src/snaptrade/venue.py imports it.
 dependencies = [
-  "open-meridian==0.17.0",
+  "open-meridian==0.19.0",
   "snaptrade-python-sdk==13.0.27",
 ]
 

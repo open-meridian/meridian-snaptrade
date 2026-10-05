@@ -33,8 +33,8 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:04cdcf9@sha256:cda4317f3ee02764a311cf9acec9eb804fbb3887465c586c52eff0eb57b5af02
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:04cdcf9@sha256:3a530813651c92cd4d30b6a2cd38881b3af8fb48f05916ed596aec298f678892
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:700d98b@sha256:be2cbe9db3870de4764c75d0a7b0f86ac309e6ebeb99add77df73e986feb87b4
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:700d98b@sha256:a8aa304c74b2cc97f4bd87ac0de9c7c29183e8f90eb6bc32e413fc9408928f7c
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
@@ -49,6 +49,12 @@ E2E     := MERIDIAN_RUNTIME_IMAGE=$(RUNTIME_IMAGE) \
            -f .e2e/harness/plugins.yaml -f e2e/plugin.yaml
 E2E_RUN := $(E2E) run --rm -T runner
 E2E_STREET := $(E2E) run --rm -T store street
+# The custodian's activity and each connection's latest sync status, as the
+# street keeps them (contract v14): the harness's `store activity`.
+E2E_ACTIVITY := $(E2E) run --rm -T store activity
+# How many activities synthetic Alpaca's history holds (synthetic.py), each
+# one line of `store activity` once its backfill is reported.
+E2E_ALPACA_ACTIVITIES := 16
 # What the plugin kept of SnapTrade's raw responses for Alpaca's account, read
 # inside its container from the storage the harness grants a custody plugin
 # (decisions/028, MERIDIAN_STORAGE_DIR): the latest read's calls, by name.
@@ -62,6 +68,12 @@ export E2E_RAW := import os; from snaptrade.raw import RawStore, storage_root; \
 	print(len(s.reads("ALPACA:SYN-ALP-1001")), "reads of Alpaca, the latest", r.key, "in", storage_root())
 # The same read found again, by its key, in a new container: the granted
 # storage outlives the one it was written from (decisions/028).
+# Each activity Alpaca's backfill reported names its own raw record, kept in
+# the granted storage (contract v14): SYNXX's reinvestment, found by its key.
+export E2E_ACTIVITY_RAW := from snaptrade.raw import RawStore, storage_root; \
+	k = "activities/ALPACA:SYN-ALP-1001/00000000-0000-4000-8000-00000000f107"; \
+	found = RawStore(storage_root()).find(k); assert found, k; \
+	assert found[1]["body"]["type"] == "REI", found[1]; print("its record", k, "kept")
 export E2E_RAW_KEPT := import os; from snaptrade.raw import RawStore, storage_root; \
 	k = os.environ["E2E_KEPT"]; keys = [r.key for r in RawStore(storage_root()).reads("ALPACA:SYN-ALP-1001")]; \
 	assert k in keys, (k, keys); print("read", k, "kept across a new container")
@@ -147,7 +159,11 @@ image:
 # this plugin's own Account links form; then the street store holds Alpaca's
 # statement exactly as e2e/expected.street says, and nothing for the two
 # accounts left unlinked, which the dashboard counts as reported and not
-# linked. Every instrument is a placeholder there, since the harness has no
+# linked; and the street's activity is e2e/expected.activity (contract v14):
+# Alpaca's history backfilled back to its history_from, one of each kind and
+# a type as reported, each once, and every connection's latest sync status
+# with its history_from. The plugin's container made again backfills again,
+# every activity answered already recorded, and the file is unchanged. Every instrument is a placeholder there, since the harness has no
 # platform, so the file names each row by the identifiers this plugin sent.
 # Its own project and no published port; nothing outlives it.
 e2e: image
@@ -192,6 +208,13 @@ e2e: image
 		|| fail "the street store is not e2e/expected.street"; \
 	unlinked="$$($(E2E_RUN) unlinked --expect 2 2>>.e2e/runner.log)" \
 		|| fail "the dashboard did not count the two accounts left unlinked"; \
+	for i in $$(seq 1 60); do \
+		$(E2E_ACTIVITY) >.e2e/activity 2>>.e2e/components.log || fail "store activity did not print the street's activity"; \
+		[ "$$(grep -c '^activity|E2E Alpaca|' .e2e/activity)" -ge $(E2E_ALPACA_ACTIVITIES) ] && break; \
+		sleep 1; \
+	done; \
+	diff -u e2e/expected.activity .e2e/activity >&2 \
+		|| fail "the street's activity is not e2e/expected.activity"; \
 	raw="$$($(E2E) exec -T snaptrade python -c "$$E2E_RAW" 2>>.e2e/components.log)" \
 		|| fail "the plugin kept no raw responses for Alpaca's account in its granted storage"; \
 	key="$$(printf '%s' "$$raw" | sed -n 's/.* the latest \([^ ]*\) in .*/\1/p')"; \
@@ -202,7 +225,17 @@ e2e: image
 	$(E2E) up -d --no-deps --force-recreate snaptrade >>.e2e/components.log 2>&1 || fail "the plugin's container was not made again"; \
 	kept="$$($(E2E) exec -T -e E2E_KEPT="$$key" snaptrade python -c "$$E2E_RAW_KEPT" 2>>.e2e/components.log)" \
 		|| fail "the raw responses did not survive a new container"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept"
+	for i in $$(seq 1 60); do \
+		$(E2E) logs --no-color snaptrade 2>>.e2e/components.log | grep -q "backfilled ALPACA:SYN-ALP-1001: $(E2E_ALPACA_ACTIVITIES) activities back to 2025-06-02, 0 recorded" && break; \
+		[ "$$i" = 60 ] && fail "the new container did not backfill Alpaca's history again, every activity already recorded"; \
+		sleep 1; \
+	done; \
+	$(E2E_ACTIVITY) >.e2e/activity-again 2>>.e2e/components.log || fail "store activity did not print the street's activity"; \
+	diff -u e2e/expected.activity .e2e/activity-again >&2 \
+		|| fail "the backfill reported again recorded something twice"; \
+	activity="$$($(E2E) exec -T snaptrade python -c "$$E2E_ACTIVITY_RAW" 2>>.e2e/components.log)" \
+		|| fail "an activity's raw record was not kept in the granted storage"; \
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept"
 
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1

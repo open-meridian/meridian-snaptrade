@@ -348,7 +348,7 @@ def test_a_position_sold_from_is_not_split_by_fifo(
     assert synx["said"][-1] == "Its lots are the person's to supply."
 
 
-def test_no_lot_for_an_option_a_short_or_a_fund_with_no_purchase(
+def test_no_lot_for_an_option_a_short_or_a_fund_its_history_does_not_account_for(
     held: tuple[Sidecar, Syncer, asyncio.Event],
 ) -> None:
     sidecar, _, _ = held
@@ -357,8 +357,9 @@ def test_no_lot_for_an_option_a_short_or_a_fund_with_no_purchase(
     assert option["proposed"] == [] and option["said"][0].startswith("An option:")
     # ZZTOP is short, but SnapTrade lists its lot: the statement's.
     assert alpaca["ZZTOP"]["lots_reported"] == 1 and alpaca["ZZTOP"]["proposed"] == []
+    # SYNXX's history holds one dividend reinvested, 3.27 of its 500.00.
     fund = alpaca["SYNXX"]
-    assert fund["proposed"] == [] and "shows no purchase of SYNXX" in fund["said"][0]
+    assert fund["proposed"] == [] and "come to 3.27, and it holds 500.00" in fund["said"][0]
     assert fund["average_purchase_price"] == "1.00"
 
 

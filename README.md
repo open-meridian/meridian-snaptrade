@@ -4,12 +4,19 @@ An [Open Meridian](https://open-meridian.com) plugin that reads brokerage
 accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
-workflow W2 (holdings ingestion). It holds the `custody` role. This is release
-0.10.0. How a plugin like it is built is documented at
-[open-meridian.dev](https://open-meridian.dev).
+workflow W2 (holdings ingestion), and each account's activity as the
+custodian states it. It holds the `custody` role. This is release 0.11.0
+(CHANGELOG.md says what each release changed). How a plugin like it is built
+is documented at [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.17.0`, which declares
-contract v12, the deployment serves its MCP (meridian-design
+It is built on the SDK it pins, `open-meridian==0.19.0`, which declares
+contract v14, the custodian's activity explains a break (meridian-design
+tasks/sdk-contract/the-custodians-activity-contract): each activity on a
+linked account is reported to the street as SnapTrade states it, a backfill
+back to the first date SnapTrade's history of the account reaches and then
+each read's, its kind converted from SnapTrade's type, and the sync status
+says from when the history can be read ("The custodian's activity", below).
+Since contract v12, the deployment serves its MCP (meridian-design
 tasks/sdk-contract/a-deployment-serves-its-mcp-contract): every route is typed
 and offered to agents as a tool, or says why not ("Offered to agents",
 below). Since contract v11, the edge keeps its own (meridian-design
@@ -55,7 +62,12 @@ On start, on every settings change, and every `poll_seconds`, it:
    account nothing links is refused before any row.
    A refusal stops that statement and is shown, never retried. A statement
    this plugin cannot serve clean -- a fund counted in cash with no price, or
-   worth more than the cash -- is withheld, and the Statements tab says why.
+   worth more than the cash -- is withheld, and the Statements tab says why;
+4. for each account linked to one of the deployment's, reports its
+   activities (W2.10, contract v14): the first time this process reads it,
+   every activity SnapTrade holds back to its `history_from` (a backfill),
+   and after that the activities each read fetched. The street keeps each
+   once ("The custodian's activity", below).
 
 It holds nothing between reads that it needs: a restart reads again. What
 SnapTrade answered each read is kept beside, per account, for its retention,
@@ -65,9 +77,71 @@ nothing is ever read back from it into what is recorded.
 When a person or an agent asks, it also reads an account's history from
 SnapTrade -- its activities over a range, back to the first transaction
 SnapTrade holds -- and proposes lots for the positions SnapTrade lists no
-tax lots for (the History tab, below). Neither is sent to the street: the
-proposals are for the person to carry into an opening balance and answer
-for there.
+tax lots for (the History tab, below). Neither is sent to the street from
+there: the activities reach it by the reads above, and the proposals are for
+the person to carry into an opening balance and answer for there.
+
+### The custodian's activity
+
+Contract v14 (meridian-design plans/the-custodians-activity-explains-a-break,
+"Design", SnapTrade). Activity is evidence that explains a break, never a
+source: the street keeps it as reported and derives no position, lot or
+figure from it, and the sample operations plugin matches a break to the
+activity that explains it and proposes the adjustment for a person to
+confirm. Nothing is netted or merged: a sweep fund's purchases are sent as
+SnapTrade lists them.
+
+- **A backfill, then each read.** The first read of a linked account in a
+  process reads its whole history from SnapTrade, from the first date its
+  history reaches (`sync_status.transactions.first_transaction_date`, sent as
+  the sync status's `history_from`), page by page, up to 50 pages of 1,000,
+  and reports each activity; each read after reports the activities it
+  fetched, the last ten days. The street keeps an activity once, by the
+  source, the account and SnapTrade's activity ID, and answers it already
+  recorded when it comes again, so a restart's backfill records nothing
+  twice, and the plugin holds nothing to remember it by. The street stamps
+  each with its own record time, never back-dated; its trade date is the
+  event's. An account nothing links reports none, and its backfill when it is
+  linked. A backfill SnapTrade did not answer is tried again on the next
+  read.
+- **The kinds.** `BUY` purchase, `SELL` sale, `REI` reinvestment,
+  `DIVIDEND`, `INTEREST`, `FEE`, `TAX`, `SPLIT`, `STOCK_DIVIDEND` a corporate
+  action, the transfers in and out (`EXTERNAL_ASSET_`, `INTERNAL_ASSET_` and
+  `INTERNAL_CASH_TRANSFER_IN` and `_OUT`), `CONTRIBUTION`, `WITHDRAWAL`,
+  `JOURNALED` journal. Any other type (an option's expiry, an adjustment, a
+  `TRANSFER` naming no direction) is sent not known with SnapTrade's type as
+  reported (`snaptrade:activity-type`), for a person to map.
+- **Signs and values.** Units added to the account are positive and units
+  removed negative, whichever sign SnapTrade wrote: a purchase, a
+  reinvestment and a transfer in add; a sale, a transfer out, and a fee or
+  tax taken in units remove; a split's units are as stated. The amount is
+  SnapTrade's own sign, cash in positive and cash out negative. A value
+  SnapTrade writes as 0 where none applies (a dividend's units, a split's
+  amount) is sent unset, never zero, and no price is worked out.
+- **The instrument.** An activity naming a security the account holds is
+  resolved by that holding's identifiers, to the holding's instrument. A
+  plan's own fund code (Fidelity's `OQKR` for the plan's VIGIX) that a person
+  linked to a symbol is resolved as that symbol is, with that person's name
+  as its provenance. Any other code travels as reported (`snaptrade:symbol`),
+  the instrument empty: resolving a symbol only an old activity names would
+  mint a record for the deployment's admin to complete for every security
+  the account ever traded. Cash alone names none.
+- **Not sent, and why.** An activity with no ID, no trade date, an amount in
+  no currency, or a number that would not cross the wire exactly is not
+  sent, and the plugin logs why; any other refusal of one activity is said
+  and the rest go on, and the account not linked stops them.
+- **Its raw record is its own**, `activities/<external account>/<activity
+  ID>`: SnapTrade's entry for it as the read that first reported it received
+  it, kept seven years (`ACTIVITY_RETENTION_DAYS`, the storage the
+  declaration asks for), past the read retention, so each activity the street
+  holds can have its record read back on the Raw responses tab
+  (`/raw?ref=<key>`).
+- **The plan-code link is not settable yet.** The plan rules it a setting of
+  this instance, per account, set by an admin on its Accounts page (question
+  4); a plugin has no way to save its own setting from its page, so the
+  conversion applies a link (tested on the custody suite's case) and nothing
+  makes one until the contract gives a page that way. Until then a plan's
+  code travels as reported.
 
 ### How SnapTrade's shapes become the platform's
 
@@ -129,7 +203,9 @@ where it gives none, the last successful holdings sync; the sync status
 carries the last successful sync apart, as `last_synced_at_ns`. The
 statement is as of the same moment's date, so data SnapTrade serves from its
 cache is never presented as the read's. History freshness is the last
-successful transactions sync (a date).
+successful transactions sync (a date), and how far back the history reaches,
+the account's first transaction SnapTrade holds, is sent as `history_from`
+(contract v14).
 
 ## Settings
 
@@ -151,7 +227,7 @@ without any of them.
 | `snaptrade_user_secret` | User secret | text | yes | with a commercial key | that user's secret |
 | `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
 | `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
-| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1 |
+| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept seven years, whatever this says |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
@@ -262,8 +338,10 @@ from a start to an end date (at most 366 days at a time; the 30 days to
 today by default), a page of at most 1,000 at a time, for an account linked
 to one the person may read, chosen by the deployment's account. It says how
 far back the account's history goes: the first transaction SnapTrade holds
-for it (`first_transaction_date` in its sync status). Each read is kept with
-the account's raw responses.
+for it (`first_transaction_date` in its sync status, sent to the street as
+`history_from`). Each read is kept with the account's raw responses. What it
+shows is SnapTrade's answer to that read; what the street holds of the same
+activities is what the reads reported ("The custodian's activity", above).
 
 **Propose lots** (`/history/lots?account=<id>`) reads the account's whole
 history (up to 10,000 activities) and, for each position of its last
@@ -579,8 +657,9 @@ one appears in a body. The tests hold a hostile body to that, and every kept
 byte to having no credential in it.
 
 **Where, and for how long.** In the storage the deployment grants an edge
-plugin (decisions/028): the version declares it asks for it, with its
-retention (`src/snaptrade/declaration.py`, 30 days), and the launcher, the
+plugin (decisions/028): the version declares it asks for it, with the
+longest it keeps a record (`src/snaptrade/declaration.py`: seven years, a
+reported activity's, since contract v14; 30 days before), and the launcher, the
 chart and the plugin harness mount a volume for this instance alone at the
 path `MERIDIAN_STORAGE_DIR` names, kept across restarts and new versions,
 never deleted by the deployment, and reached by no other plugin. The store
@@ -595,20 +674,31 @@ A store that cannot be written leaves the read as it was; the tab says the
 responses were not kept. At the default poll of five minutes that is 288
 records an account a day, a few kilobytes each compressed.
 
+**A reported activity's record** (contract v14) is its own: SnapTrade's entry
+for the activity, as the read that first reported it received it, with that
+read's time and why it was made (the backfill to the account's
+`history_from`, or a read), under `<root>/a-<hash>/activities/<hash of the
+activity ID>.json.gz`, written once. It is kept seven years from when it was
+received, not `raw_retention_days`, so each activity the street holds can
+have its record read back (the plan's question 5: as long as the history it
+reported); a few hundred bytes an activity.
+
 **A raw-record reference on every row.** Contract v11 puts on every holding
 and statement the raw record it was converted from (`RawRecordRef`: this
 instance, which the sidecar fills or checks, and the plugin's own key, opaque
 past it). The key here is the external account, the read and the call
-(`<external account>/<read>/<positions|balances>`), and the Raw responses
-tab opens the record and the call a key names (`/raw?ref=<key>`). Nothing is
+(`<external account>/<read>/<positions|balances>`), and an activity's is
+`activities/<external account>/<activity ID>`; the Raw responses tab opens
+the record and the call a key names (`/raw?ref=<key>`). Nothing is
 read back from the records into what is recorded, and a backfill from them
 (the contract's for a field a revision adds) is not sent by this version.
 
 **What it receives and does not carry.** By name only, declared with the
 version and counted on its heartbeat as each read sees them (the counts stay
 in the deployment, on the plugin's Summary): a position's `price` and
-`open_pnl`, a lot's `lot_id`, and an account's `is_paper`, none of which has
-a meaning in the contract yet.
+`open_pnl`, a lot's `lot_id`, an account's `is_paper`, and an activity's
+`fee` and `fx_rate` where it states one, none of which has a meaning in the
+contract yet.
 
 ## Depends on
 
@@ -617,8 +707,10 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.17.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.17.0`.
+The SDK is pinned exactly, `open-meridian==0.19.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.19.0`.
+0.19.0 is not on PyPI yet: until it is released, `make ci-local` builds it
+from the sibling checkout, and CI, which has none, cannot install it.
 Where the sibling `meridian-python` checkout carries exactly that version,
 one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
 and the check's containers install it from source, and the image is built on
@@ -658,7 +750,13 @@ now. Moving to 0.17.0 (contract v12) ran `meridian plugin migrate`, which
 moved the pins and rewrote nothing, finding the five routes that change
 something with no typed record; each was typed by hand, the reads given
 typed answers, and `check.yaml` holds the plugin to `meridian` 0.1.30's
-`plugin check --verified`.
+`plugin check --verified`. Moving to 0.19.0 (contract v14) from 0.17.0:
+the migrations through 0.18.0 (contract v13, tickets) and 0.19.0 move only
+the pins, moved by hand; the sync status's `history_from`, the activities
+(`plugin.record_activity`), their raw records and the custody suite's
+activity cases were done by hand, and `tests/test_contract.py` knows what v13
+and v14 add that this plugin does not call (`list_activities`,
+`list_sync_statuses`, `receive(activity_recorded=, sync_status_recorded=)`).
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -672,7 +770,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `04cdcf9`, contract v12).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `700d98b`, contract v14).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -698,17 +796,31 @@ this plugin's own page, it:
    `e2e/expected.street`;
 6. asks the dashboard how many accounts the plugin reported and nothing
    links: 2, Interactive Brokers' and Schwab's;
-7. reads, inside the plugin's container, what it kept of SnapTrade's raw
+7. waits until the street's activity holds Alpaca's sixteen activities,
+   prints it with the harness's `store activity` and compares it with
+   `e2e/expected.activity` (contract v14): Alpaca's history backfilled back
+   to its `history_from`, 2025-06-02, one activity of each kind and an
+   option's expiry as reported, a held security's instrument resolved
+   (AAPL, SYNXX, ZZTOP) and a code it no longer holds as reported (SYNT,
+   the expired call), units signed by what they did to the account; and
+   each connection's latest sync status with its `history_from`, Alpaca's
+   as heard before and after its link;
+8. reads, inside the plugin's container, what it kept of SnapTrade's raw
    responses for Alpaca's account in the storage the harness grants it
    (`MERIDIAN_STORAGE_DIR`): the latest read's five calls, by name.
    `e2e/plugin.yaml` runs the plugin on a read-only root with `/tmp`
    writable, as the chart's pod has them;
-8. grants the harness's admin View on the plugin and opens the Raw responses
+9. grants the harness's admin View on the plugin and opens the Raw responses
    tab at the reference a holding carries
    (`/raw?ref=ALPACA:SYN-ALP-1001/<read>/positions`), which names the call it
    was converted from;
-9. makes the plugin's container again and finds that read still kept: the
-   granted storage outlives the container it was written from.
+10. makes the plugin's container again and finds that read still kept: the
+    granted storage outlives the container it was written from;
+11. waits until the new container has backfilled Alpaca's history again,
+    every activity answered already recorded, and finds the street's
+    activity still `e2e/expected.activity`: nothing recorded twice; and
+    finds SYNXX's reinvestment's own raw record in the granted storage by
+    the key the activity carries.
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The
@@ -746,7 +858,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.10.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.11.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

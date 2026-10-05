@@ -112,6 +112,26 @@ a deployment admin approves them.
   person or their agent, never into a statement: the street's lots are
   SnapTrade's own, and its `average_cost` is never multiplied there. Every
   history read is kept as a raw record of the account, and named.
+- **The custodian's activity, as SnapTrade states it** (contract v14, SDK
+  0.19.0; meridian-design plans/the-custodians-activity-explains-a-break).
+  `activities.py` converts each of SnapTrade's activities, the one place its
+  activity types are read: the plan's kinds (`BUY` purchase ... `JOURNALED`
+  journal, `STOCK_DIVIDEND` a corporate action), any other type not known
+  with the type as reported; units signed by what they did to the account,
+  the amount as SnapTrade signs it, a 0 SnapTrade writes where none applies
+  unset, never zero, and no price worked out. The instrument is a held
+  security's (resolved by the holding's identifiers), or a person's
+  plan-code link with their name as provenance, or the code as reported:
+  never a symbol only an activity names resolved, which would mint records.
+  `sync.py` reports a linked account's whole history back to `history_from`
+  on its first read in the process (the backfill), then each read's; the
+  street keeps each once by its ID, so nothing is held to remember a
+  backfill by, and a restart's is answered already recorded. Activity is
+  evidence, never netted or merged, and nothing is derived from it. Each
+  activity's raw record is its own (`raw.activity_key`), written once, kept
+  `ACTIVITY_RETENTION_DAYS` past the read retention. The plan-code link has
+  no store yet (a plugin cannot save its own setting from its page): never
+  keep a person's link in the plugin's storage.
 - `make ci-local` before calling anything done. The README says what each
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles

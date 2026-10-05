@@ -25,6 +25,7 @@ from snaptrade import synthetic
 from snaptrade.linking import Links
 from snaptrade.page import RAW, RAW_DOWNLOAD, READ, STATEMENTS, hold, pages
 from snaptrade.raw import (
+    ACTIVITY_DIRECTORY,
     DEFAULT_RETENTION_DAYS,
     REDACTED,
     RawStore,
@@ -206,10 +207,16 @@ def test_a_record_is_written_whole(tmp_path: Path) -> None:
     reading(store)
     files = list(store.root.rglob("*"))
     assert not [f for f in files if f.name.endswith(".tmp")]
-    kept = [f for f in files if f.is_file()]
+    kept = [f for f in files if f.is_file() and f.parent.name != ACTIVITY_DIRECTORY]
     assert len(kept) == 3 and all(f.name.endswith(".json.gz") for f in kept)
-    # No path is made from an account's ID.
+    # No path is made from an account's ID, nor from an activity's.
     assert all(re.fullmatch(r"a-[0-9a-f]{32}", f.parent.name) for f in kept)
+    activities = [f for f in files if f.is_file() and f.parent.name == ACTIVITY_DIRECTORY]
+    assert activities and all(
+        re.fullmatch(r"[0-9a-f]{32}\.json\.gz", f.name)
+        and re.fullmatch(r"a-[0-9a-f]{32}", f.parent.parent.name)
+        for f in activities
+    )
     # What a write that stopped leaves is gone at the next prune.
     stray = kept[0].parent / "half.tmp"
     stray.write_bytes(b"{")
@@ -243,7 +250,10 @@ def test_reads_past_the_retention_are_pruned_on_start(tmp_path: Path) -> None:
     # The settings' first delivery, as the plugin starts: before any read.
     syncer.configure(config_from({SYNTHETIC: True}))
     assert store.reads(ALPACA) == []
-    assert list(store.root.iterdir()) == []
+    # A reported activity's record is kept as long as the history it
+    # reported, not the read retention (contract v14).
+    left = [f for f in store.root.rglob("*") if f.is_file()]
+    assert left and all(f.parent.name == ACTIVITY_DIRECTORY for f in left)
 
 
 def test_a_shorter_retention_prunes_at_once(tmp_path: Path) -> None:

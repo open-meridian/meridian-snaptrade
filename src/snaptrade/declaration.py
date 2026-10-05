@@ -12,23 +12,29 @@ that the common model may need to grow. Each is counted as it is seen, and
 the count rides on the heartbeat, never leaving the deployment.
 
 And the storage it asks for, at the edge, for SnapTrade's raw responses
-(decisions/028): kept for the retention below, the reach of a backfill.
+(decisions/028): the longest it keeps one, a reported activity's record
+(raw.py, contract v14: as long as the history it reported), the reach of a
+backfill. Each read's own record is kept for the retention setting, 30 days
+by default.
 """
 
 from __future__ import annotations
 
 from meridian.declaration import Declaration, NotCarried, Storage
 
+from .normalise import to_decimal
+from .raw import ACTIVITY_RETENTION_DAYS
 from .settings import DECLARED
 from .venue import Snapshot
 
-#: How long a raw response is kept, in days: what the deployment's storage is
-#: asked for, and the default of the plugin's own retention setting.
+#: How long a read's raw responses are kept, in days, by default: the
+#: plugin's own retention setting's default.
 RETENTION_DAYS = 30
 
 POSITION = "snaptrade:position"
 LOT = "snaptrade:tax-lot"
 ACCOUNT = "snaptrade:account"
+ACTIVITY = "snaptrade:activity"
 
 #: Each name not carried, with why: none has a meaning in the contract yet.
 NOT_CARRIED = (
@@ -36,12 +42,14 @@ NOT_CARRIED = (
     NotCarried("custody", POSITION, "open_pnl", "no_contract_meaning"),
     NotCarried("custody", LOT, "lot_id", "no_contract_meaning"),
     NotCarried("custody", ACCOUNT, "is_paper", "no_contract_meaning"),
+    NotCarried("custody", ACTIVITY, "fee", "no_contract_meaning"),
+    NotCarried("custody", ACTIVITY, "fx_rate", "no_contract_meaning"),
 )
 
 DECLARATION = Declaration(
     settings=DECLARED,
     not_carried=NOT_CARRIED,
-    storage=Storage(retention_days=RETENTION_DAYS),
+    storage=Storage(retention_days=ACTIVITY_RETENTION_DAYS),
 )
 
 
@@ -63,6 +71,23 @@ def seen_in_account(account: dict[str, object]) -> list[tuple[str, str]]:
     return [(ACCOUNT, "is_paper")] if account.get("is_paper") is not None else []
 
 
+def seen_in_activity(activity: dict[str, object]) -> list[tuple[str, str]]:
+    """The names not carried one of SnapTrade's activities shows: a fee or
+    an exchange rate it states, which a custodial activity has no place for."""
+    return [(ACTIVITY, name) for name in ("fee", "fx_rate") if _stated(activity.get(name))]
+
+
+def _stated(value: object) -> bool:
+    """Whether SnapTrade stated a value: a number other than 0, which it
+    writes where none applies, or anything else not empty."""
+    if value is None or value == "":
+        return False
+    try:
+        return to_decimal(value, "a value") != 0
+    except ValueError:
+        return True
+
+
 def seen(snapshot: Snapshot) -> list[tuple[str, str]]:
     """Each name not carried a read of SnapTrade showed, once for each
     account or position that showed it: what the heartbeat counts."""
@@ -72,4 +97,7 @@ def seen(snapshot: Snapshot) -> list[tuple[str, str]]:
         for position in results or []:
             if isinstance(position, dict):
                 found.extend(seen_in_position(position))
+    for listed in snapshot.activities.values():
+        for activity in listed:
+            found.extend(seen_in_activity(activity))
     return found

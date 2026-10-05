@@ -48,7 +48,9 @@ async def test_every_response_is_valid_by_snaptrades_own_models() -> None:
         page = await venue.activity_page(account_id, None, NOW.date(), 0, 1000)
         PaginatedUniversalActivity.from_openapi_data_oapg(page.body, _configuration=None)
         held += len(page.activities)
-    assert held == 8
+    # IBKR's seven, and Alpaca's sixteen: one of each type converted to a
+    # kind, and an option's expiry, which converts to none (contract v14).
+    assert held == 23
 
 
 async def test_a_read_of_activities_gets_those_traded_in_its_range() -> None:

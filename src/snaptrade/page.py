@@ -83,7 +83,15 @@ from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 from . import history, records
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
-from .raw import CALLS, Record, activities_call, dumps, history_taken, parse_record_key
+from .raw import (
+    CALLS,
+    Record,
+    activities_call,
+    dumps,
+    history_taken,
+    parse_activity_key,
+    parse_record_key,
+)
 from .settings import label
 from .sync import ATTENTION, Status, Syncer
 from .venue import VenueError
@@ -1997,8 +2005,12 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     # A row's reference to its raw record (contract v11), followed here: the
     # account, the read and the call it names.
     ref = request.query.get("ref", "").strip()
-    ref_read, ref_call = "", ""
-    if ref:
+    ref_read, ref_call, ref_activity = "", "", ""
+    # An activity's reference (contract v14): its own record, of the account.
+    activity_named = parse_activity_key(ref) if ref else None
+    if activity_named is not None:
+        asked, ref_activity = activity_named
+    elif ref:
         named = parse_record_key(ref)
         if named is None:
             return _said("No such record.", 404)
@@ -2013,7 +2025,9 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     for account in chosen:
         reads = store.reads(account.external_account_id) if store is not None else []
         record = None
-        if store is not None:
+        if store is not None and ref_activity:
+            record = store.activity_record(account.external_account_id, ref_activity)
+        elif store is not None:
             record = (
                 store.record(account.external_account_id, key)
                 if key
@@ -2030,7 +2044,7 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
                 "where": account.where,
                 "record": _shown_record(account, record) if record is not None else None,
                 # A read asked for by key that is no longer kept.
-                "gone": bool(key) and record is None,
+                "gone": bool(key or ref_activity) and record is None,
                 "older": [
                     {
                         "read_at": r.read_at,
@@ -2067,6 +2081,11 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
                     f"\u201c{CALLS[ref_call][0]}\u201d in this read."
                 )
                 if ref_call
+                else Notice(
+                    "The record an activity references: SnapTrade's entry for it, as the "
+                    "read that first reported it received it."
+                )
+                if ref_activity
                 else None
             ),
             kept=store is not None,
@@ -2094,7 +2113,8 @@ async def raw_responses(request: meridian.Request) -> meridian.Response:
 
 def _filename(external_account_id: str, key: str) -> str:
     plain = "".join(c if c.isalnum() or c in "-." else "-" for c in external_account_id)
-    return f"snaptrade-raw-{plain}-{key}.json"
+    named = "".join(c if c.isalnum() or c in "-." else "-" for c in key.rpartition("/")[2])
+    return f"snaptrade-raw-{plain}-{named}.json"
 
 
 @pages.route(
@@ -2112,7 +2132,11 @@ async def raw_download(request: meridian.Request) -> meridian.Response:
     if store is None or not asked or asked not in readable:
         return _said("No such account.", 404)
     key = request.query.get("read", "").strip()
-    record = store.record(asked, key) if key else store.latest(asked)
+    activity = parse_activity_key(key)
+    if activity is not None:
+        record = store.activity_record(asked, activity[1]) if activity[0] == asked else None
+    else:
+        record = store.record(asked, key) if key else store.latest(asked)
     if record is None:
         return _said("That read is not kept.", 404)
     return meridian.Response(

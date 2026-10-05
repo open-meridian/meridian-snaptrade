@@ -7,7 +7,9 @@ under Open and View), serves them, and then, on every poll and every settings
 change, reads SnapTrade (or, in synthetic mode, its built-in responses),
 normalises what it read to the platform's convention (normalise.py), and
 records it through the SDK's typed operations (contract.py): each account's
-sync status, and a holdings statement per account. It holds nothing between
+sync status, a holdings statement per account, and each linked account's
+activities, a backfill back to its history's first date and then each read's
+(contract v14). It holds nothing between
 reads that it needs; a restart reads again. What SnapTrade answered each read
 is kept per account, as received, for the Raw responses tab (raw.py), in the
 storage the deployment grants an edge plugin (decisions/028), which it
@@ -107,11 +109,18 @@ async def run() -> None:
             plugin.identity.instance_id,
             ", ".join(plugin.identity.roles) or "none",
         )
-        # The storage the deployment grants it (decisions/028), or the stand-in
-        # where none is mounted.
-        syncer = Syncer(plugin, raw=RawStore(storage_root()))
-        configured, wake = asyncio.Event(), asyncio.Event()
         links = Links(plugin)
+        # The storage the deployment grants it (decisions/028), or the stand-in
+        # where none is mounted; and the links, which say whose activities to
+        # report (contract v14).
+        syncer = Syncer(
+            plugin,
+            raw=RawStore(storage_root()),
+            linked=lambda external_account_id: (
+                links.scope.link_of(external_account_id) is not None
+            ),
+        )
+        configured, wake = asyncio.Event(), asyncio.Event()
         following = await follow_links(plugin, links)
         log.info("holding %d links to the deployment's accounts", len(links.scope.links))
         page = serve(plugin, syncer, links, wake, port)

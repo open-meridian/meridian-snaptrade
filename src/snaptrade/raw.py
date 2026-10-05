@@ -37,6 +37,19 @@ not kept. Before anything is written, a field whose name is a credential's
 (a secret, a token, a password, an authorization or a signature) is replaced,
 and so is any credential value found anywhere in a body.
 
+**A reported activity's record is its own, and kept as long as the history
+it reported** (contract v14, the plan's question 5): each activity reported
+to the street (activities.py) references `activity_key(account, id)` --
+`activities/<external account>/<SnapTrade's activity ID>` -- a record holding
+SnapTrade's entry for that activity as the read that first reported it
+received it, with that read's time and why it was read (the backfill to the
+account's `history_from`, or a sync). Written once: an activity reported
+again names the record already kept, as the street answers it already
+recorded. Kept `ACTIVITY_RETENTION_DAYS` from when it was received, not the
+read retention, so a reported activity's record can be read back as long as
+the street holds the activity it explains; `find` resolves it as it does a
+row's.
+
 Each record is one gzipped JSON file, `<root>/<account>/<read>.json.gz`, the
 account directory a hash of the external account ID (so no ID names a path)
 and the read its time, which is the record's key. A record is written whole
@@ -84,6 +97,14 @@ def storage_root(granted: Path | None = None) -> Path:
 
 DEFAULT_RETENTION_DAYS = 30
 LEAST_RETENTION_DAYS = 1
+#: How long a reported activity's record is kept from when it was received:
+#: seven years, past the two SnapTrade holds of an account's history at
+#: Fidelity, so each activity the street holds can have its record read back.
+ACTIVITY_RETENTION_DAYS = 2555
+#: Where an account's activity records are kept, beside its reads.
+ACTIVITY_DIRECTORY = "activities"
+#: The first part of an activity record's key.
+ACTIVITY_KEYS = "activities"
 
 REDACTED = "[redacted]"
 
@@ -99,6 +120,8 @@ ACTIVITIES = ("reading activities", "GET /accounts/{accountId}/activities")
 EACH = (CONNECTIONS, ACCOUNTS, POSITIONS, BALANCES, ACTIVITIES)
 #: A row's call, as its record key names it, and the call kept for it.
 CALLS = {"positions": POSITIONS, "balances": BALANCES, "activities": ACTIVITIES}
+#: What an activity's record says of the one entry it keeps.
+ITS_ACTIVITY = "this activity's entry, of the page SnapTrade answered"
 # What a list call kept for one account says it is.
 ITS_CONNECTION = "this account's connection, of the list SnapTrade answered"
 ITS_ENTRY = "this account's entry, of the list SnapTrade answered"
@@ -341,6 +364,39 @@ def parse_record_key(key: str) -> tuple[str, str, str] | None:
     return account, read, call
 
 
+def activity_key(account: Any, activity_id: str) -> str:
+    """A reported activity's raw record key (contract v14): the external
+    account and SnapTrade's activity ID. Opaque past this plugin."""
+    return f"{ACTIVITY_KEYS}/{account.external_account_id}/{activity_id}"
+
+
+def parse_activity_key(key: str) -> tuple[str, str] | None:
+    """The external account and activity an activity record key names, or None."""
+    first, _, rest = key.partition("/")
+    account, _, activity_id = rest.rpartition("/")
+    if first != ACTIVITY_KEYS or not account or not activity_id:
+        return None
+    return account, activity_id
+
+
+def activity_taken(
+    account: Any, activity: Json, read_at: datetime, why: str, synthetic: bool
+) -> Taken:
+    """One activity's record: SnapTrade's entry for it, as the read that
+    reports it received it, and why that read was made."""
+    return Taken(
+        account.external_account_id,
+        {
+            "external_account_id": account.external_account_id,
+            "snaptrade_account_id": account.snaptrade_account_id,
+            "activity_id": str(activity.get("id", "")),
+            "read_at": read_at.isoformat(),
+            "source": "synthetic" if synthetic else "snaptrade",
+            "calls": [_call(ACTIVITIES, activity, f"{ITS_ACTIVITY}; {why}")],
+        },
+    )
+
+
 def _moment_of(key: str) -> datetime | None:
     matched = _READ.match(key)
     if matched is None:
@@ -366,6 +422,7 @@ class RawStore:
     ) -> None:
         self.root = root
         self.retention = retention
+        self.activity_retention = timedelta(days=ACTIVITY_RETENTION_DAYS)
         # Why the last read's records could not be kept, when they could not:
         # safe to show (the error's type alone).
         self.failure = ""
@@ -401,6 +458,73 @@ class RawStore:
             log.warning("a raw response was not kept: %s", type(failed).__name__)
             return ""
 
+    def _activity_file(self, external_account_id: str, activity_id: str) -> Path:
+        digest = hashlib.sha256(activity_id.encode()).hexdigest()[:32]
+        return self._directory(external_account_id) / ACTIVITY_DIRECTORY / f"{digest}{_SUFFIX}"
+
+    def keep_activity(self, one: Taken, secrets: Iterable[str] = ()) -> bool:
+        """Write one activity's record where none is kept for it, its
+        credentials redacted first: whether one is kept now. The first kept
+        stands, as the street keeps the first report of an activity."""
+        record = one.record
+        file = self._activity_file(one.external_account_id, str(record["activity_id"]))
+        if file.exists():
+            return True
+        try:
+            file.parent.mkdir(parents=True, exist_ok=True)
+            self._replace(file, redact(record, tuple(secrets)))
+            # The file's time is when the activity was received, which its
+            # retention runs from.
+            received = datetime.fromisoformat(str(record["read_at"])).timestamp()
+            os.utime(file, (received, received))
+        except OSError as failed:
+            log.warning("an activity's raw response was not kept: %s", type(failed).__name__)
+            return False
+        return True
+
+    def activity_record(self, external_account_id: str, activity_id: str) -> Record | None:
+        """A reported activity's record, or None where none is kept."""
+        try:
+            with gzip.open(self._activity_file(external_account_id, activity_id)) as file:
+                document = parse_exact(file.read())
+        except (OSError, ValueError, EOFError):
+            return None
+        if (
+            not isinstance(document, dict)
+            or document.get("external_account_id") != external_account_id
+            or document.get("activity_id") != activity_id
+        ):
+            return None
+        try:
+            read_at = datetime.fromisoformat(str(document.get("read_at")))
+        except ValueError:
+            return None
+        calls = document.get("calls")
+        return Record(
+            key=f"{ACTIVITY_KEYS}/{external_account_id}/{activity_id}",
+            read_at=read_at,
+            external_account_id=external_account_id,
+            synthetic=document.get("source") == "synthetic",
+            calls=tuple(c for c in calls if isinstance(c, dict))
+            if isinstance(calls, list)
+            else (),
+            document=document,
+        )
+
+    def _replace(self, target: Path, record: Json) -> None:
+        """Write `record` to `target` whole, through a temporary file."""
+        made, written = tempfile.mkstemp(dir=target.parent, suffix=".tmp")
+        try:
+            with (
+                os.fdopen(made, "wb") as file,
+                gzip.GzipFile(fileobj=file, mode="wb", mtime=0) as zipped,
+            ):
+                zipped.write(dumps(record).encode())
+            os.replace(written, target)
+        except BaseException:
+            Path(written).unlink(missing_ok=True)
+            raise
+
     def _write(self, one: Taken, record: Json) -> str:
         directory = self._directory(one.external_account_id)
         directory.mkdir(parents=True, exist_ok=True)
@@ -409,17 +533,7 @@ class RawStore:
         while (directory / f"{key}{_SUFFIX}").exists():
             again += 1
             key = f"{base}-{again}"
-        made, written = tempfile.mkstemp(dir=directory, suffix=".tmp")
-        try:
-            with (
-                os.fdopen(made, "wb") as file,
-                gzip.GzipFile(fileobj=file, mode="wb", mtime=0) as zipped,
-            ):
-                zipped.write(dumps(record).encode())
-            os.replace(written, directory / f"{key}{_SUFFIX}")
-        except BaseException:
-            Path(written).unlink(missing_ok=True)
-            raise
+        self._replace(directory / f"{key}{_SUFFIX}", record)
         return key
 
     def prune(self, now: datetime) -> int:
@@ -435,8 +549,11 @@ class RawStore:
             log.warning("the raw responses were not pruned: %s", type(failed).__name__)
             return 0
         for directory in directories:
+            removed += self._prune_activities(directory / ACTIVITY_DIRECTORY, now)
             try:
                 for file in directory.iterdir():
+                    if file.is_dir():
+                        continue
                     if file.name.endswith(".tmp"):
                         file.unlink(missing_ok=True)
                         continue
@@ -448,6 +565,32 @@ class RawStore:
                     directory.rmdir()
             except OSError as failed:
                 log.warning("the raw responses were not pruned: %s", type(failed).__name__)
+        return removed
+
+    def _prune_activities(self, directory: Path, now: datetime) -> int:
+        """Remove each activity record received before `now` less the
+        activity retention, by its file's time, which is set to when it was
+        received; and what a write that stopped left."""
+        oldest = (now - self.activity_retention).timestamp()
+        removed = 0
+        try:
+            files = list(directory.iterdir())
+        except OSError:
+            return 0
+        for file in files:
+            try:
+                if file.name.endswith(".tmp"):
+                    file.unlink(missing_ok=True)
+                elif file.stat().st_mtime < oldest:
+                    file.unlink(missing_ok=True)
+                    removed += 1
+            except OSError as failed:
+                log.warning("an activity record was not pruned: %s", type(failed).__name__)
+        try:
+            if not any(directory.iterdir()):
+                directory.rmdir()
+        except OSError:
+            pass
         return removed
 
     def reads(self, external_account_id: str) -> list[Read]:
@@ -492,6 +635,10 @@ class RawStore:
         """The record and the call a row's reference names (contract v11), or
         None where it names none this store holds: a key that is not one, or
         a record pruned under its retention."""
+        activity = parse_activity_key(key)
+        if activity is not None:
+            reported = self.activity_record(*activity)
+            return (reported, reported.calls[0]) if reported and reported.calls else None
         named = parse_record_key(key)
         if named is None:
             return None

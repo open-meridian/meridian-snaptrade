@@ -5,7 +5,8 @@ replaced: every call goes through the SDK's real conversion (a Decimal to the
 wire's integer and scale, a float refused, a caller's header to the assertion
 it carries) and the checks the SDK makes before sending (a statement's
 figures), and is kept as the protobuf message the sidecar would have
-received. It holds the plugin's links as the deployment would, one external
+received. It keeps each activity once, as the street does, answering a redelivery
+already recorded. It holds the plugin's links as the deployment would, one external
 account per account of the deployment's, refusing a second as the conductor
 does (contract v7), and delivers them as the SDK's `account_scope()` does:
 the first at once, and another on every change. A report is kept as the
@@ -43,6 +44,7 @@ _OPERATIONS = SimpleNamespace(
     ReportExternalAccounts="ReportExternalAccounts",
     ReadAccountsForLinking="ReadAccountsForLinking",
     LinkExternalAccount="LinkExternalAccount",
+    RecordActivity="RecordActivity",
 )
 
 # The deployment's accounts, as ReadAccountsForLinking answers by default.
@@ -91,6 +93,9 @@ class Sidecar(Operations):
         self._refuse = refuse or (lambda name, params: None)
         self._already = already_recorded
         self._statements = 0
+        # The street's activity, once per source, external account and the
+        # custodian's identifier, as it keeps them (contract v14).
+        self.activities: dict[tuple[str, str, str], str] = {}
         self.not_carried: dict[tuple[str, str], int] = {}
 
     def _operations(self) -> Any:
@@ -113,6 +118,18 @@ class Sidecar(Operations):
         if name == "RecordHolding":
             return ops.RecordHoldingResult(
                 holding_id=f"H-{len(self.calls)}", resolved=bool(params.instrument_id)
+            )
+        if name == "RecordActivity":
+            key = (
+                params.source,
+                params.external_account_id,
+                params.activity.external_activity_id,
+            )
+            already = key in self.activities
+            if not already:
+                self.activities[key] = f"ACT-{len(self.activities) + 1}"
+            return ops.RecordActivityResult(
+                activity_id=self.activities[key], already_recorded=already
             )
         if name == "ReadAccountsForLinking":
             return ops.ReadAccountsForLinkingResult(accounts=DEPLOYMENT_ACCOUNTS)

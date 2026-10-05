@@ -14,20 +14,25 @@ connection reaches with their kinds, SnapTrade's type as reported where it
 says none (W2.8). A resolve states what SnapTrade says of the security -- its
 asset class, its type where it is a money market fund, its currency where
 stated, its description -- and is narrowed only by a currency SnapTrade
-stated.
+stated. And each of SnapTrade's activities on a linked account, as the
+custodian states it (contract v14, W2.10, activities.py), its instrument
+resolved as a holding's is, or by a person's plan-code link with that
+person's name, or the code as reported; and the sync status carries the
+first date SnapTrade's history of the account reaches (`history_from`).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
 import meridian
-from meridian.edge import as_reported, derived, reported
+from meridian.edge import as_reported, derived, reported, supplied
 
+from .activities import SYMBOL_SCHEME, Converted, PlanCodeLink, link_for
 from .normalise import (
     ACCOUNT_TYPE_SCHEME,
     SECURITY_TYPE_SCHEME,
@@ -65,7 +70,7 @@ _KIND: dict[str, meridian.AccountKind] = {
 }
 
 
-def refused_unlinked(refused: meridian.MeridianError) -> bool:
+def refused_unlinked(refused: Exception) -> bool:
     """Whether a statement, or a row, was refused because its external account
     is not linked (W4.8): by the refusal's code, which the SDK raises as
     `NotLinked`, never by its words."""
@@ -87,6 +92,25 @@ class Outcome:
     stopped: str = ""
     # Stopped because the account is not linked to one of the deployment's.
     unlinked: bool = False
+
+
+@dataclass
+class ActivityOutcome:
+    """What reporting one account's activities came to, in one read."""
+
+    # Sent to the street, and of them those it recorded for the first time.
+    sent: int = 0
+    recorded: int = 0
+    # Not sent, each with why: SnapTrade gave too little, or inexactly.
+    skipped: list[str] = field(default_factory=list)
+    # Why it stopped before every activity was sent, when it did.
+    stopped: str = ""
+    unlinked: bool = False
+    # Whether this was the account's backfill; whether it reached the end, or
+    # stopped at the most it reads at once.
+    backfill: bool = False
+    complete: bool = False
+    capped: bool = False
 
 
 def _identifiers(holding: Holding) -> list[meridian.Identifier]:
@@ -125,7 +149,11 @@ class Recorder:
         )
 
     async def report_sync(
-        self, account: ExternalAccount, fresh: Freshness, observed_at_ns: int
+        self,
+        account: ExternalAccount,
+        fresh: Freshness,
+        observed_at_ns: int,
+        history_from: str = "",
     ) -> None:
         """W2.1: how fresh the account's data is, and why when it is not: when
         SnapTrade last synced it, apart from when what it served is as of, and
@@ -133,6 +161,9 @@ class Recorder:
         detail, since the event carries no provenance."""
         holdings_as_of_ns = ns(fresh.holdings_as_of) if fresh.holdings_as_of else 0
         await self._plugin.report_sync_status(
+            # The first date SnapTrade's history of the account reaches, as
+            # its sync status says (contract v14): "" where it says none.
+            history_from=history_from,
             source=SOURCE,
             last_synced_at_ns=ns(fresh.last_synced) if fresh.last_synced else 0,
             connection_healthy=fresh.healthy,
@@ -262,6 +293,109 @@ class Recorder:
                 for lot in holding.lots
             ],
         }
+
+    async def _activity_instrument(
+        self,
+        converted: Converted,
+        account: ExternalAccount,
+        holdings: Sequence[Holding],
+        links: Sequence[PlanCodeLink],
+        as_of_ns: int,
+        resolved: dict[str, str],
+    ) -> dict[str, Any]:
+        """W2.10's instrument: a person's plan-code link, resolved as the
+        linked symbol's holding is, with that person's name; a security the
+        account holds, by that holding's identifiers; else the code as
+        SnapTrade names it. `resolved` holds this read's answers by symbol."""
+        code = converted.code
+        if not code:
+            return {}
+        link = link_for(links, account.external_account_id, code)
+        symbol = link.symbol if link is not None else code
+        holding = next(
+            (
+                held
+                for held in holdings
+                if any(i.scheme == "symbol" and i.value == symbol for i in held.identifiers)
+            ),
+            None,
+        )
+        if link is None and holding is None:
+            return {
+                "instrument_as_reported": as_reported(SYMBOL_SCHEME, code, converted.code_text)
+            }
+        if symbol not in resolved:
+            identifiers = (
+                _identifiers(holding)
+                if holding is not None
+                else [meridian.Identifier(scheme="symbol", value=symbol, source=SOURCE)]
+            )
+            answer = await self._plugin.resolve_identifier(
+                identifiers=identifiers,
+                as_of_ns=as_of_ns,
+                exchange_mic=holding.exchange_mic if holding is not None else "",
+            )
+            resolved[symbol] = answer.instrument_id
+        if not resolved[symbol]:
+            # More than one record matched: as a holding's, not guessed.
+            return {
+                "instrument_as_reported": as_reported(SYMBOL_SCHEME, code, converted.code_text)
+            }
+        found: dict[str, Any] = {"instrument_id": resolved[symbol]}
+        if link is not None:
+            found["provenance"] = [supplied("instrument_id", link.person)]
+        return found
+
+    async def record_activities(
+        self,
+        account: ExternalAccount,
+        activities: Sequence[tuple[Converted, str]],
+        holdings: Sequence[Holding],
+        links: Sequence[PlanCodeLink],
+        outcome: ActivityOutcome,
+    ) -> None:
+        """W2.10: each activity, with the raw record key it was kept under,
+        sent to the street, one per call. A redelivery is answered already
+        recorded. The account not linked stops them all; any other refusal is
+        the one activity's, said, and the rest go on."""
+        resolved: dict[str, str] = {}
+        for converted, key in activities:
+            as_of_ns = day_ns(date.fromisoformat(converted.trade_date))
+            try:
+                instrument = await self._activity_instrument(
+                    converted, account, holdings, links, as_of_ns, resolved
+                )
+                answer = await self._plugin.record_activity(
+                    external_account_id=account.external_account_id,
+                    source=SOURCE,
+                    activity=meridian.CustodialActivity(
+                        external_activity_id=converted.external_activity_id,
+                        kind=converted.kind,
+                        kind_as_reported=converted.kind_as_reported,
+                        trade_date=converted.trade_date,
+                        settlement_date=converted.settlement_date,
+                        units=converted.units,
+                        price=converted.price,
+                        amount=converted.amount,
+                        description=converted.description,
+                        raw_record=self._plugin.raw_record(key),
+                        **instrument,
+                    ),
+                )
+            except (meridian.MeridianError, ValueError) as refused:
+                if refused_unlinked(refused) or isinstance(refused, meridian.NoSidecar):
+                    outcome.stopped = str(refused)
+                    outcome.unlinked = refused_unlinked(refused)
+                    log.info(
+                        "activities of %s stopped: %s", account.external_account_id, refused
+                    )
+                    return
+                said = f"activity {converted.external_activity_id} was refused: {refused}"
+                outcome.skipped.append(said)
+                log.warning("%s: %s", account.external_account_id, said)
+                continue
+            outcome.sent += 1
+            outcome.recorded += 0 if answer.already_recorded else 1
 
     async def record(
         self, account: ExternalAccount, statement: Statement, observed_at_ns: int

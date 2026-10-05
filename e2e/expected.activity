@@ -1,0 +1,20 @@
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f001|1|local(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|2025-06-02|2.5
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f101|12||2025-06-02|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f102|0||2025-06-20|-1
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f103|10||2025-07-01|40
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f104|4|local(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|2025-08-14|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f105|7|local(figi:BBG000B9XRY4, symbol:AAPL@snaptrade)|2025-08-14|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f106|4|local(symbol:SYNXX@snaptrade)|2025-09-30|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f107|3|local(symbol:SYNXX@snaptrade)|2025-09-30|3.27
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f108|5||2025-10-01|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f109|6||2025-11-03|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f110|8||2025-11-20|40
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f111|9||2025-12-01|1
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f112|11||2026-01-15|-81
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f113|13||2026-02-02|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f114|14||2026-03-02|
+activity|E2E Alpaca|snaptrade|00000000-0000-4000-8000-00000000f115|2|local(symbol:ZZTOP@snaptrade)|2026-08-14|-40
+sync|E2E Alpaca|snaptrade|ALPACA:SYN-ALP-1001|1|2025-06-02
+sync||snaptrade|ALPACA:SYN-ALP-1001|1|2025-06-02
+sync||snaptrade|INTERACTIVE-BROKERS-FLEX:SYN-IB-2002|5|2025-01-06
+sync||snaptrade|snaptrade:00000000-0000-4000-8000-00000000b003|3|2026-03-03
