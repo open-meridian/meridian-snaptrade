@@ -106,6 +106,18 @@ class Linked:
     said: str
 
 
+@dataclass(frozen=True)
+class PlanCodeRead:
+    """One plan-code link, as the plugin's settings hold it, and who made it
+    when."""
+
+    external_account_id: str
+    code: str
+    instrument_id: str
+    changed_by: str
+    changed_at: str
+
+
 # ── Under Manage: connections and links, no account's data ─────────────────
 
 
@@ -151,9 +163,15 @@ class LinkRead:
 
 @dataclass(frozen=True)
 class LinksRead:
-    """The external accounts the last read reached, each linked or not."""
+    """The external accounts the last read reached, each linked or not; the
+    plan-code links people made; and how long each reported activity's record
+    is kept: as set, as kept, and how far back the reported history reaches."""
 
     accounts: list[LinkRead] = field(default_factory=list)
+    plan_codes: list[PlanCodeRead] = field(default_factory=list)
+    activity_retention_days: int = 0
+    kept_for_days: int = 0
+    history_reach_days: int = 0
 
 
 # ── Under Open and View: statements ─────────────────────────────────────────

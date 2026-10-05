@@ -303,48 +303,46 @@ class Recorder:
         as_of_ns: int,
         resolved: dict[str, str],
     ) -> dict[str, Any]:
-        """W2.10's instrument: a person's plan-code link, resolved as the
-        linked symbol's holding is, with that person's name; a security the
-        account holds, by that holding's identifiers; else the code as
-        SnapTrade names it. `resolved` holds this read's answers by symbol."""
+        """W2.10's instrument: a person's plan-code link, the instrument record
+        they linked the code to, naming who and when; a security the account
+        holds, by that holding's identifiers; else the code as SnapTrade
+        names it. `resolved` holds this read's answers by symbol."""
         code = converted.code
         if not code:
             return {}
         link = link_for(links, account.external_account_id, code)
-        symbol = link.symbol if link is not None else code
+        if link is not None:
+            # The record the person chose in the plugin's settings, by its ID:
+            # nothing is resolved by symbol, and nothing is minted.
+            return {
+                "instrument_id": link.instrument_id,
+                "provenance": [supplied("instrument_id", link.person)],
+            }
         holding = next(
             (
                 held
                 for held in holdings
-                if any(i.scheme == "symbol" and i.value == symbol for i in held.identifiers)
+                if any(i.scheme == "symbol" and i.value == code for i in held.identifiers)
             ),
             None,
         )
-        if link is None and holding is None:
+        if holding is None:
             return {
                 "instrument_as_reported": as_reported(SYMBOL_SCHEME, code, converted.code_text)
             }
-        if symbol not in resolved:
-            identifiers = (
-                _identifiers(holding)
-                if holding is not None
-                else [meridian.Identifier(scheme="symbol", value=symbol, source=SOURCE)]
-            )
+        if code not in resolved:
             answer = await self._plugin.resolve_identifier(
-                identifiers=identifiers,
+                identifiers=_identifiers(holding),
                 as_of_ns=as_of_ns,
-                exchange_mic=holding.exchange_mic if holding is not None else "",
+                exchange_mic=holding.exchange_mic,
             )
-            resolved[symbol] = answer.instrument_id
-        if not resolved[symbol]:
+            resolved[code] = answer.instrument_id
+        if not resolved[code]:
             # More than one record matched: as a holding's, not guessed.
             return {
                 "instrument_as_reported": as_reported(SYMBOL_SCHEME, code, converted.code_text)
             }
-        found: dict[str, Any] = {"instrument_id": resolved[symbol]}
-        if link is not None:
-            found["provenance"] = [supplied("instrument_id", link.person)]
-        return found
+        return {"instrument_id": resolved[code]}
 
     async def record_activities(
         self,

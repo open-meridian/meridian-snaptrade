@@ -132,16 +132,21 @@ SnapTrade lists them.
   and the rest go on, and the account not linked stops them.
 - **Its raw record is its own**, `activities/<external account>/<activity
   ID>`: SnapTrade's entry for it as the read that first reported it received
-  it, kept seven years (`ACTIVITY_RETENTION_DAYS`, the storage the
-  declaration asks for), past the read retention, so each activity the street
+  it, kept for `activity_retention_days` from when it was received (seven
+  years by default; an admin may keep it longer, up to the 36,500 days the
+  storage declaration asks for), and never for less than the history
+  SnapTrade reported, past the read retention, so each activity the street
   holds can have its record read back on the Raw responses tab
   (`/raw?ref=<key>`).
-- **The plan-code link is not settable yet.** The plan rules it a setting of
-  this instance, per account, set by an admin on its Accounts page (question
-  4); a plugin has no way to save its own setting from its page, so the
-  conversion applies a link (tested on the custody suite's case) and nothing
-  makes one until the contract gives a page that way. Until then a plan's
-  code travels as reported.
+- **The plan-code link** (question 4; the product owner's option A,
+  2026-10-05): the table setting `plan_code_links`, entered by an admin of
+  the plugin in the dashboard's Settings form as an editable typed table,
+  each row an external account this plugin reported, the plan's own code as
+  SnapTrade names it, and a deployment instrument record chosen by search.
+  The plugin only reads it: an activity under a linked code is that record,
+  its provenance who added or last changed the row and when, as the
+  conductor stamped them. No plugin storage holds it, and no page of the
+  plugin sets it.
 
 ### How SnapTrade's shapes become the platform's
 
@@ -227,7 +232,9 @@ without any of them.
 | `snaptrade_user_secret` | User secret | text | yes | with a commercial key | that user's secret |
 | `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
 | `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
-| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept seven years, whatever this says |
+| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept for `activity_retention_days`, whatever this says |
+| `activity_retention_days` | Keep activity records for | number, days | no | no | how long the record of each activity SnapTrade reported is kept, from when it was received; default 2555 (seven years), at most 36500. Never shorter than the history SnapTrade reported: the Activity records view refuses a shorter value, and one set shorter in this form is kept to that, which the view says. Also set on the Account links tab |
+| `plan_code_links` | Plan-code links | table: account, plan code, instrument | no | no | each plan's own fund code on an account, linked to the instrument record it is; at most 200 rows. Each row arrives with who changed it and when |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
@@ -421,7 +428,11 @@ admin (`PageClient(..., deployment_admin=True)`).
   beside it there (below).
 - **Account links** (`/admin/accounts`): each account the connections reach,
   who it is (its name, brokerage, type, number and SnapTrade's ID) and its
-  link to one of the deployment's accounts, in one account map (below).
+  link to one of the deployment's accounts, in one account map (below); and
+  one line saying how many plan-code links the plugin's settings hold and
+  how long each activity's record is kept, as set and as kept (never
+  shorter than the history SnapTrade reported). Both are set in the
+  dashboard's Settings form, never here.
 
 `/admin` sends a Manage session to Connections. Each page's head shows how the
 plugin is reading as a status dot (kit 0.6.0's `om-status`), its note on
@@ -679,9 +690,12 @@ for the activity, as the read that first reported it received it, with that
 read's time and why it was made (the backfill to the account's
 `history_from`, or a read), under `<root>/a-<hash>/activities/<hash of the
 activity ID>.json.gz`, written once. It is kept seven years from when it was
-received, not `raw_retention_days`, so each activity the street holds can
-have its record read back (the plan's question 5: as long as the history it
-reported); a few hundred bytes an activity.
+received for `activity_retention_days` (seven years by default, up to 36,500
+days), not `raw_retention_days`, and never for less than the history
+SnapTrade reported: the most days any kept record's activity was traded
+before its record was received, which a shorter setting is kept to (the
+plan's question 5, and the product owner, 2026-10-05: an admin may keep them
+longer). A few hundred bytes an activity.
 
 **A raw-record reference on every row.** Contract v11 puts on every holding
 and statement the raw record it was converted from (`RawRecordRef`: this
@@ -770,7 +784,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `700d98b`, contract v14).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `1d16c52`, contract v14).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -820,7 +834,12 @@ this plugin's own page, it:
     every activity answered already recorded, and finds the street's
     activity still `e2e/expected.activity`: nothing recorded twice; and
     finds SYNXX's reinvestment's own raw record in the granted storage by
-    the key the activity carries.
+    the key the activity carries;
+12. sets the table setting `plan_code_links` in the plugin's Settings form,
+    linking IBKR's plan code `OQKR` to SYNXX's record (contract v14), and
+    finds the Settings tab naming who changed it; then links IBKR to a new
+    account, **E2E IBKR**, whose first read's backfill reports the
+    reinvestment under `OQKR` as SYNXX's record, resolved through the link.
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The

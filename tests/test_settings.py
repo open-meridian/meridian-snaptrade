@@ -40,7 +40,7 @@ def delivered(held: dict[str, str]) -> meridian.Settings:
     """The settings as the SDK hands them over: typed, the declared defaults
     filled in, and the required ones held nothing for named."""
     defaults = {s.name: s.default for s in DECLARED if s.default is not None}
-    values: dict[str, str | int | bool] = {
+    values: dict[str, str | int | bool | list[dict[str, str]]] = {
         **defaults,
         **{name: BY_NAME[name]._parsed(text) for name, text in held.items()},
     }

@@ -129,9 +129,16 @@ a deployment admin approves them.
   backfill by, and a restart's is answered already recorded. Activity is
   evidence, never netted or merged, and nothing is derived from it. Each
   activity's raw record is its own (`raw.activity_key`), written once, kept
-  `ACTIVITY_RETENTION_DAYS` past the read retention. The plan-code link has
-  no store yet (a plugin cannot save its own setting from its page): never
-  keep a person's link in the plugin's storage.
+  for the `activity_retention_days` setting (seven years by default, at most
+  the 36,500 days the storage declaration asks for) and never for less than
+  the history SnapTrade reported (`RawStore.kept_for`, `history_reach_days`),
+  which the Account links tab says. The plan-code link is the table setting
+  `plan_code_links` (`plan_codes.py`; contract v14): per row an external
+  account, the plan's code and a deployment instrument record's ID, entered
+  in the dashboard's Settings form; an activity under a linked code is that
+  record, its provenance who changed the row and when. The plugin only reads
+  its settings and sets none (the product owner's option A, 2026-10-05):
+  never keep a person's link in the plugin's storage.
 - `make ci-local` before calling anything done. The README says what each
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles

@@ -23,20 +23,32 @@ plans/the-custodians-activity-explains-a-break, build 5).
 - **The instrument:** a held security resolved by its holding's
   identifiers; a plan's own fund code linked by a person resolved as the
   linked symbol, with that person as its provenance; any other code as
-  reported. Nothing yet stores a person's link (a plugin cannot save its own
-  setting from its page), so a plan's code travels as reported until the
-  contract gives a page that way.
+  reported.
+- **The plan-code link** (the product owner's option A, 2026-10-05): the
+  table setting `plan_code_links` -- per row an external account, a plan's
+  own code and a deployment instrument record -- entered by an admin of the
+  plugin in the dashboard's Settings form as an editable typed table. An
+  activity under a linked code is that record, naming who changed the row
+  and when. The plugin only reads its settings; no page sets one.
+- **`activity_retention_days`** (the product owner, 2026-10-05): how long
+  each reported activity's raw record is kept, seven years by default, an
+  admin of the plugin may set it longer (up to 36,500 days, which the
+  storage declaration now asks for) on the dashboard's Settings form; never
+  shorter than the history SnapTrade reported, which a shorter value is kept
+  to, as the Account links tab says.
 - **The sync status carries `history_from`**, the first date SnapTrade's
   history of the account reaches.
 - **Raw-record retention covers what was reported:** each reported
   activity's raw record is its own, `activities/<external account>/<activity
-  ID>`, kept seven years from receipt (the declared storage), and the Raw
-  responses tab opens it by that reference. Each read's records keep
-  `raw_retention_days`.
+  ID>`, kept for `activity_retention_days` from receipt (seven years by
+  default), and the Raw responses tab opens it by that reference. Each read's
+  records keep `raw_retention_days`.
 - An activity's `fee` and `fx_rate` are declared as received and not carried,
   and counted as reads see them.
 - Synthetic Alpaca has a history: one activity of each kind and an option's
-  expiry, on fixed dates from 2025-06-02.
-- `make e2e` on core 700d98b's runtime and harness: the street's activity is
-  `e2e/expected.activity`, and a new container's backfill records nothing
-  twice.
+  expiry, on fixed dates from 2025-06-02; synthetic IBKR a reinvestment
+  under a plan's own code (OQKR).
+- `make e2e` on core 1d16c52's runtime and harness: the street's activity
+  is `e2e/expected.activity`, a new container's backfill records nothing
+  twice, and after OQKR is linked to SYNXX's record in the Settings form,
+  IBKR's first read reports its reinvestment under OQKR as that record.

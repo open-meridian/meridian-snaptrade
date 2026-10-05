@@ -83,6 +83,7 @@ from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
 from . import history, records
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
+from .plan_codes import PlanCodeLink
 from .raw import (
     CALLS,
     Record,
@@ -799,7 +800,9 @@ async def _accounts(
     request: meridian.Request, notice: Notice | None = None
 ) -> meridian.Response:
     """The Account links tab: each account the connections reach, linked to one
-    of the deployment's here, in the one account map."""
+    of the deployment's here, in the one account map; and, one line each, how
+    many plan-code links the plugin's settings hold and how long each reported
+    activity's record is kept, both set in the dashboard's Settings form."""
     status = _now().syncer.status
     links = _links_of(status)
     # One external account per account of the deployment's (v7): one this
@@ -846,8 +849,30 @@ async def _accounts(
             offered_any=any(a.open for a in offered.accounts),
             most_name=_MOST_NAME,
             token_name=CSRF_FIELD,
+            settings_said=_settings_said(),
         )
     )
+
+
+def _plan_code_reads(links: Sequence[PlanCodeLink]) -> list[records.PlanCodeRead]:
+    return [
+        records.PlanCodeRead(
+            link.external_account_id,
+            link.code,
+            link.instrument_id,
+            link.changed_by,
+            link.changed_at,
+        )
+        for link in links
+    ]
+
+
+def _settings_said() -> dict[str, Any]:
+    """What the plugin's settings hold that this tab speaks of, read only:
+    the plan-code links, and how long each activity's record is kept -- as
+    set, and as kept, never shorter than the history SnapTrade reported."""
+    held = _now()
+    return {"plan_codes": len(held.syncer.config.plan_codes), **_retention_read()}
 
 
 def _links_read(status: Status) -> records.LinksRead:
@@ -869,8 +894,21 @@ def _links_read(status: Status) -> records.LinksRead:
             )
             for connection in status.connections
             for view in connection.accounts
-        ]
+        ],
+        plan_codes=_plan_code_reads(_now().syncer.config.plan_codes),
+        **_retention_read(),
     )
+
+
+def _retention_read() -> dict[str, int]:
+    held = _now()
+    raw = held.syncer.raw
+    days = held.syncer.config.activity_retention.days
+    return {
+        "activity_retention_days": days,
+        "kept_for_days": raw.kept_for().days if raw is not None else days,
+        "history_reach_days": raw.history_reach_days() if raw is not None else 0,
+    }
 
 
 @pages.page(
@@ -882,7 +920,10 @@ def _links_read(status: Status) -> records.LinksRead:
     description=(
         "The external accounts SnapTrade's connections reach, by identity alone -- name, "
         "institution, the brokerage's number where SnapTrade gives it, whether its ID is "
-        "stable -- each linked to one of the deployment's accounts or not. No account's data."
+        "stable -- each linked to one of the deployment's accounts or not; the plan-code "
+        "links people made, each a plan's own fund code on one account linked to the "
+        "instrument it is; and how long each reported activity's record is kept. No "
+        "account's data."
     ),
 )
 async def accounts(request: meridian.Request) -> meridian.Response:

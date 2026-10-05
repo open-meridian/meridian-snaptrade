@@ -33,6 +33,8 @@ from datetime import timedelta
 
 import meridian
 
+from .plan_codes import ACCOUNT, CODE, INSTRUMENT, PlanCodeLink, links_of
+
 KEY_TYPE = "snaptrade_key_type"
 CLIENT_ID = "snaptrade_client_id"
 CONSUMER_KEY = "snaptrade_consumer_key"
@@ -41,6 +43,8 @@ USER_SECRET = "snaptrade_user_secret"
 POLL_SECONDS = "poll_seconds"
 STALE_AFTER_HOURS = "stale_after_hours"
 RAW_RETENTION_DAYS = "raw_retention_days"
+ACTIVITY_RETENTION_DAYS = "activity_retention_days"
+PLAN_CODE_LINKS = "plan_code_links"
 SYNTHETIC = "synthetic"
 # 0.1.0's on/off for a personal key, replaced by KEY_TYPE.
 PERSONAL_KEY = "snaptrade_personal_key"
@@ -54,6 +58,13 @@ DEFAULT_STALE_AFTER_HOURS = 24
 # How long SnapTrade's raw responses are kept (raw.py), and the least.
 DEFAULT_RAW_RETENTION_DAYS = 30
 LEAST_RAW_RETENTION_DAYS = 1
+# How long a reported activity's raw record is kept from when it was received
+# (raw.py; the product owner, 2026-10-05): seven years by default, past the
+# two SnapTrade holds of an account's history at Fidelity; an admin may keep
+# it longer, up to the most the storage declaration states, and never shorter
+# than the history SnapTrade reported, which raw.py keeps it to whatever is set.
+DEFAULT_ACTIVITY_RETENTION_DAYS = 2555
+MOST_ACTIVITY_RETENTION_DAYS = 36500
 
 _WITH_A_COMMERCIAL_KEY = meridian.AppliesWhen(KEY_TYPE, (COMMERCIAL,))
 
@@ -137,6 +148,40 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
+        ACTIVITY_RETENTION_DAYS,
+        int,
+        label="Keep activity records for",
+        default=DEFAULT_ACTIVITY_RETENTION_DAYS,
+        unit="days",
+        description=(
+            "How long the record of each activity SnapTrade reported is kept, from when it "
+            "was received. Never shorter than the history SnapTrade reported, which a shorter "
+            f"value is kept to (the Account links tab says so); at most "
+            f"{MOST_ACTIVITY_RETENTION_DAYS}."
+        ),
+    ),
+    meridian.Setting(
+        PLAN_CODE_LINKS,
+        list,
+        label="Plan-code links",
+        columns=(
+            meridian.Column(ACCOUNT, "external_account", label="Account", required=True),
+            meridian.Column(
+                CODE,
+                label="Plan code",
+                required=True,
+                description="As SnapTrade names it in the account's activity.",
+            ),
+            meridian.Column(INSTRUMENT, "instrument", label="Instrument", required=True),
+        ),
+        most_rows=200,
+        description=(
+            "A plan's own fund codes, each linked on one account to the instrument it is "
+            "(Fidelity's OQKR to VIGIX): its activity is then that instrument, naming who "
+            "linked it."
+        ),
+    ),
+    meridian.Setting(
         SYNTHETIC,
         bool,
         label="Synthetic mode",
@@ -160,7 +205,7 @@ DECLARED: tuple[meridian.Setting, ...] = (
     ),
 )
 
-Values = Mapping[str, str | int | bool]
+Values = Mapping[str, str | int | bool | list[dict[str, str]]]
 
 
 @dataclass(frozen=True)
@@ -193,6 +238,11 @@ class Config:
     stale_after: timedelta = timedelta(hours=DEFAULT_STALE_AFTER_HOURS)
     user_id: str = ""
     raw_retention: timedelta = timedelta(days=DEFAULT_RAW_RETENTION_DAYS)
+    # As set: raw.py keeps a record at least as long as the history reported.
+    activity_retention: timedelta = timedelta(days=DEFAULT_ACTIVITY_RETENTION_DAYS)
+    # The plan-code links people made, as the settings deliver them
+    # (plan_codes.py).
+    plan_codes: tuple[PlanCodeLink, ...] = ()
 
     @property
     def ready(self) -> bool:
@@ -272,6 +322,7 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
     poll = _number(values, POLL_SECONDS)
     stale = _number(values, STALE_AFTER_HOURS)
     kept = _number(values, RAW_RETENTION_DAYS)
+    activity_kept = _number(values, ACTIVITY_RETENTION_DAYS)
     return Config(
         synthetic=values.get(SYNTHETIC) is True,
         key_type=key_type,
@@ -287,6 +338,12 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
             if kept is None
             else max(kept, LEAST_RAW_RETENTION_DAYS)
         ),
+        activity_retention=timedelta(
+            days=DEFAULT_ACTIVITY_RETENTION_DAYS
+            if activity_kept is None or activity_kept < 1
+            else min(activity_kept, MOST_ACTIVITY_RETENTION_DAYS)
+        ),
+        plan_codes=links_of(values.get(PLAN_CODE_LINKS)),
     )
 
 

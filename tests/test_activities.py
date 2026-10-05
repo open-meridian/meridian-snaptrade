@@ -34,6 +34,7 @@ from snaptrade.normalise import ExternalAccount, Holding, Identifier, Side
 from snaptrade.page import RAW, RAW_DOWNLOAD, hold, pages
 from snaptrade.raw import (
     ACTIVITY_RETENTION_DAYS,
+    MOST_ACTIVITY_RETENTION_DAYS,
     RawStore,
     activity_key,
     parse_activity_key,
@@ -265,12 +266,13 @@ def test_a_plans_code_nobody_linked_travels_as_reported_and_resolves_nothing() -
     )
 
 
-def test_a_plans_code_a_person_linked_resolves_as_the_symbol_with_their_name() -> None:
-    sidecar = Sidecar(resolve=lambda params: found("INS-VIGIX"))
-    link = PlanCodeLink("FIDELITY:401K-1", "OQKR", "VIGIX", "Pat Admin")
+def test_a_plans_code_a_person_linked_is_their_instrument_naming_who_and_when() -> None:
+    sidecar = Sidecar()
+    link = PlanCodeLink(
+        "FIDELITY:401K-1", "OQKR", "INS-VIGIX", "local|pat", "2026-10-05T12:00:00.000000Z"
+    )
     record(sidecar, converted("REI", "OQKR", units=Decimal("0.412")), links=(link,))
-    (resolve,) = sidecar.sent("ResolveIdentifier")
-    assert [i.value for i in resolve.identifiers] == ["VIGIX"]
+    assert sidecar.sent("ResolveIdentifier") == [], "the record they chose, never a symbol"
     (sent,) = sidecar.sent("RecordActivity")
     assert sent.activity.instrument_id == "INS-VIGIX"
     assert not sent.activity.HasField("instrument_as_reported")
@@ -278,13 +280,13 @@ def test_a_plans_code_a_person_linked_resolves_as_the_symbol_with_their_name() -
     assert (said.field, said.kind, said.person) == (
         "instrument_id",
         ops.PROVENANCE_KIND_SUPPLIED,
-        "Pat Admin",
+        "local|pat, 2026-10-05T12:00:00.000000Z",
     )
 
 
 def test_a_link_on_another_account_does_not_apply() -> None:
     sidecar = Sidecar()
-    link = PlanCodeLink("FIDELITY:OTHER", "OQKR", "VIGIX", "Pat Admin")
+    link = PlanCodeLink("FIDELITY:OTHER", "OQKR", "INS-VIGIX", "local|pat")
     record(sidecar, converted("REI", "OQKR"), links=(link,))
     (sent,) = sidecar.sent("RecordActivity")
     assert (
@@ -528,9 +530,11 @@ def test_an_activity_record_is_kept_past_the_read_retention_and_written_once(
     assert store.find(key) is None
 
 
-def test_the_declaration_asks_storage_for_the_history_it_reports() -> None:
+def test_the_declaration_asks_storage_for_the_longest_the_setting_allows() -> None:
+    """The deployment never keeps a record for less than an admin chose: the
+    storage asked for is the most `activity_retention_days` may say."""
     assert DECLARATION.storage is not None
-    assert DECLARATION.storage.retention_days == ACTIVITY_RETENTION_DAYS
+    assert DECLARATION.storage.retention_days == MOST_ACTIVITY_RETENTION_DAYS == 36500
 
 
 def test_a_fee_or_exchange_rate_an_activity_states_is_counted_not_carried() -> None:

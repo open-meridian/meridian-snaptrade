@@ -163,8 +163,9 @@ class Syncer:
         # as the plugin's links last said (linking.py): its activities are
         # reported only then.
         self._linked = linked or (lambda external_account_id: True)
-        # The plan-code links people made (activities.py).
-        self._plan_codes = plan_codes or (lambda: ())
+        # The plan-code links people made, as the settings last delivered
+        # them (plan_codes.py), unless a test gives its own.
+        self._plan_codes = plan_codes or (lambda: self.config.plan_codes)
         # The external accounts whose backfill this process has reported.
         self._backfilled: set[str] = set()
         # SnapTrade's raw responses, kept per account; None keeps none.
@@ -172,7 +173,7 @@ class Syncer:
         self._recorder = Recorder(plugin)
         self._now = now
         self._make_venue = make_venue or (lambda config: venue_for(config, now))
-        self.config = Config()
+        self.config: Config = Config()
         self.venue: Venue | None = None
         self.status = Status()
 
@@ -197,6 +198,7 @@ class Syncer:
             # The first delivery comes as the plugin starts: what is past the
             # retention, as the settings now say it, goes before any read.
             self.raw.retention = config.raw_retention
+            self.raw.activity_retention = config.activity_retention
             self.raw.prune(self._now())
 
     async def run_once(self) -> Status:

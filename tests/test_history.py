@@ -141,7 +141,7 @@ def test_an_accounts_activities_over_a_range_as_snaptrade_reports_them(
     # How far back SnapTrade holds the account's history, as it reports it.
     assert data["history_from"] == "2025-01-06"
     assert data["start"] == days_ago(365) and data["end"] == str(TODAY)
-    assert data["total"] == 7 and data["offset"] == 0 and data["limit"] == 100
+    assert data["total"] == 8 and data["offset"] == 0 and data["limit"] == 100
     assert [(a["type"], a["symbol"]) for a in data["activities"]] == [
         ("BUY", "SYNQ"),
         ("BUY", "SYNV"),
@@ -150,6 +150,7 @@ def test_an_accounts_activities_over_a_range_as_snaptrade_reports_them(
         ("SELL", "SYNV"),
         ("DIVIDEND", "SYNQ"),
         ("BUY", "SAP.DE"),
+        ("REI", "OQKR"),
     ]
     first = data["activities"][0]
     # As written: its numbers exact, as strings; its dates as SnapTrade wrote them.
@@ -176,7 +177,7 @@ def test_an_accounts_activities_over_a_range_as_snaptrade_reports_them(
     record, call = found
     assert record.external_account_id == IBKR and call["call"] == "reading activities"
     assert call["note"] == f"traded from {days_ago(365)} to {TODAY}; 100 from 0"
-    assert len(call["body"]["data"]) == 7
+    assert len(call["body"]["data"]) == 8
 
 
 def test_a_narrower_range_reads_only_its_days_and_a_page_at_a_time(
@@ -199,7 +200,7 @@ def test_a_narrower_range_reads_only_its_days_and_a_page_at_a_time(
             "limit": 2,
         },
     )
-    assert paged.data["total"] == 7
+    assert paged.data["total"] == 8
     assert [a["id"][-4:] for a in paged.data["activities"]] == ["f005", "f006"]
     # The 30 days to today where no range is given: yesterday's SAP.DE buy.
     recent = client.call_tool("read_account_activities", {"account": "ACC-3"})
@@ -276,7 +277,7 @@ def test_lots_are_proposed_from_the_buys_that_account_for_a_position(
     data = answer.data
     assert data["external_account_id"] == IBKR
     assert data["history_from"] == "2025-01-06"
-    assert data["history_read"] == f"7 activities read, traded from 2025-01-06 to {TODAY}"
+    assert data["history_read"] == f"8 activities read, traded from 2025-01-06 to {TODAY}"
     # Cash has no lots, and is not listed.
     positions = {each["instrument"]: each for each in data["positions"]}
     assert set(positions) == {"SAP.DE", "SYNX", "SYNQ", "SYNB", "SYNV"}

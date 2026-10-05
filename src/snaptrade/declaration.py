@@ -12,10 +12,11 @@ that the common model may need to grow. Each is counted as it is seen, and
 the count rides on the heartbeat, never leaving the deployment.
 
 And the storage it asks for, at the edge, for SnapTrade's raw responses
-(decisions/028): the longest it keeps one, a reported activity's record
-(raw.py, contract v14: as long as the history it reported), the reach of a
-backfill. Each read's own record is kept for the retention setting, 30 days
-by default.
+(decisions/028): the longest it may keep one, a reported activity's record,
+which the `activity_retention_days` setting may make as long as the SDK's
+bound (raw.py; the product owner, 2026-10-05), so the deployment never keeps
+less than an admin chose. Each read's own record is kept for the retention
+setting, 30 days by default.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from __future__ import annotations
 from meridian.declaration import Declaration, NotCarried, Storage
 
 from .normalise import to_decimal
-from .raw import ACTIVITY_RETENTION_DAYS
+from .raw import MOST_ACTIVITY_RETENTION_DAYS
 from .settings import DECLARED
 from .venue import Snapshot
 
@@ -49,7 +50,7 @@ NOT_CARRIED = (
 DECLARATION = Declaration(
     settings=DECLARED,
     not_carried=NOT_CARRIED,
-    storage=Storage(retention_days=ACTIVITY_RETENTION_DAYS),
+    storage=Storage(retention_days=MOST_ACTIVITY_RETENTION_DAYS),
 )
 
 

@@ -36,9 +36,9 @@ The rules, each from W2.10's notes:
 - **The instrument, resolved as a holding's is:** an activity naming a
   security the account holds is resolved by that holding's identifiers, to
   the same instrument. A plan's own fund code (Fidelity's `OQKR` for the
-  plan's VIGIX) that a person linked to a symbol is resolved as that
-  symbol's holding is, the instrument then carrying that person's name as
-  its provenance (requirement 3). Any other code SnapTrade names travels as
+  plan's VIGIX) that a person linked, in the plugin's settings, to an
+  instrument record is that record, carrying who linked it and when as its
+  provenance (requirement 3). Any other code SnapTrade names travels as
   reported, the instrument empty: resolving a symbol only an old activity
   names would mint a record for the deployment's admin to complete for
   every security the account ever traded, so nothing past the plugin
@@ -49,7 +49,6 @@ The rules, each from W2.10's notes:
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -65,7 +64,10 @@ from meridian.bounds import (
 from meridian.edge import as_reported
 
 from .normalise import wire_decimal
+from .plan_codes import PlanCodeLink, link_for
 from .venue import Json
+
+__all__ = ["PlanCodeLink", "link_for"]
 
 #: Whose vocabulary an activity's type is, where it converts to no kind.
 ACTIVITY_TYPE_SCHEME = "snaptrade:activity-type"
@@ -108,32 +110,6 @@ REMOVES_UNITS = frozenset(
         _K.ACTIVITY_KIND_TAX,
     }
 )
-
-
-@dataclass(frozen=True)
-class PlanCodeLink:
-    """A plan's own fund code on one external account, linked by a named
-    person to the symbol of the instrument it is (requirement 3): Fidelity's
-    `OQKR` to `VIGIX`."""
-
-    external_account_id: str
-    code: str
-    symbol: str
-    person: str
-
-
-def link_for(
-    links: Iterable[PlanCodeLink], external_account_id: str, code: str
-) -> PlanCodeLink | None:
-    """The person's link for a code on this account, or None."""
-    return next(
-        (
-            link
-            for link in links
-            if link.external_account_id == external_account_id and link.code == code
-        ),
-        None,
-    )
 
 
 @dataclass(frozen=True)

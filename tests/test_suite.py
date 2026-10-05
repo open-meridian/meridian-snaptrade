@@ -343,7 +343,11 @@ PRODUCERS: dict[str, Callable[[Recorder], Coroutine[Any, Any, None]]] = {
     "activity-plan-code-linked-by-a-person": reporting(
         activity("REI", "OQKR", units="0.412", price="212.34", amount="-87.48"),
         positions=[position("VIGIX", "120.5")],
-        plan_codes=(PlanCodeLink("ALPACA:INST-1", "OQKR", "VIGIX", "Pat, on Account links"),),
+        plan_codes=(
+            PlanCodeLink(
+                "ALPACA:INST-1", "OQKR", "INS-VIGIX", "local|pat", "2026-10-05T12:00:00Z"
+            ),
+        ),
     ),
     "history-from-stated": reading(
         account_=account(

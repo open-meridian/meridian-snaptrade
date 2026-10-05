@@ -301,7 +301,9 @@ _BALANCES: dict[str, str] = {
 # option's expiry: a deposit, AAPL bought (its second tax lot), dividends
 # with tax withheld, SYNXX's dividend reinvested, interest and a fee, SYNT
 # transferred in, split 2 for 1, given a stock dividend and transferred out,
-# a withdrawal, a journal, and ZZTOP sold short.
+# a withdrawal, a journal, and ZZTOP sold short. IBKR's last is a dividend
+# reinvested in a plan's fund named only by the plan's own code, OQKR, which
+# nothing resolves until a person links the code in the plugin's settings.
 _ACTIVITIES: dict[str, list[str]] = {
     ALPACA_MARGIN: [
         """{"id": "00000000-0000-4000-8000-00000000f101", "type": "CONTRIBUTION",
@@ -431,6 +433,12 @@ _ACTIVITIES: dict[str, list[str]] = {
    "units": 5, "price": 212.00, "amount": -1060.00, "fee": 0,
    "currency": {"code": "EUR"}, "trade_date": "$yesterday_midnight",
    "settlement_date": "$tomorrow_date", "description": "Bought 5 SAP.DE"}""",
+        """{"id": "00000000-0000-4000-8000-00000000f116", "type": "REI",
+   "symbol": {"symbol": "OQKR", "description": "Synthetic plan fund, by the plan's own code"},
+   "units": 1.5, "price": 100.00, "amount": -150.00, "fee": 0,
+   "currency": {"code": "USD"}, "trade_date": "2026-07-31T00:00:00.000Z",
+   "settlement_date": "2026-07-31T00:00:00.000Z",
+   "description": "REINVESTMENT PLAN FUND OQKR"}""",
     ],
 }
 

@@ -45,10 +45,13 @@ SnapTrade's entry for that activity as the read that first reported it
 received it, with that read's time and why it was read (the backfill to the
 account's `history_from`, or a sync). Written once: an activity reported
 again names the record already kept, as the street answers it already
-recorded. Kept `ACTIVITY_RETENTION_DAYS` from when it was received, not the
-read retention, so a reported activity's record can be read back as long as
-the street holds the activity it explains; `find` resolves it as it does a
-row's.
+recorded. Kept for the `activity_retention_days` setting from when it was
+received (seven years by default, `ACTIVITY_RETENTION_DAYS`), not the read
+retention, and never for less than the history SnapTrade reported: the
+longest any kept record's activity was traded before it was received
+(`history_reach_days`), which a shorter setting is kept to (the product
+owner, 2026-10-05). So a reported activity's record can be read back as long
+as the history it belongs to; `find` resolves it as it does a row's.
 
 Each record is one gzipped JSON file, `<root>/<account>/<read>.json.gz`, the
 account directory a hash of the external account ID (so no ID names a path)
@@ -97,10 +100,14 @@ def storage_root(granted: Path | None = None) -> Path:
 
 DEFAULT_RETENTION_DAYS = 30
 LEAST_RETENTION_DAYS = 1
-#: How long a reported activity's record is kept from when it was received:
-#: seven years, past the two SnapTrade holds of an account's history at
-#: Fidelity, so each activity the street holds can have its record read back.
+#: How long a reported activity's record is kept from when it was received,
+#: unless the `activity_retention_days` setting says longer: seven years, past
+#: the two SnapTrade holds of an account's history at Fidelity, so each
+#: activity the street holds can have its record read back.
 ACTIVITY_RETENTION_DAYS = 2555
+#: The longest the setting may keep one, which the storage declaration states
+#: (the SDK's bound), so the deployment never keeps less than an admin chose.
+MOST_ACTIVITY_RETENTION_DAYS = 36500
 #: Where an account's activity records are kept, beside its reads.
 ACTIVITY_DIRECTORY = "activities"
 #: The first part of an activity record's key.
@@ -397,6 +404,20 @@ def activity_taken(
     )
 
 
+def _reach_of(record: Any) -> int:
+    """How many days before its record was received an activity was traded,
+    by SnapTrade's entry in it (`activity_taken`); 0 where it does not say,
+    rounded up, so a part of a day counts as one."""
+    try:
+        received = datetime.fromisoformat(str(record["read_at"]))
+        traded = str(record["calls"][0]["body"]["trade_date"])
+        day = datetime.fromisoformat(traded[:10]).replace(tzinfo=received.tzinfo or UTC)
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0
+    seconds = (received - day).total_seconds()
+    return max(0, math.ceil(seconds / 86_400))
+
+
 def _moment_of(key: str) -> datetime | None:
     matched = _READ.match(key)
     if matched is None:
@@ -422,7 +443,11 @@ class RawStore:
     ) -> None:
         self.root = root
         self.retention = retention
+        # As the setting says; `kept_for` is what is held to.
         self.activity_retention = timedelta(days=ACTIVITY_RETENTION_DAYS)
+        # How far back the history reported reaches, in days, once a record
+        # has been read or written: None until then.
+        self._reach: int | None = None
         # Why the last read's records could not be kept, when they could not:
         # safe to show (the error's type alone).
         self.failure = ""
@@ -480,7 +505,43 @@ class RawStore:
         except OSError as failed:
             log.warning("an activity's raw response was not kept: %s", type(failed).__name__)
             return False
+        if self._reach is not None:
+            self._reach = max(self._reach, _reach_of(record))
         return True
+
+    def history_reach_days(self) -> int:
+        """How far back the history SnapTrade reported reaches: the most days
+        any kept activity record's activity was traded before its record was
+        received; 0 where none is kept. Read from the records once, then kept
+        up as each is written."""
+        if self._reach is None:
+            reach = 0
+            try:
+                directories = [d for d in self.root.iterdir() if d.is_dir()]
+            except OSError:
+                directories = []
+            for directory in directories:
+                try:
+                    files = list((directory / ACTIVITY_DIRECTORY).iterdir())
+                except OSError:
+                    continue
+                for file in files:
+                    try:
+                        with gzip.open(file) as opened:
+                            document = parse_exact(opened.read())
+                    except (OSError, ValueError, EOFError):
+                        continue
+                    if isinstance(document, dict):
+                        reach = max(reach, _reach_of(document))
+            self._reach = reach
+        return self._reach
+
+    def kept_for(self) -> timedelta:
+        """How long an activity record is kept: as the setting says, and never
+        shorter than the history reported reaches, nor longer than the most
+        the storage declaration states."""
+        days = max(self.activity_retention.days, self.history_reach_days())
+        return timedelta(days=min(days, MOST_ACTIVITY_RETENTION_DAYS))
 
     def activity_record(self, external_account_id: str, activity_id: str) -> Record | None:
         """A reported activity's record, or None where none is kept."""
@@ -571,7 +632,7 @@ class RawStore:
         """Remove each activity record received before `now` less the
         activity retention, by its file's time, which is set to when it was
         received; and what a write that stopped left."""
-        oldest = (now - self.activity_retention).timestamp()
+        oldest = (now - self.kept_for()).timestamp()
         removed = 0
         try:
             files = list(directory.iterdir())
