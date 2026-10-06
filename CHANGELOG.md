@@ -22,6 +22,11 @@ the plugin sends or reads changed.
   form; the Account links tab only shows what they hold, now counting the
   cash links too.
 - `make e2e` on core 7d4ce0f's runtime and harness.
+- **Its documentation, in `docs/`**: an overview, setup (the key, connecting
+  a brokerage, linking accounts, Plan-code links and Cash links), each page,
+  troubleshooting by state, and terms, in plain Markdown ahead of the format
+  a plugin's documentation will ship in. No reference is hand-written: that
+  part will be generated from the declaration.
 
 ## 0.11.0 (not released)
 

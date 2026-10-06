@@ -6,8 +6,9 @@ cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion), and each account's activity as the
 custodian states it. It holds the `custody` role. This is release 0.11.1
-(CHANGELOG.md says what each release changed). How a plugin like it is built
-is documented at [open-meridian.dev](https://open-meridian.dev).
+(CHANGELOG.md says what each release changed). How to set it up and use it,
+for its admin and its readers, is in [docs/](docs/README.md). How a plugin
+like it is built is documented at [open-meridian.dev](https://open-meridian.dev).
 
 It is built on the SDK it pins, `open-meridian==0.19.0`, which declares
 contract v14, the custodian's activity explains a break (meridian-design
