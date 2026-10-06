@@ -5,14 +5,22 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion), and each account's activity as the
-custodian states it. It holds the `custody` role. This is release 0.11.1
+custodian states it. It holds the `custody` role. This is release 0.12.0
 (CHANGELOG.md says what each release changed). How to set it up and use it,
 for its admin and its readers, is in [docs/](docs/README.md). How a plugin
 like it is built is documented at [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.19.0`, which declares
-contract v14, the custodian's activity explains a break (meridian-design
-tasks/sdk-contract/the-custodians-activity-contract): each activity on a
+It is built on the SDK it pins, `open-meridian==0.20.0`, which declares
+contract v15, access per role (meridian-design
+tasks/sdk-contract/access-is-granted-per-role): a plugin holding one role, as
+this one does, names none on its pages and settings, and nothing it serves
+changed; and an activity recorded with its instrument unresolved is
+re-resolved once it resolves (tasks/sdk-contract/an-activity-is-re-resolved-
+when-its-instrument-resolves): an activity the street holds under a plan's
+own code a person links later is re-resolved through the link, the activity
+kept as first recorded and the re-resolution beside it ("The custodian's
+activity", below). Since contract v14, the custodian's activity explains a
+break (tasks/sdk-contract/the-custodians-activity-contract): each activity on a
 linked account is reported to the street as SnapTrade states it, a backfill
 back to the first date SnapTrade's history of the account reaches and then
 each read's, its kind converted from SnapTrade's type, and the sync status
@@ -148,6 +156,25 @@ SnapTrade lists them.
   its provenance who added or last changed the row and when, as the
   conductor stamped them. No plugin storage holds it, and no page of the
   plugin sets it.
+- **A link set later re-resolves what the street holds** (contract v15,
+  W2.15; the product owner, 2026-10-05: "Re-resolve the earlier OQKR
+  activities through the link"). An activity reported before its code was
+  linked kept the code as reported, and a redelivery never changes it. When
+  a settings delivery adds a `plan_code_links` row or changes one, the
+  account it names is backfilled again on the read the delivery wakes, and
+  each activity the street answers already recorded under a linked code is
+  re-resolved through the link (`ReResolveActivity`): the record chosen, who
+  added or last changed the row, and when the row says (its `changed_at`,
+  never when the plugin read it). The street keeps the activity as first
+  recorded and each re-resolution beside it, its own record, and answers one
+  naming what the activity's latest resolution already names as already
+  recorded: an activity first recorded through the same link, or
+  re-resolved through it before. So a settings delivery again, a restart's
+  backfill, and the start's first backfill (which re-resolves whatever a
+  current link now resolves) record nothing twice, and the plugin holds
+  nothing to remember a re-resolution by. A row that says no time it was
+  changed re-resolves nothing, and the read says why. A row removed is not
+  sent: the activities it re-resolved keep their latest resolution.
 
 ### How SnapTrade's shapes become the platform's
 
@@ -738,9 +765,9 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.19.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.19.0`.
-0.19.0 is not on PyPI yet: until it is released, `make ci-local` builds it
+The SDK is pinned exactly, `open-meridian==0.20.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.20.0`.
+0.20.0 is not on PyPI yet: until it is released, `make ci-local` builds it
 from the sibling checkout, and CI, which has none, cannot install it.
 Where the sibling `meridian-python` checkout carries exactly that version,
 one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
@@ -788,6 +815,13 @@ the pins, moved by hand; the sync status's `history_from`, the activities
 activity cases were done by hand, and `tests/test_contract.py` knows what v13
 and v14 add that this plugin does not call (`list_activities`,
 `list_sync_statuses`, `receive(activity_recorded=, sync_status_recorded=)`).
+Moving to 0.20.0 (contract v15) moved only the pins: the plugin holds one
+role, so its pages and settings name none and serve as before (0.11.1's
+image ran its `make e2e` unchanged on core 7b0b2a8's v15 runtime and
+harness first). 0.20.0's custody suite adds the case a re-resolution answers,
+which `plugin.re_resolve_activity` does (above, by hand), and
+`tests/test_contract.py` knows `receive(activity_re_resolved=)`, which
+custody does not hear.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -801,7 +835,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `7d4ce0f`, contract v14).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `7b0b2a8`, contract v15).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -852,11 +886,16 @@ this plugin's own page, it:
     activity still `e2e/expected.activity`: nothing recorded twice; and
     finds SYNXX's reinvestment's own raw record in the granted storage by
     the key the activity carries;
-12. sets the table setting `plan_code_links` in the plugin's Settings form,
-    linking IBKR's plan code `OQKR` to SYNXX's record (contract v14), and
-    finds the Settings tab naming who changed it; then links IBKR to a new
-    account, **E2E IBKR**, whose first read's backfill reports the
-    reinvestment under `OQKR` as SYNXX's record, resolved through the link;
+12. links IBKR to a new account, **E2E IBKR**, whose first read's backfill
+    reports the reinvestment under the plan's own code, `OQKR`, as the code,
+    nothing linking it; then sets the table setting `plan_code_links` in the
+    plugin's Settings form, linking `OQKR` on IBKR to SYNXX's record
+    (contract v14), and finds the Settings tab naming who changed it. IBKR is
+    backfilled again, and the street's activity holds the reinvestment as
+    first recorded and its re-resolution through the link to SYNXX's record
+    beside it (contract v15, `e2e/expected.re-resolved`), the plugin's log
+    naming whose link and when; it makes the plugin's container again, whose
+    backfill re-resolves nothing, and the two lines are unchanged;
 13. links Fidelity's IRA to a new account, **E2E IRA**, whose statement is
     `e2e/expected.ira-marked`: three rows, SYNDP not among them but the USD
     cash of 10.00 that counts it, its quantity and market value derived;
@@ -903,7 +942,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.11.1 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.12.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

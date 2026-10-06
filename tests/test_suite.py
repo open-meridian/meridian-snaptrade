@@ -129,15 +129,29 @@ def snapshot(
 
 
 async def sync(
-    recorder: Recorder, read: Snapshot, plan_codes: tuple[PlanCodeLink, ...] = ()
+    recorder: Recorder,
+    read: Snapshot,
+    plan_codes: tuple[PlanCodeLink, ...] = (),
+    already_recorded: bool = False,
 ) -> None:
     """What a read does with what SnapTrade answered (sync.py): the accounts
     reported, each one's sync state with how far back its history goes, the
     statement of each that can be served clean, and its activities, each
-    converted (activities.py) and sent with its raw record (contract v14)."""
+    converted (activities.py) and sent with its raw record (contract v14),
+    answered recorded, or already recorded as a backfill again is; one held
+    already under a linked code re-resolved through the link (contract v15)."""
     recorder.answer(
         "RecordActivity",
-        lambda params: ops.RecordActivityResult(activity_id=f"ACT-{len(recorder.sent)}"),
+        lambda params: ops.RecordActivityResult(
+            activity_id=f"ACT-{params.activity.external_activity_id}",
+            already_recorded=already_recorded,
+        ),
+    )
+    recorder.answer(
+        "ReResolveActivity",
+        lambda params: ops.ReResolveActivityResult(
+            activity_id=f"ACT-{params.external_activity_id}"
+        ),
     )
     contract = Contract(cast(meridian.Plugin, recorder))
     shown = [view for each in views(read, STALE_AFTER) for view in each.accounts]
@@ -241,6 +255,21 @@ async def link_a_new_account(recorder: Recorder) -> None:
         custodian=shown.institution,
         account_type=view.account.kind,
     )
+
+
+async def linked_later(recorder: Recorder) -> None:
+    """A read before the plan's code is linked, then one after, the street
+    holding the activity already."""
+    read = snapshot(
+        positions=[position("VIGIX", "120.5")],
+        balances=[balance("USD", "1523.45")],
+        activities=[activity("REI", "OQKR", units="0.412", price="212.34", amount="-87.48")],
+    )
+    await sync(recorder, read)
+    link = PlanCodeLink(
+        "ALPACA:INST-1", "OQKR", "INS-VIGIX", "local|pat", "2026-10-05T12:00:00.000000Z"
+    )
+    await sync(recorder, read, (link,), already_recorded=True)
 
 
 FUND = position(
@@ -349,6 +378,10 @@ PRODUCERS: dict[str, Callable[[Recorder], Coroutine[Any, Any, None]]] = {
             ),
         ),
     ),
+    # The same 401(k)'s backfill reported the reinvestment under OQKR before
+    # anyone linked it; once a person links OQKR, the account's backfill again
+    # finds it held already and re-resolves it through the link.
+    "activity-re-resolved-when-a-plan-code-is-linked-later": linked_later,
     "history-from-stated": reading(
         account_=account(
             sync_status={

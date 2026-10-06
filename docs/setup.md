@@ -79,6 +79,12 @@ A row is the **account**, the **plan code** as SnapTrade names it, and the
 **instrument** record it is, found by search. From then on, that code's
 activity is that instrument, naming who linked it.
 
+Activity that arrived before you added the row is re-resolved too: on the
+next read, each earlier activity under that code on that account is
+recorded as that instrument, naming who linked it and when, beside the
+activity as it first arrived, which is kept. Changing the row re-resolves
+them again.
+
 ### Cash links
 
 **Use it when** a custodian holds cash as a position SnapTrade does not mark

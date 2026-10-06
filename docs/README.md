@@ -1,7 +1,7 @@
 # The SnapTrade plugin's documentation
 
 What this plugin's vendor says about it, for the people who set it up and use
-it. Written for version 0.11.1.
+it. Written for version 0.12.0.
 
 | Page | For |
 |---|---|

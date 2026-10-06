@@ -15,16 +15,20 @@ from __future__ import annotations
 import asyncio
 import gzip
 import json
+import logging
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 import meridian
+import pytest
+from meridian.plugin.v1 import operations_pb2 as ops
 from meridian.testing import PageClient
 from meridian.v1 import sidecar_pb2
 
 from snaptrade.linking import Links
 from snaptrade.page import ACCOUNTS, hold, pages
-from snaptrade.plan_codes import PlanCodeLink, links_of
+from snaptrade.plan_codes import PlanCodeLink, changed_accounts, links_of
 from snaptrade.raw import RawStore, Taken
 from snaptrade.settings import (
     ACTIVITY_RETENTION_DAYS,
@@ -116,6 +120,139 @@ def test_the_next_reads_activity_under_a_linked_code_is_that_record_naming_who(
     ]
     assert not as_sent.activity.instrument_id
     assert as_sent.activity.instrument_as_reported.code == "OQKR"
+
+
+# ── A link set later re-resolves what the street holds (contract v15) ───────
+
+
+def _re_resolutions(sidecar: Sidecar) -> list[Any]:
+    return [
+        r for r in sidecar.sent("ReResolveActivity") if r.external_activity_id == PLAN_ACTIVITY
+    ]
+
+
+def _held(sidecar: Sidecar) -> list[tuple[str, bytes]]:
+    """The plan activity's resolutions as the street keeps them: as first
+    recorded, then each re-resolution."""
+    return sidecar.resolutions[("snaptrade", IBKR, PLAN_ACTIVITY)]
+
+
+def test_when_a_row_was_changed_is_read_as_the_conductor_stamped_it() -> None:
+    link = PlanCodeLink(IBKR, "OQKR", "INS-7", "local|ada", "2026-10-05T12:00:00.000001Z")
+    assert link.changed_at_ns == 1_791_201_600_000_001_000
+    for unread in ("", "yesterday", "2026-10-05T12:00:00"):
+        assert PlanCodeLink(IBKR, "OQKR", "INS-7", "local|ada", unread).changed_at_ns == 0
+
+
+def test_the_accounts_a_delivery_adds_or_changes_a_link_on() -> None:
+    (link,) = links_of([ROW])
+    alpaca = PlanCodeLink(ALPACA, "OQKR", "INS-7", "local|ada", ROW["changed_at"])
+    moved = PlanCodeLink(IBKR, "OQKR", "INS-8", "local|bo", "2026-10-06T09:00:00.000000Z")
+    assert changed_accounts((), (link,)) == {IBKR}
+    assert changed_accounts((link,), (link,)) == set(), "a delivery again changes nothing"
+    assert changed_accounts((link,), (link, alpaca)) == {ALPACA}
+    assert changed_accounts((link,), (moved,)) == {IBKR}
+    assert changed_accounts((link,), ()) == set(), "a row removed is no link"
+
+
+def test_a_link_set_after_the_backfill_re_resolves_what_it_reported_naming_who_and_when(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """IBKR's backfill reported the reinvestment under OQKR as the code;
+    the link set in the settings backfills IBKR again on the read it wakes,
+    and the street, holding the activity already, keeps a re-resolution
+    beside it: the record the person chose, who, and when the row says."""
+    sidecar = Sidecar()
+    syncer = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+    syncer.configure(config_from({SYNTHETIC: True}))
+    asyncio.run(syncer.run_once())
+    assert not _re_resolutions(sidecar)
+    assert _held(sidecar) == [("", b"")], "first recorded as the code reported"
+
+    syncer.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW]}))
+    with caplog.at_level(logging.INFO):
+        asyncio.run(syncer.run_once())
+    (sent,) = _re_resolutions(sidecar)
+    assert sent.external_account_id == IBKR and sent.source == "snaptrade"
+    assert sent.instrument_id == "INS-7"
+    assert (sent.provenance.field, sent.provenance.person) == (
+        "instrument_id",
+        "local|ada, 2026-10-05T12:00:00.000000Z",
+    )
+    assert sent.provenance.kind == ops.PROVENANCE_KIND_SUPPLIED
+    assert sent.resolved_at_ns == 1_791_201_600_000_000_000, "when the row was set"
+    assert len(sidecar.sent("ReResolveActivity")) == 1, "only what the link resolves"
+    assert [instrument for instrument, _ in _held(sidecar)] == ["", "INS-7"]
+    assert syncer.status.activities[IBKR].re_resolved == 1
+    assert f"backfilled {IBKR}: " in caplog.text
+    assert (
+        "0 recorded for the first time, 1 re-resolved through a plan-code link" in caplog.text
+    )
+
+    # The next read, and a delivery of the same settings again, re-resolve
+    # nothing twice: the street answers already recorded.
+    syncer.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW]}))
+    asyncio.run(syncer.run_once())
+    assert len(_held(sidecar)) == 2
+    # Nor does a restart, whose backfill sends it again.
+    restarted = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+    restarted.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW]}))
+    asyncio.run(restarted.run_once())
+    assert len(_re_resolutions(sidecar)) == 2
+    assert len(_held(sidecar)) == 2
+    assert restarted.status.activities[IBKR].re_resolved == 0
+
+    # The row changed to another record: re-resolved again, by who changed it.
+    moved = {**ROW, "instrument": "INS-8", "changed_by": "local|bo",
+             "changed_at": "2026-10-06T09:00:00.000000Z"}  # fmt: skip
+    restarted.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [moved]}))
+    asyncio.run(restarted.run_once())
+    assert [instrument for instrument, _ in _held(sidecar)] == ["", "INS-7", "INS-8"]
+    assert _re_resolutions(sidecar)[-1].provenance.person.startswith("local|bo, ")
+
+
+def test_on_start_a_current_link_re_resolves_what_an_earlier_process_reported(
+    tmp_path: Path,
+) -> None:
+    """Reported unresolved by a process before the link was set, the
+    activity is re-resolved by the next process's first backfill."""
+    sidecar = Sidecar()
+    before = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+    before.configure(config_from({SYNTHETIC: True}))
+    asyncio.run(before.run_once())
+    started = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+    started.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW]}))
+    asyncio.run(started.run_once())
+    assert [instrument for instrument, _ in _held(sidecar)] == ["", "INS-7"]
+
+
+def test_an_activity_first_recorded_through_the_link_is_not_re_resolved(
+    tmp_path: Path,
+) -> None:
+    """Linked before IBKR's first read, the activity is recorded as the
+    record; a restart's backfill sends the re-resolution, and the street
+    answers already recorded: its first record names it already."""
+    sidecar = Sidecar()
+    for _ in range(2):
+        syncer = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+        syncer.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW]}))
+        asyncio.run(syncer.run_once())
+    assert len(_re_resolutions(sidecar)) == 1
+    assert [instrument for instrument, _ in _held(sidecar)] == ["INS-7"]
+
+
+def test_a_row_saying_no_time_re_resolves_nothing_and_says_why(tmp_path: Path) -> None:
+    sidecar = Sidecar()
+    syncer = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
+    syncer.configure(config_from({SYNTHETIC: True}))
+    asyncio.run(syncer.run_once())
+    undated = {**ROW, "changed_at": "not a time"}
+    syncer.configure(config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [undated]}))
+    asyncio.run(syncer.run_once())
+    assert not sidecar.sent("ReResolveActivity")
+    assert syncer.status.activities[IBKR].skipped == [
+        f"activity {PLAN_ACTIVITY} under OQKR is not re-resolved: its link's row says no time"
+    ]
 
 
 def test_no_page_sets_a_setting() -> None:

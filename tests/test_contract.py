@@ -499,6 +499,17 @@ KNOWN_PARAMETERS = {
     # acting_for is for an activity a person reports, which this plugin's
     # reads never are.
     "record_activity": {"acting_for", "activity", "external_account_id", "source"},
+    # Used (v15): an activity held under a code a person has since linked,
+    # re-resolved through the link, naming who and when; never acting for one.
+    "re_resolve_activity": {
+        "acting_for",
+        "external_account_id",
+        "external_activity_id",
+        "instrument_id",
+        "provenance",
+        "resolved_at_ns",
+        "source",
+    },
     # Known, and not used (v14): operations and the dashboard read the
     # street's activity and sync statuses; custody reports them.
     "list_activities": {
@@ -624,6 +635,9 @@ KNOWN_PARAMETERS = {
         # are delivered to operations, and custody reports them.
         "activity_recorded",
         "sync_status_recorded",
+        # Known, and not heard (v15): a re-resolution is delivered to
+        # operations; custody sends it, and the street answers its own.
+        "activity_re_resolved",
     },
     # Known, and not used (v8): the book of record is an operations plugin's
     # to write and five other roles' to read (operations, portfolio,

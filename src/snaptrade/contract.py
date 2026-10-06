@@ -19,7 +19,10 @@ stated. And each of SnapTrade's activities on a linked account, as the
 custodian states it (contract v14, W2.10, activities.py), its instrument
 resolved as a holding's is, or by a person's plan-code link with that
 person's name, or the code as reported; and the sync status carries the
-first date SnapTrade's history of the account reaches (`history_from`).
+first date SnapTrade's history of the account reaches (`history_from`). An
+activity the street already holds under a code a person has since linked is
+re-resolved through the link (contract v15, W2.15), naming who set it and
+when.
 """
 
 from __future__ import annotations
@@ -99,9 +102,12 @@ class Outcome:
 class ActivityOutcome:
     """What reporting one account's activities came to, in one read."""
 
-    # Sent to the street, and of them those it recorded for the first time.
+    # Sent to the street, and of them those it recorded for the first time;
+    # and those it held already that were re-resolved through a person's
+    # plan-code link for the first time (contract v15).
     sent: int = 0
     recorded: int = 0
+    re_resolved: int = 0
     # Not sent, each with why: SnapTrade gave too little, or inexactly.
     skipped: list[str] = field(default_factory=list)
     # Why it stopped before every activity was sent, when it did.
@@ -358,8 +364,9 @@ class Recorder:
     ) -> None:
         """W2.10: each activity, with the raw record key it was kept under,
         sent to the street, one per call. A redelivery is answered already
-        recorded. The account not linked stops them all; any other refusal is
-        the one activity's, said, and the rest go on."""
+        recorded, and one under a code a person linked is then re-resolved
+        through the link (W2.15). The account not linked stops them all; any
+        other refusal is the one activity's, said, and the rest go on."""
         resolved: dict[str, str] = {}
         for converted, key in activities:
             as_of_ns = day_ns(date.fromisoformat(converted.trade_date))
@@ -398,6 +405,65 @@ class Recorder:
                 continue
             outcome.sent += 1
             outcome.recorded += 0 if answer.already_recorded else 1
+            link = link_for(links, account.external_account_id, converted.code)
+            if (
+                answer.already_recorded
+                and link is not None
+                and await self._re_resolve(account, converted, link, outcome)
+            ):
+                return
+
+    async def _re_resolve(
+        self,
+        account: ExternalAccount,
+        converted: Converted,
+        link: PlanCodeLink,
+        outcome: ActivityOutcome,
+    ) -> bool:
+        """W2.15: an activity the street already holds, under a code a person
+        linked, re-resolved through the link: the record they chose, who set
+        the link and when the row says they did. The street keeps the
+        activity as first recorded and the re-resolution beside it, and
+        answers already recorded where its latest resolution names this
+        already (an activity first recorded through the same link, or
+        re-resolved through it before), so a restart's backfill or a
+        settings delivery again records nothing twice. True where the account
+        is not linked, which stops the rest."""
+        said = f"activity {converted.external_activity_id} under {converted.code}"
+        resolved_at_ns = link.changed_at_ns
+        if not resolved_at_ns:
+            # The street is told when the link was set, never a guess.
+            outcome.skipped.append(f"{said} is not re-resolved: its link's row says no time")
+            log.warning("%s: %s", account.external_account_id, outcome.skipped[-1])
+            return False
+        try:
+            answer = await self._plugin.re_resolve_activity(
+                external_account_id=account.external_account_id,
+                source=SOURCE,
+                external_activity_id=converted.external_activity_id,
+                instrument_id=link.instrument_id,
+                provenance=supplied("instrument_id", link.person),
+                resolved_at_ns=resolved_at_ns,
+            )
+        except (meridian.MeridianError, ValueError) as refused:
+            if refused_unlinked(refused) or isinstance(refused, meridian.NoSidecar):
+                outcome.stopped = str(refused)
+                outcome.unlinked = refused_unlinked(refused)
+                log.info("activities of %s stopped: %s", account.external_account_id, refused)
+                return True
+            outcome.skipped.append(f"{said} was not re-resolved: {refused}")
+            log.warning("%s: %s", account.external_account_id, outcome.skipped[-1])
+            return False
+        if not answer.already_recorded:
+            outcome.re_resolved += 1
+            log.info(
+                "%s: re-resolved %s to %s through the link %s",
+                account.external_account_id,
+                said,
+                link.instrument_id,
+                link.person,
+            )
+        return False
 
     async def record(
         self, account: ExternalAccount, statement: Statement, observed_at_ns: int

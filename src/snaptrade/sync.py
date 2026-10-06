@@ -13,7 +13,11 @@ backfill, every activity SnapTrade holds back to the account's
 `history_from`, page by page; on each read after, the activities that read
 fetched (the last `ACTIVITIES_DAYS`). The street keeps each once, by its
 identifier, so a backfill again after a restart is answered already recorded
-and nothing is held here to remember it by. Each activity's raw record is its
+and nothing is held here to remember it by. An activity it answers already
+recorded under a code a person linked is re-resolved through the link
+(contract v15, W2.15), which the street answers already recorded where it
+holds it so: on the start's backfill, and on a backfill again of each account
+whose plan-code links a settings delivery adds or changes. Each activity's raw record is its
 own, kept as long as the history it reported (raw.py). An account nothing
 links reports none until it is linked, and then its backfill.
 
@@ -46,6 +50,7 @@ from .normalise import (
     ns,
     views,
 )
+from .plan_codes import changed_accounts
 from .raw import RawStore, Taken, activity_key, activity_taken, taken
 from .settings import Config
 from .synthetic import SyntheticVenue
@@ -192,6 +197,14 @@ class Syncer:
         return self.raw.keep_one(one, secrets)
 
     def configure(self, config: Config) -> None:
+        # An account whose plan-code links this delivery adds or changes is
+        # backfilled again on the read it wakes: every activity the street
+        # holds already under a linked code is re-resolved through its link
+        # (contract v15, W2.15), and the street answers already recorded what
+        # it holds so. The start's first backfill does the same for every
+        # link, so nothing is held to remember a re-resolution by.
+        for external_account_id in changed_accounts(self.config.plan_codes, config.plan_codes):
+            self._backfilled.discard(external_account_id)
         self.config = config
         self.venue = self._make_venue(config)
         if self.raw is not None:
@@ -362,11 +375,13 @@ class Syncer:
             ):
                 outcome.complete = True
                 log.info(
-                    "backfilled %s: %d activities back to %s, %d recorded for the first time",
+                    "backfilled %s: %d activities back to %s, %d recorded for the first time, "
+                    "%d re-resolved through a plan-code link",
                     account.external_account_id,
                     outcome.sent,
                     view.history_from or "the first SnapTrade holds",
                     outcome.recorded,
+                    outcome.re_resolved,
                 )
                 return outcome
         outcome.capped = True

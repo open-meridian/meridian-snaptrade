@@ -5,11 +5,14 @@ replaced: every call goes through the SDK's real conversion (a Decimal to the
 wire's integer and scale, a float refused, a caller's header to the assertion
 it carries) and the checks the SDK makes before sending (a statement's
 figures), and is kept as the protobuf message the sidecar would have
-received. It keeps each activity once, as the street does, answering a redelivery
-already recorded. It holds the plugin's links as the deployment would, one external
-account per account of the deployment's, refusing a second as the conductor
-does (contract v7), and delivers them as the SDK's `account_scope()` does:
-the first at once, and another on every change. A report is kept as the
+received. It keeps each activity once, as the street does, answering a
+redelivery already recorded, and each re-resolution beside it (contract v15),
+answering one naming what the activity's latest resolution names already
+recorded and refusing one naming no activity it holds. It holds the plugin's
+links as the deployment would, one external account per account of the
+deployment's, refusing a second as the conductor does (contract v7), and
+delivers them as the SDK's `account_scope()` does: the first at once, and
+another on every change. A report is kept as the
 heartbeat the sidecar receives, built by `meridian.testing.heartbeat`, with
 the figures standing as the SDK's do.
 """
@@ -45,6 +48,7 @@ _OPERATIONS = SimpleNamespace(
     ReadAccountsForLinking="ReadAccountsForLinking",
     LinkExternalAccount="LinkExternalAccount",
     RecordActivity="RecordActivity",
+    ReResolveActivity="ReResolveActivity",
 )
 
 # The deployment's accounts, as ReadAccountsForLinking answers by default.
@@ -96,6 +100,9 @@ class Sidecar(Operations):
         # The street's activity, once per source, external account and the
         # custodian's identifier, as it keeps them (contract v14).
         self.activities: dict[tuple[str, str, str], str] = {}
+        # Each activity's resolution as first recorded, then each
+        # re-resolution kept, the latest last: (instrument, provenance).
+        self.resolutions: dict[tuple[str, str, str], list[tuple[str, bytes]]] = {}
         self.not_carried: dict[tuple[str, str], int] = {}
 
     def _operations(self) -> Any:
@@ -128,7 +135,30 @@ class Sidecar(Operations):
             already = key in self.activities
             if not already:
                 self.activities[key] = f"ACT-{len(self.activities) + 1}"
+                own = [p for p in params.activity.provenance if p.field == "instrument_id"]
+                self.resolutions[key] = [
+                    (
+                        params.activity.instrument_id,
+                        own[0].SerializeToString() if own else b"",
+                    )
+                ]
             return ops.RecordActivityResult(
+                activity_id=self.activities[key], already_recorded=already
+            )
+        if name == "ReResolveActivity":
+            key = (params.source, params.external_account_id, params.external_activity_id)
+            if key not in self.activities:
+                raise meridian.CallFailed(
+                    "ReResolveActivity",
+                    "aborted",
+                    f"no activity {params.external_activity_id} from {params.source} "
+                    f"on {params.external_account_id}",
+                )
+            resolution = (params.instrument_id, params.provenance.SerializeToString())
+            already = self.resolutions[key][-1] == resolution
+            if not already:
+                self.resolutions[key].append(resolution)
+            return ops.ReResolveActivityResult(
                 activity_id=self.activities[key], already_recorded=already
             )
         if name == "ReadAccountsForLinking":

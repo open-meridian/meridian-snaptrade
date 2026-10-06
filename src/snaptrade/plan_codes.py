@@ -15,12 +15,21 @@ the deployment's configuration records each change and who made it.
 Each row arrives with `changed_by` and `changed_at`, which the conductor
 stamps when a row is added or changed; an activity resolved through a link
 names them as its provenance (requirement 3).
+
+A row added or changed re-resolves what the street already holds (contract
+v15, W2.15; meridian-design tasks/sdk-contract/an-activity-is-re-resolved-
+when-its-instrument-resolves): an activity recorded under the code before the
+link was set kept the code as reported, and is re-resolved through the link,
+naming who set it and when the row says it was set (`changed_at_ns`), never
+when the plugin happened to read it. `changed_accounts` says whose rows a
+delivery added or changed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 
 from meridian.bounds import PROVENANCE_PERSON_LENGTH
 
@@ -48,6 +57,20 @@ class PlanCodeLink:
         within its bound."""
         said = f"{self.changed_by}, {self.changed_at}" if self.changed_at else self.changed_by
         return said[: PROVENANCE_PERSON_LENGTH.most]
+
+    @property
+    def changed_at_ns(self) -> int:
+        """When the row was added or last changed, as the conductor stamped
+        it (RFC 3339), in nanoseconds; 0 where it says no time it can be read
+        as, and then nothing is said to have been resolved at any time."""
+        try:
+            at = datetime.fromisoformat(self.changed_at)
+        except ValueError:
+            return 0
+        if at.tzinfo is None:
+            return 0
+        whole = int(at.timestamp())
+        return whole * 1_000_000_000 + at.microsecond * 1_000
 
 
 def links_of(rows: object) -> tuple[PlanCodeLink, ...]:
@@ -85,3 +108,13 @@ def link_for(
         ),
         None,
     )
+
+
+def changed_accounts(
+    before: Iterable[PlanCodeLink], after: Iterable[PlanCodeLink]
+) -> frozenset[str]:
+    """The external accounts on which `after` adds a link or changes one --
+    its instrument, or who changed the row and when -- compared with
+    `before`. A row only removed is no link to re-resolve through."""
+    held = set(before)
+    return frozenset(link.external_account_id for link in after if link not in held)

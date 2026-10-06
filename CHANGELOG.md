@@ -3,6 +3,35 @@
 What each release of the SnapTrade plugin changed. Releases before 0.11.0
 are described in their commits (`git log`) and the README's "Depends on".
 
+## 0.12.0 (not released)
+
+Contract v15, on open-meridian 0.20.0 (meridian-design
+plans/access-is-granted-per-role, build 7; tasks/sdk-contract/an-activity-is-
+re-resolved-when-its-instrument-resolves).
+
+- **Access per role needs nothing of this plugin.** It holds one role,
+  `custody`, so its pages and settings name none and serve as before. 0.11.1's
+  image ran its `make e2e` unchanged on core 7b0b2a8's v15 runtime and
+  harness before the pin moved.
+- **A plan code linked later re-resolves the earlier activity.** When a
+  settings delivery adds or changes a Plan-code links row, the account is
+  backfilled again, and each activity the street already holds under the
+  linked code is re-resolved through the link (`ReResolveActivity`, W2.15):
+  the instrument record chosen, who added or last changed the row, and when
+  the row says. The street keeps the activity as first recorded and the
+  re-resolution beside it; the start's backfill re-resolves whatever a
+  current link now resolves, and the street answers already recorded what it
+  holds so, so a restart or a delivery again re-resolves nothing twice. A
+  row that says no time re-resolves nothing, saying why; a row removed sends
+  nothing.
+- The custody suite's v15 case, `activity-re-resolved-when-a-plan-code-is-
+  linked-later`, runs from SnapTrade's own words.
+- `make e2e` on core 7b0b2a8's runtime and harness (contract v15): IBKR is
+  linked first, its reinvestment under OQKR reported as the code, then OQKR
+  is linked in the settings, and the street holds the reinvestment as first
+  recorded with its re-resolution beside it (`e2e/expected.re-resolved`); a
+  new container re-resolves nothing twice.
+
 ## 0.11.1 (not released)
 
 The two table settings read alike (the product owner, 2026-10-05). Nothing

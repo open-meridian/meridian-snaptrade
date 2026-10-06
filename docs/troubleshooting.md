@@ -84,7 +84,8 @@ one external account. Unlink the other first, or link to another account.
 
 A code SnapTrade lists for a security the account no longer holds travels as
 SnapTrade wrote it, with no instrument. If it is a retirement plan's own
-fund code, add a row on **Plan-code links**.
+fund code, add a row on **Plan-code links**: the activity already recorded
+under it is re-resolved on the next read.
 
 ## A deposit shown as a holding
 

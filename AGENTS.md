@@ -148,6 +148,19 @@ a deployment admin approves them.
   record, its provenance who changed the row and when. The plugin only reads
   its settings and sets none (the product owner's option A, 2026-10-05):
   never keep a person's link in the plugin's storage.
+- **A link set later re-resolves what the street holds** (contract v15, SDK
+  0.20.0; meridian-design tasks/sdk-contract/an-activity-is-re-resolved-
+  when-its-instrument-resolves). A settings delivery adding or changing a
+  `plan_code_links` row (`plan_codes.changed_accounts`) backfills that
+  account again; each activity the street answers already recorded under a
+  linked code is sent `ReResolveActivity` (`contract.py`'s `_re_resolve`):
+  the link's instrument, supplied by the row's `changed_by`, at its
+  `changed_at` (`PlanCodeLink.changed_at_ns`), never the read's time and
+  never a guess where the row says none. The street keeps the activity as
+  first recorded and answers a re-resolution naming its latest resolution
+  already recorded, so the start's backfill, a restart's and a delivery
+  again re-resolve nothing twice: never remember a re-resolution in the
+  plugin, and never read the raw store back to find what to re-resolve.
 - `make ci-local` before calling anything done. The README says what each
   setting does, and how 0.1.0's saved settings still count.
 - A save changes what the plugin does, never what it is allowed to do. Roles

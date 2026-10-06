@@ -33,8 +33,8 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:7d4ce0f@sha256:62a2ac12392f3fa522da2f5976fe9584654bddf457a44928249f751b23d44fbd
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:7d4ce0f@sha256:76dade7128001105d7f6ba5970aeea027beaa2f15726308e9eb567bf1d4675f2
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:7b0b2a8@sha256:4298caa1baaae2501dec7f43b3a4a96963932203bb0e473583fdd487b6fa6683
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:7b0b2a8@sha256:f6fac3a629748c741c00bab279ffef23d952575c4d90e25eb49e474d0f84d4eb
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
@@ -52,6 +52,9 @@ E2E_STREET := $(E2E) run --rm -T store street
 # The custodian's activity and each connection's latest sync status, as the
 # street keeps them (contract v14): the harness's `store activity`.
 E2E_ACTIVITY := $(E2E) run --rm -T store activity
+# IBKR's reinvestment under the plan's own code, OQKR, as `store activity`
+# prints it up to its kind.
+E2E_PLANNED := activity|E2E IBKR|snaptrade|00000000-0000-4000-8000-00000000f116
 # How many activities synthetic Alpaca's history holds (synthetic.py), each
 # one line of `store activity` once its backfill is reported.
 E2E_ALPACA_ACTIVITIES := 16
@@ -163,11 +166,15 @@ image:
 # Alpaca's history backfilled back to its history_from, one of each kind and
 # a type as reported, each once, and every connection's latest sync status
 # with its history_from. The plugin's container made again backfills again,
-# every activity answered already recorded, and the file is unchanged. Last,
-# the admin links IBKR's plan code OQKR to SYNXX's record in the plugin's
-# Settings form, a table setting (contract v14, W6.11), the Settings tab
-# naming who changed it, and links IBKR: its first read's backfill reports
-# the reinvestment under OQKR as SYNXX's record. Then it links Fidelity's IRA:
+# every activity answered already recorded, and the file is unchanged. Then
+# the admin links IBKR: its first read's backfill reports the reinvestment
+# under the plan's own code, OQKR, as the code, nothing linking it; and links
+# OQKR to SYNXX's record in the plugin's Settings form, a table setting
+# (contract v14, W6.11), the Settings tab naming who changed it. IBKR is
+# backfilled again, and the street keeps the reinvestment as first recorded
+# with its re-resolution through the link beside it (contract v15, W2.15;
+# e2e/expected.re-resolved), the plugin saying whose link; a new container's
+# backfill re-resolves nothing twice. Then it links Fidelity's IRA:
 # its statement holds SYNDP, a deposit SnapTrade marks a cash equivalent, as
 # the USD cash that counts it (e2e/expected.ira-marked); the admin lists SYNFD
 # in the Cash links table setting (counted_as_cash), and the next statement holds two rows,
@@ -247,24 +254,45 @@ e2e: image
 		|| fail "an activity's raw record was not kept in the granted storage"; \
 	synxx="$$($(E2E_RUN) instruments 2>>.e2e/runner.log | awk -F'\t' '/SYNXX/ {print $$1; exit}')"; \
 	[ -n "$$synxx" ] || fail "the deployment holds no record for SYNXX to link a plan's code to"; \
-	saved="$$($(E2E_RUN) settings 'plan_code_links[0].account=INTERACTIVE-BROKERS-FLEX:SYN-IB-2002' \
-		'plan_code_links[0].code=OQKR' "plan_code_links[0].instrument=$$synxx" \
-		--expect 'Last changed by' 2>>.e2e/runner.log)" \
-		|| fail "the plan-code link was not set in the plugin's settings form"; \
-	printf '%s\n' "$$saved" >>.e2e/runner.log; \
 	$(E2E_RUN) form --level admin --page /admin/accounts --post /admin/accounts/link \
 		intent=create external_account_id=INTERACTIVE-BROKERS-FLEX:SYN-IB-2002 'new_account_name=E2E IBKR' \
 		--expect "Created E2E IBKR and linked" >>.e2e/runner.log 2>&1 \
 		|| fail "the Account links form did not create and link E2E IBKR"; \
 	for i in $$(seq 1 60); do \
 		$(E2E_ACTIVITY) >.e2e/activity-linked 2>>.e2e/components.log || fail "store activity did not print the street's activity"; \
-		grep -q "^activity|E2E IBKR|snaptrade|00000000-0000-4000-8000-00000000f116|3|" .e2e/activity-linked && break; \
+		grep -q "^$(E2E_PLANNED)|" .e2e/activity-linked && break; \
 		[ "$$i" = 60 ] && fail "IBKR's reinvestment under OQKR never reached the street"; \
 		sleep 1; \
 	done; \
-	planned="$$(grep '^activity|E2E IBKR|snaptrade|00000000-0000-4000-8000-00000000f116|' .e2e/activity-linked)"; \
-	echo "$$planned" | grep -q "|local(symbol:SYNXX@snaptrade)|2026-07-31|1.5$$" \
-		|| fail "IBKR's reinvestment under OQKR did not resolve through the link to SYNXX's record: $$planned"; \
+	planned="$$(grep '^$(E2E_PLANNED)|' .e2e/activity-linked)"; \
+	[ "$$planned" = "$(E2E_PLANNED)|3||2026-07-31|1.5" ] \
+		|| fail "IBKR's backfill did not report the reinvestment under OQKR as the code, nothing linking it: $$planned"; \
+	saved="$$($(E2E_RUN) settings 'plan_code_links[0].account=INTERACTIVE-BROKERS-FLEX:SYN-IB-2002' \
+		'plan_code_links[0].code=OQKR' "plan_code_links[0].instrument=$$synxx" \
+		--expect 'Last changed by' 2>>.e2e/runner.log)" \
+		|| fail "the plan-code link was not set in the plugin's settings form"; \
+	printf '%s\n' "$$saved" >>.e2e/runner.log; \
+	for i in $$(seq 1 60); do \
+		$(E2E_ACTIVITY) >.e2e/activity-re-resolved 2>>.e2e/components.log || fail "store activity did not print the street's activity"; \
+		grep -q "^re-resolution|E2E IBKR|" .e2e/activity-re-resolved && break; \
+		[ "$$i" = 60 ] && fail "IBKR's reinvestment under OQKR was never re-resolved through the link"; \
+		sleep 1; \
+	done; \
+	grep -E '^(activity|re-resolution)\|E2E IBKR\|snaptrade\|00000000-0000-4000-8000-00000000f116\|' .e2e/activity-re-resolved \
+		| diff -u e2e/expected.re-resolved - >&2 \
+		|| fail "IBKR's reinvestment is not e2e/expected.re-resolved: as first recorded, and its re-resolution through the link to SYNXX's record"; \
+	who="$$($(E2E) logs --no-color snaptrade 2>>.e2e/components.log | grep -o 're-resolved activity 00000000-0000-4000-8000-00000000f116 under OQKR to .*' | tail -1)"; \
+	[ -n "$$who" ] || fail "the plugin did not say whose link re-resolved IBKR's reinvestment"; \
+	$(E2E) up -d --no-deps --force-recreate snaptrade >>.e2e/components.log 2>&1 || fail "the plugin's container was not made again"; \
+	for i in $$(seq 1 60); do \
+		$(E2E) logs --no-color snaptrade 2>>.e2e/components.log | grep -q "backfilled INTERACTIVE-BROKERS-FLEX:SYN-IB-2002: .*, 0 recorded for the first time, 0 re-resolved through a plan-code link" && break; \
+		[ "$$i" = 60 ] && fail "the new container did not backfill IBKR again, re-resolving nothing"; \
+		sleep 1; \
+	done; \
+	$(E2E_ACTIVITY) 2>>.e2e/components.log \
+		| grep -E '^(activity|re-resolution)\|E2E IBKR\|snaptrade\|00000000-0000-4000-8000-00000000f116\|' \
+		| diff -u e2e/expected.re-resolved - >&2 \
+		|| fail "the backfill again from a new container re-resolved IBKR's reinvestment twice"; \
 	$(E2E_RUN) form --level admin --page /admin/accounts --post /admin/accounts/link \
 		intent=create external_account_id=FIDELITY:SYN-FID-4004 'new_account_name=E2E IRA' \
 		--expect "Created E2E IRA and linked" >>.e2e/runner.log 2>&1 \
@@ -289,7 +317,7 @@ e2e: image
 	done; \
 	grep '|E2E IRA|' .e2e/street-listed | diff -u e2e/expected.ira-listed - >&2 \
 		|| fail "E2E IRA's statement once SYNFD is listed is not e2e/expected.ira-listed"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then OQKR linked to SYNXX's record in the plugin's settings ($$saved), and IBKR's next read's reinvestment under OQKR resolved through it; E2E IRA's deposit SnapTrade marks a cash equivalent sent as its cash, and once SYNFD is listed in the plugin's settings ($$listed) the next statement is two rows, USD cash 12.99, supplied by who listed it, and no SYNFD"
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then IBKR's backfill reported its reinvestment under OQKR as the code, and once OQKR was linked to SYNXX's record in the plugin's settings ($$saved) the street kept it as first recorded with its re-resolution beside it, as e2e/expected.re-resolved ($$who), and a new container's backfill re-resolved nothing twice; E2E IRA's deposit SnapTrade marks a cash equivalent sent as its cash, and once SYNFD is listed in the plugin's settings ($$listed) the next statement is two rows, USD cash 12.99, supplied by who listed it, and no SYNFD"
 
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
