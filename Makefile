@@ -33,14 +33,15 @@ MERIDIAN_VERSION := $(shell sed -n 's/^ *MERIDIAN_VERSION: *\([0-9][0-9.]*\).*/\
 # chooses, and with the SDK when a contract version changes. `make e2e
 # RUNTIME_IMAGE=...:latest HARNESS_IMAGE=...:latest` tries a newer core;
 # e2e-latest.yaml does that weekly.
-RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:7b0b2a8@sha256:4298caa1baaae2501dec7f43b3a4a96963932203bb0e473583fdd487b6fa6683
-HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:7b0b2a8@sha256:f6fac3a629748c741c00bab279ffef23d952575c4d90e25eb49e474d0f84d4eb
+RUNTIME_IMAGE ?= ghcr.io/open-meridian/meridian-runtime:25fbf37@sha256:69044603307dcaec50c7c635d7c2f187f44bbec82abd3b8a26a7704cea137e23
+HARNESS_IMAGE ?= ghcr.io/open-meridian/meridian-harness:25fbf37@sha256:ce32f3eea58f2326d73d2ab4c9f64da0656364484f7ed731843006b4c9ddecfd
 # Its roles as pyproject.toml declares them (a JSON list's items), so the
 # harness launches it as `meridian plugin upload` would.
 ROLES := $(shell sed -n 's/^roles *= *\[\(.*\)\]/\1/p' pyproject.toml | tr -d ' ')
-# The harness's one plugin, this one, as instance snaptrade: the list
-# `harness.py compose` writes the plugins' half of the deployment from.
-PLUGINS := [{"instance": "snaptrade", "image": "$(IMAGE)", "roles": [$(ROLES)]}]
+# The harness's one plugin, this one, as instance snaptrade, given the
+# harness's archive beside its storage (contract v16): the list `harness.py
+# compose` writes the plugins' half of the deployment from.
+PLUGINS := [{"instance": "snaptrade", "image": "$(IMAGE)", "roles": [$(ROLES)], "archive": true}]
 # The plugin harness copied out of HARNESS_IMAGE, as its own project, with
 # the plugins it wrote and e2e/plugin.yaml's root for the plugin. Every
 # compose command gets the runtime, since compose reads every file each time.
@@ -80,6 +81,23 @@ export E2E_ACTIVITY_RAW := from snaptrade.raw import RawStore, storage_root; \
 export E2E_RAW_KEPT := import os; from snaptrade.raw import RawStore, storage_root; \
 	k = os.environ["E2E_KEPT"]; keys = [r.key for r in RawStore(storage_root()).reads("ALPACA:SYN-ALP-1001")]; \
 	assert k in keys, (k, keys); print("read", k, "kept across a new container")
+# The archive (contract v16). A read of Alpaca's kept as if E2E_DAYS ago, a
+# copy of its latest under that time, in the storage the harness grants: the
+# record past its window that the run moves. Prints its key and its unit, the
+# day it is in, as the plugin names it to the SDK.
+export E2E_PLANT := import os; from datetime import UTC, datetime, timedelta; from meridian import edge; \
+	from snaptrade.raw import RawStore, Taken, storage_root; a = "ALPACA:SYN-ALP-1001"; \
+	s = RawStore(storage_root(), edge.storage_dir()); doc = dict(s.latest(a).document); \
+	when = datetime.now(UTC) - timedelta(days=int(os.environ["E2E_DAYS"])); doc["read_at"] = when.isoformat(); \
+	k = s.keep_one(Taken(a, doc)); d = f"{k[0:4]}-{k[4:6]}-{k[6:8]}"; \
+	[u] = [u.unit for u in s.units("responses") if u.path.name == d and f"{k}.json.gz" in u.files]; print(k, u)
+# Where a unit is: in the plugin's storage, or in the archive the harness
+# gives it (MERIDIAN_ARCHIVE_DIR), by E2E_UNIT; exits 1 where it is not as
+# E2E_WHERE says.
+export E2E_WHERE := import os, sys; from meridian import edge; u = os.environ["E2E_UNIT"]; \
+	stored = (edge.storage_dir() / u).exists(); archived = (edge.archive_dir() / u).is_dir(); \
+	said = {"archive": archived and not stored, "storage": stored}[os.environ["E2E_WHERE"]]; \
+	print(u, "in storage" if stored else "", "in the archive" if archived else ""); sys.exit(0 if said else 1)
 
 help:
 	@echo "  make ci-local       every gate: lint, tests, plugin check, the plugin's image, and e2e (the pre-push gate)"
@@ -317,15 +335,70 @@ e2e: image
 	done; \
 	grep '|E2E IRA|' .e2e/street-listed | diff -u e2e/expected.ira-listed - >&2 \
 		|| fail "E2E IRA's statement once SYNFD is listed is not e2e/expected.ira-listed"; \
-	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then IBKR's backfill reported its reinvestment under OQKR as the code, and once OQKR was linked to SYNXX's record in the plugin's settings ($$saved) the street kept it as first recorded with its re-resolution beside it, as e2e/expected.re-resolved ($$who), and a new container's backfill re-resolved nothing twice; E2E IRA's deposit SnapTrade marks a cash equivalent sent as its cash, and once SYNFD is listed in the plugin's settings ($$listed) the next statement is two rows, USD cash 12.99, supplied by who listed it, and no SYNFD"
+	planted="$$($(E2E) exec -T -e E2E_DAYS=40 snaptrade python -c "$$E2E_PLANT" 2>>.e2e/components.log)" \
+		|| fail "no read of Alpaca's was kept as if 40 days ago"; \
+	oldkey="$${planted%% *}"; oldunit="$${planted##* }"; \
+	$(E2E_RUN) archive allow --bound-gib 1 >>.e2e/runner.log 2>&1 || fail "the plugin was not allowed an archive"; \
+	$(E2E_RUN) settings responses_past_window=archived >>.e2e/runner.log 2>&1 \
+		|| fail "the raw responses' past-the-window choice was not set to archived"; \
+	for i in $$(seq 1 60); do \
+		$(E2E) run --rm -T store moves >.e2e/moves 2>>.e2e/components.log || fail "store moves did not print the moves"; \
+		grep -q "^move|snaptrade|responses|$$oldunit|archived|1|.*|responses_window_days 30|$$" .e2e/moves && break; \
+		[ "$$i" = 60 ] && fail "the read 40 days old was never archived past its window: $$(cat .e2e/moves)"; \
+		sleep 1; \
+	done; \
+	where="$$($(E2E) exec -T -e E2E_UNIT="$$oldunit" -e E2E_WHERE=archive snaptrade python -c "$$E2E_WHERE" 2>>.e2e/components.log)" \
+		|| fail "the archived unit is not in the archive alone: $$where"; \
+	$(E2E_RUN) page --level read "/raw?ref=ALPACA:SYN-ALP-1001/$$oldkey/positions" --until "in the archive, and restorable" \
+		>>.e2e/runner.log 2>&1 || fail "a row's reference to the archived read did not resolve to archived, restorable"; \
+	$(E2E_RUN) grant --level write >>.e2e/runner.log 2>&1 || fail "write on the plugin was not granted"; \
+	$(E2E_RUN) form --level write --page /raw/archive --post /archive/restore record_kind=responses "unit=$$oldunit" \
+		>>.e2e/runner.log 2>&1 || fail "the Raw responses tab's archive did not restore the unit through the SDK's route"; \
+	for i in $$(seq 1 60); do \
+		$(E2E) run --rm -T store moves >.e2e/moves 2>>.e2e/components.log || fail "store moves did not print the moves"; \
+		grep -q "^move|snaptrade|responses|$$oldunit|restored|1|.*||.\+$$" .e2e/moves && break; \
+		[ "$$i" = 60 ] && fail "the restore was never recorded for the person who asked: $$(cat .e2e/moves)"; \
+		sleep 1; \
+	done; \
+	$(E2E_RUN) page --level read "/raw/archive" --until 'data-state="restored"' >>.e2e/runner.log 2>&1 \
+		|| fail "the archive did not list the unit restored"; \
+	$(E2E_RUN) page --level read "/raw?account=ALPACA:SYN-ALP-1001&read=$$oldkey" --until "restored from the archive" \
+		>>.e2e/runner.log 2>&1 || fail "the restored read was not read back on the Raw responses tab"; \
+	$(E2E_RUN) settings responses_window_days=1 responses_past_window=deleted >>.e2e/runner.log 2>&1 \
+		|| fail "the raw responses' window was not set to a day, deleted past it"; \
+	$(E2E_RUN) hold 30 --role custody >>.e2e/runner.log 2>&1 || fail "a hold of 30 days was not set over custody"; \
+	planted="$$($(E2E) exec -T -e E2E_DAYS=5 snaptrade python -c "$$E2E_PLANT" 2>>.e2e/components.log)" \
+		|| fail "no read of Alpaca's was kept as if 5 days ago"; \
+	heldunit="$${planted##* }"; \
+	$(E2E_RUN) form --level write --page /raw --post /read back=/raw --expect "Reading SnapTrade now" \
+		>>.e2e/runner.log 2>&1 || fail "Refresh did not read SnapTrade now"; \
+	for i in $$(seq 1 60); do \
+		$(E2E) logs --no-color snaptrade 2>>.e2e/components.log | grep -q "$$heldunit: kept inside the deployment's hold" && break; \
+		[ "$$i" = 60 ] && fail "the read 5 days old, past its window of a day and inside the hold, was not kept"; \
+		sleep 1; \
+	done; \
+	$(E2E) exec -T -e E2E_UNIT="$$heldunit" -e E2E_WHERE=storage snaptrade python -c "$$E2E_WHERE" >>.e2e/runner.log 2>>.e2e/components.log \
+		|| fail "the unit inside the hold is not in storage"; \
+	$(E2E) run --rm -T store moves >.e2e/moves-held 2>>.e2e/components.log || fail "store moves did not print the moves"; \
+	! grep -q '|deleted|' .e2e/moves-held || fail "a deletion inside the hold was recorded: $$(grep '|deleted|' .e2e/moves-held)"; \
+	$(E2E) up -d --no-deps --force-recreate snaptrade >>.e2e/components.log 2>&1 || fail "the plugin's container was not made again"; \
+	for i in $$(seq 1 90); do \
+		$(E2E) logs --no-color snaptrade 2>>.e2e/components.log | grep -q "$$heldunit: kept inside the deployment's hold" && break; \
+		[ "$$i" = 90 ] && fail "the new container's pass did not keep the unit inside the hold again"; \
+		sleep 1; \
+	done; \
+	$(E2E) run --rm -T store moves >.e2e/moves-again 2>>.e2e/components.log || fail "store moves did not print the moves"; \
+	diff -u .e2e/moves-held .e2e/moves-again >&2 || fail "the new container's pass recorded a move again"; \
+	moved="$$(grep -c '^move|' .e2e/moves-again)"; \
+	echo "e2e OK in $$(( $$(date +%s) - started ))s on $(RUNTIME_IMAGE) and its harness: synthetic on and E2E Alpaca linked through Account links; the street store is e2e/expected.street, nothing for the accounts left unlinked, which the dashboard counts ($$unlinked); Alpaca's history backfilled to 2025-06-02, every kind and a type as reported, as e2e/expected.activity, each sync status with its history_from, and the backfill again from a new container recorded nothing twice ($$activity); the raw responses kept in its granted storage on a read-only root ($$raw), a holding's reference resolved on the Raw responses tab, and the $$kept; then IBKR's backfill reported its reinvestment under OQKR as the code, and once OQKR was linked to SYNXX's record in the plugin's settings ($$saved) the street kept it as first recorded with its re-resolution beside it, as e2e/expected.re-resolved ($$who), and a new container's backfill re-resolved nothing twice; E2E IRA's deposit SnapTrade marks a cash equivalent sent as its cash, and once SYNFD is listed in the plugin's settings ($$listed) the next statement is two rows, USD cash 12.99, supplied by who listed it, and no SYNFD; then, allowed an archive, a read 40 days old was archived past its window of 30 days ($$where), its row's reference resolved to archived, restorable, restored on the Raw responses tab through the SDK's route for the person who asked, and read back; a read 5 days old, past a window of a day with deleted chosen, was kept inside a hold of 30 days, nothing recorded; and the new container's pass recorded nothing twice ($$moved moves in all)"
 
 preview:
 	@$(DOCKER) build $(SDK_CONTEXT) -f Dockerfile.check --target test -t $(CHECK) . >/dev/null 2>&1
 	@mkdir -p preview
-	@for tab in connections accounts statements raw; do \
+	@for tab in connections accounts statements raw raw-kept raw-archive; do \
 		docker run --rm $(CHECK) python -m snaptrade.preview $$tab >preview/$$tab.html || exit 1; \
 	done
-	@echo "preview: preview/connections.html, preview/accounts.html, preview/statements.html, preview/raw.html"
+	@echo "preview: preview/connections.html, preview/accounts.html, preview/statements.html, preview/raw.html, preview/raw-kept.html, preview/raw-archive.html"
 
 # Applied in a container and written back, because the host has no toolchain.
 fmt:

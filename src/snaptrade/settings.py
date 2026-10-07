@@ -23,6 +23,24 @@ lost. The sidecar delivers only the settings a plugin declares, so leaving it
 undeclared would hide the saved value from this plugin; and the dashboard's
 form leaves a setting it does not show as it is when it saves. It is read only
 while `snaptrade_key_type` is unset (`key_type_of`).
+
+**The windows** (contract v16; meridian-design spec/an-edge-plugins-older-
+records-move-to-the-archive). How long each kind of raw record stays in the
+plugin's storage, and what is done with it past that, are two settings per
+kind the SDK declares for every edge plugin alike, from the kinds
+declaration.py declares: `activity_window_days` and `activity_past_window`
+for a reported activity's record, `responses_window_days` and
+`responses_past_window` for each read's raw responses. Their names are the
+SDK's (`<kind>_window_days`, `<kind>_past_window`), reserved: this module
+declares neither, and reads them as delivered (`windows_from`).
+
+0.12.0's two settings, `raw_retention_days` and `activity_retention_days`,
+became those windows in 0.13.0, their values carried over: both are still
+declared, as developer settings with no default, so a value a deployment
+saved under one is delivered, and is the kind's window while the window
+setting holds its default. The SDK fills a declared default into the values,
+so the window setting's default is read as unset; an admin who sets the
+window to anything else has set it, and the old value no longer counts.
 """
 
 from __future__ import annotations
@@ -44,6 +62,7 @@ USER_ID = "snaptrade_user_id"
 USER_SECRET = "snaptrade_user_secret"
 POLL_SECONDS = "poll_seconds"
 STALE_AFTER_HOURS = "stale_after_hours"
+# 0.12.0's retention settings, which became the windows below in 0.13.0.
 RAW_RETENTION_DAYS = "raw_retention_days"
 ACTIVITY_RETENTION_DAYS = "activity_retention_days"
 PLAN_CODE_LINKS = "plan_code_links"
@@ -58,14 +77,26 @@ COMMERCIAL = "commercial"
 DEFAULT_POLL_SECONDS = 300
 LEAST_POLL_SECONDS = 60
 DEFAULT_STALE_AFTER_HOURS = 24
-# How long SnapTrade's raw responses are kept (raw.py), and the least.
+# The kinds of raw record (declaration.py) by the names their window settings
+# take, and the SDK's names for those settings (W6.11, contract v16).
+RESPONSES = "responses"
+ACTIVITY = "activity"
+RESPONSES_WINDOW = f"{RESPONSES}_window_days"
+RESPONSES_PAST = f"{RESPONSES}_past_window"
+ACTIVITY_WINDOW = f"{ACTIVITY}_window_days"
+ACTIVITY_PAST = f"{ACTIVITY}_past_window"
+# What is done with a record past its window: the SDK's three choices.
+ARCHIVED, KEPT, DELETED = "archived", "kept", "deleted"
+PAST_WINDOW = (ARCHIVED, KEPT, DELETED)
+# How long each read's raw responses stay in storage by default, and the least
+# (the SDK's bound): the responses kind's declared window.
 DEFAULT_RAW_RETENTION_DAYS = 30
 LEAST_RAW_RETENTION_DAYS = 1
-# How long a reported activity's raw record is kept from when it was received
-# (raw.py; the product owner, 2026-10-05): seven years by default, past the
-# two SnapTrade holds of an account's history at Fidelity; an admin may keep
-# it longer, up to the most the storage declaration states, and never shorter
-# than the history SnapTrade reported, which raw.py keeps it to whatever is set.
+# How long a reported activity's raw record stays in storage from when it was
+# received, by default (the product owner, 2026-10-05): seven years, past the
+# two SnapTrade holds of an account's history at Fidelity; an admin may set it
+# longer, up to the most the SDK's window takes, and a record is never deleted
+# within the history SnapTrade reported, which raw.py holds it to.
 DEFAULT_ACTIVITY_RETENTION_DAYS = 2555
 MOST_ACTIVITY_RETENTION_DAYS = 36500
 
@@ -140,30 +171,6 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
-        RAW_RETENTION_DAYS,
-        int,
-        label="Keep raw responses for",
-        default=DEFAULT_RAW_RETENTION_DAYS,
-        unit="days",
-        description=(
-            "How long SnapTrade's responses to each read are kept as received, for the "
-            f"Raw responses tab. At least {LEAST_RAW_RETENTION_DAYS}; older ones are removed."
-        ),
-    ),
-    meridian.Setting(
-        ACTIVITY_RETENTION_DAYS,
-        int,
-        label="Keep activity records for",
-        default=DEFAULT_ACTIVITY_RETENTION_DAYS,
-        unit="days",
-        description=(
-            "How long the record of each activity SnapTrade reported is kept, from when it "
-            "was received. Never shorter than the history SnapTrade reported, which a shorter "
-            f"value is kept to (the Account links tab says so); at most "
-            f"{MOST_ACTIVITY_RETENTION_DAYS}."
-        ),
-    ),
-    meridian.Setting(
         PLAN_CODE_LINKS,
         list,
         label="Plan-code links",
@@ -233,6 +240,28 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
+        RAW_RETENTION_DAYS,
+        int,
+        label="Keep raw responses for (before 0.13.0)",
+        unit="days",
+        developer=True,
+        description=(
+            "Replaced by Raw responses: window, and read only while that holds its default. "
+            "Kept so a value saved before 0.13.0 still counts."
+        ),
+    ),
+    meridian.Setting(
+        ACTIVITY_RETENTION_DAYS,
+        int,
+        label="Keep activity records for (before 0.13.0)",
+        unit="days",
+        developer=True,
+        description=(
+            "Replaced by Reported activity: window, and read only while that holds its "
+            "default. Kept so a value saved before 0.13.0 still counts."
+        ),
+    ),
+    meridian.Setting(
         PERSONAL_KEY,
         bool,
         label="Personal key (the old way)",
@@ -265,6 +294,32 @@ class Credentials:
 
 
 @dataclass(frozen=True)
+class Window:
+    """One kind's window, and what is done with a record past it, as the
+    settings say; `carried` names 0.12.0's setting it was carried from, where
+    it was."""
+
+    days: int
+    past: str
+    carried: str = ""
+
+    @property
+    def length(self) -> timedelta:
+        return timedelta(days=self.days)
+
+
+@dataclass(frozen=True)
+class Windows:
+    """The two kinds' windows (contract v16)."""
+
+    responses: Window = Window(DEFAULT_RAW_RETENTION_DAYS, KEPT)
+    activity: Window = Window(DEFAULT_ACTIVITY_RETENTION_DAYS, KEPT)
+
+    def of(self, kind: str) -> Window:
+        return self.responses if kind == RESPONSES else self.activity
+
+
+@dataclass(frozen=True)
 class Config:
     """The settings as this plugin uses them, with defaults applied."""
 
@@ -277,9 +332,8 @@ class Config:
     poll_seconds: int = DEFAULT_POLL_SECONDS
     stale_after: timedelta = timedelta(hours=DEFAULT_STALE_AFTER_HOURS)
     user_id: str = ""
-    raw_retention: timedelta = timedelta(days=DEFAULT_RAW_RETENTION_DAYS)
-    # As set: raw.py keeps a record at least as long as the history reported.
-    activity_retention: timedelta = timedelta(days=DEFAULT_ACTIVITY_RETENTION_DAYS)
+    # Each kind's window and what is done past it (`windows_from`).
+    windows: Windows = field(default_factory=lambda: Windows())
     # The plan-code links people made, as the settings deliver them
     # (plan_codes.py).
     plan_codes: tuple[PlanCodeLink, ...] = ()
@@ -364,8 +418,6 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
     )
     poll = _number(values, POLL_SECONDS)
     stale = _number(values, STALE_AFTER_HOURS)
-    kept = _number(values, RAW_RETENTION_DAYS)
-    activity_kept = _number(values, ACTIVITY_RETENTION_DAYS)
     return Config(
         synthetic=values.get(SYNTHETIC) is True,
         key_type=key_type,
@@ -376,18 +428,46 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
             hours=stale if stale is not None and stale > 0 else DEFAULT_STALE_AFTER_HOURS
         ),
         user_id="" if personal else _text(values, USER_ID),
-        raw_retention=timedelta(
-            days=DEFAULT_RAW_RETENTION_DAYS
-            if kept is None
-            else max(kept, LEAST_RAW_RETENTION_DAYS)
-        ),
-        activity_retention=timedelta(
-            days=DEFAULT_ACTIVITY_RETENTION_DAYS
-            if activity_kept is None or activity_kept < 1
-            else min(activity_kept, MOST_ACTIVITY_RETENTION_DAYS)
-        ),
+        windows=windows_from(values),
         plan_codes=links_of(values.get(PLAN_CODE_LINKS)),
         counted_as_cash=rows_of(values.get(COUNTED_AS_CASH)),
+    )
+
+
+def _window(values: Values, window: str, past: str, old: str, default: int) -> Window:
+    """A kind's window as delivered, or 0.12.0's setting's value where one is
+    saved and the window holds its default; within the SDK's bound."""
+    days, carried = _number(values, window), ""
+    saved = _number(values, old)
+    if (days is None or days == default) and saved is not None and saved != default:
+        days, carried = saved, old
+    if days is None:
+        days = default
+    days = min(max(days, LEAST_RAW_RETENTION_DAYS), MOST_ACTIVITY_RETENTION_DAYS)
+    chosen = values.get(past)
+    return Window(days, chosen if chosen in PAST_WINDOW else KEPT, carried)
+
+
+def windows_from(values: Values) -> Windows:
+    """Each kind's window and what is done past it, from the settings the SDK
+    declares for it (W6.11), 0.12.0's carried over (the module's note). Past
+    the window is `kept` where the settings say nothing: the SDK's default is
+    filled in by it, `archived` only where the instance has an archive."""
+    return Windows(
+        responses=_window(
+            values,
+            RESPONSES_WINDOW,
+            RESPONSES_PAST,
+            RAW_RETENTION_DAYS,
+            DEFAULT_RAW_RETENTION_DAYS,
+        ),
+        activity=_window(
+            values,
+            ACTIVITY_WINDOW,
+            ACTIVITY_PAST,
+            ACTIVITY_RETENTION_DAYS,
+            DEFAULT_ACTIVITY_RETENTION_DAYS,
+        ),
     )
 
 

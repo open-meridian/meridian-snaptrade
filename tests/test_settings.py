@@ -99,8 +99,14 @@ def test_reading_and_staleness_are_optional_with_a_default_and_a_unit() -> None:
     assert BY_NAME[POLL_SECONDS]._declared().default_value == "300"
 
 
-def test_synthetic_mode_and_the_old_personal_key_are_developer_settings() -> None:
-    assert [s.name for s in DECLARED if s.developer] == [SYNTHETIC, PERSONAL_KEY]
+def test_synthetic_mode_and_the_old_settings_are_developer_settings() -> None:
+    # 0.12.0's retention settings, carried into the windows (test_archive.py).
+    assert [s.name for s in DECLARED if s.developer] == [
+        SYNTHETIC,
+        "raw_retention_days",
+        "activity_retention_days",
+        PERSONAL_KEY,
+    ]
     assert BY_NAME[SYNTHETIC].default is False
     # No default: unset has to stay unset, or the new key type would never decide.
     assert BY_NAME[PERSONAL_KEY].default is None and not BY_NAME[PERSONAL_KEY].required

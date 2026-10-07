@@ -1711,8 +1711,11 @@ def test_each_page_is_built_on_the_kits_base_template_with_no_style_of_its_own()
 
 def test_the_tab_row_on_its_own_is_the_sessions_levels() -> None:
     shown = all_pages()
+    # The base's tab row, the first: Raw responses has a row of its own views.
     tabs = {
-        name: re.findall(r'<a class="tab[^"]*" href="([^"]+)"', page)
+        name: re.findall(
+            r'<a class="tab[^"]*" href="([^"]+)"', page.split('<nav class="tabs"', 2)[1]
+        )
         for name, page in shown.items()
     }
     # Under Manage, its two tabs; under Open and View, its three others.
@@ -1726,7 +1729,8 @@ def test_the_kit_is_the_one_that_draws_refresh_as_an_icon() -> None:
     # 0.8.0: a header action marked data-om-icon="refresh" drawn as a circular
     # arrow, by the dashboard beside the status dot (0.7.0's header status,
     # 0.6.0's om-status and 0.5.0's map are in it too: a 0.x release only adds).
-    assert KIT == "0.8.0" and pages.kit == "/.meridian/ui/0.8.0/"
+    # 0.10.0: one screen, one-line rows and om-pager, which Raw responses uses.
+    assert KIT == "0.10.0" and pages.kit == "/.meridian/ui/0.10.0/"
 
 
 def grid_element(shown: str, grid_id: str) -> str:

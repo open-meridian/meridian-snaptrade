@@ -15,11 +15,14 @@ connections, account identities and their links.
 
 Drawn by the dashboard. The plugin's health, then three figures from each
 read: **Connections** (marked when any needs attention, saying how many and
-why), **Accounts reached**, and **Last read**.
+why), **Accounts reached**, and **Last read**; and its raw records: for each
+kind, how many are in storage and in the archive, from when to when, and
+every move.
 
 ### Settings
 
-The dashboard's form for the key and the timings. See [Setup](setup.md).
+The dashboard's form for the key, the timings, and each kind of record's
+window and what happens past it. See [Setup](setup.md).
 
 ### Plan-code links and Cash links
 
@@ -48,8 +51,8 @@ Unlinked, Linked or All, grouped by connection and paged. Link, create (a
 deployment admin), Unlink, or take the suggestions. See
 [Setup](setup.md#3-link-accounts).
 
-One line says how many plan-code links and cash links are set, and how long
-activity records are kept, as set and as actually kept.
+One line says how many plan-code links and cash links are set, how long
+activity records stay in storage and what happens to them after.
 
 ## Under Open and View: daily work
 
@@ -82,7 +85,19 @@ an opening balance, where you check them and answer for them.
 
 ### Raw responses
 
-What SnapTrade answered, as received: for each account, the latest read,
-each call by name with SnapTrade's answer formatted, or why it failed; older
-reads below, twenty at a time. **Download JSON** saves a read as kept. Use
-it to see exactly what SnapTrade said when a figure looks wrong.
+What SnapTrade answered, as received, one account at a time (choose it at
+the top). Three views:
+
+- **Read**: the latest read, each call on one line; click a line to see
+  SnapTrade's answer, formatted, or why it failed. **Download JSON** saves
+  the read as kept.
+- **Kept reads**: every read still in storage, and any restored from the
+  archive, newest first, a page at a time.
+- **Archive**: what moved past its window, for every account you may read:
+  a day of raw responses or a month of activity records each, archived,
+  restored (readable until the date shown) or deleted. Under **Open**,
+  **Restore** brings an archived one back for seven days, and its reads
+  appear under Read and Kept reads; the restore is recorded in your name.
+
+Use it to see exactly what SnapTrade said when a figure looks wrong. A link
+to a record that moved says where it is, with Restore beside it.

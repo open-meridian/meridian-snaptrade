@@ -5,16 +5,24 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion), and each account's activity as the
-custodian states it. It holds the `custody` role. This is release 0.12.0
+custodian states it. It holds the `custody` role. This is release 0.13.0
 (CHANGELOG.md says what each release changed). How to set it up and use it,
 for its admin and its readers, is in [docs/](docs/README.md). How a plugin
 like it is built is documented at [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.20.0`, which declares
-contract v15, access per role (meridian-design
-tasks/sdk-contract/access-is-granted-per-role): a plugin holding one role, as
-this one does, names none on its pages and settings, and nothing it serves
-changed; and an activity recorded with its instrument unresolved is
+It is built on the SDK it pins, `open-meridian==0.21.0`, which declares
+contract v16, an edge plugin's older records move to the archive
+(meridian-design tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-
+archive): its two kinds of raw record, reported activity and raw responses,
+are declared with their windows, which became the SDK's window settings with
+0.12.0's values carried over; past its window a day of raw responses or a
+month of activity records is archived, kept or deleted as an admin of the
+plugin chose, each move recorded first and a deletion inside the
+deployment's hold refused; what storage holds goes on the heartbeat; and the
+Raw responses tab lists what moved and restores it ("The archive", below).
+Since contract v15, access per role (tasks/sdk-contract/access-is-granted-
+per-role): a plugin holding one role, as this one does, names none on its
+pages and settings, and nothing it serves changed; and an activity recorded with its instrument unresolved is
 re-resolved once it resolves (tasks/sdk-contract/an-activity-is-re-resolved-
 when-its-instrument-resolves): an activity the street holds under a plan's
 own code a person links later is re-resolved through the link, the activity
@@ -79,9 +87,10 @@ On start, on every settings change, and every `poll_seconds`, it:
    once ("The custodian's activity", below).
 
 It holds nothing between reads that it needs: a restart reads again. What
-SnapTrade answered each read is kept beside, per account, for its retention,
-for the Raw responses tab ("Raw responses: what SnapTrade said", below);
-nothing is ever read back from it into what is recorded.
+SnapTrade answered each read is kept beside, per account, for the Raw
+responses tab ("Raw responses: what SnapTrade said", below), and past its
+window archived, kept or deleted as an admin of the plugin chose ("The
+archive", below); nothing is ever read back from it into what is recorded.
 
 When a person or an agent asks, it also reads an account's history from
 SnapTrade -- its activities over a range, back to the first transaction
@@ -141,11 +150,11 @@ SnapTrade lists them.
   and the rest go on, and the account not linked stops them.
 - **Its raw record is its own**, `activities/<external account>/<activity
   ID>`: SnapTrade's entry for it as the read that first reported it received
-  it, kept for `activity_retention_days` from when it was received (seven
-  years by default; an admin may keep it longer, up to the 36,500 days the
-  storage declaration asks for), and never for less than the history
-  SnapTrade reported, past the read retention, so each activity the street
-  holds can have its record read back on the Raw responses tab
+  it, in storage for its kind's window from when it was received (seven
+  years by default, `activity_window_days`; an admin may set it longer, up to
+  36,500 days), then archived, kept or deleted, and never deleted within the
+  history SnapTrade reported, so each activity the street holds can have its
+  record read back, or restored and read back, on the Raw responses tab
   (`/raw?ref=<key>`).
 - **The plan-code link** (question 4; the product owner's option A,
   2026-10-05): the table setting `plan_code_links`, entered by an admin of
@@ -262,11 +271,15 @@ without any of them.
 | `snaptrade_user_secret` | User secret | text | yes | with a commercial key | that user's secret |
 | `poll_seconds` | Read every | number, seconds | no | no | how often to read; default 300, at least 60 |
 | `stale_after_hours` | Stale after | number, hours | no | no | when a sync is stale; default 24 |
-| `raw_retention_days` | Keep raw responses for | number, days | no | no | how long SnapTrade's responses to each read are kept for the Raw responses tab; default 30, at least 1. A reported activity's own record is kept for `activity_retention_days`, whatever this says |
-| `activity_retention_days` | Keep activity records for | number, days | no | no | how long the record of each activity SnapTrade reported is kept, from when it was received; default 2555 (seven years), at most 36500. Never shorter than the history SnapTrade reported: a shorter value is kept to that, which the Account links tab shows. Set only in this form; no page of the plugin sets it |
+| `activity_window_days` | Reported activity: window | number, days | no | no | the SDK's (below): how long the record of each activity SnapTrade reported stays in this plugin's storage, from when it was received; default 2555 (seven years), 1 to 36500, never below the deployment's hold |
+| `activity_past_window` | Reported activity: past the window | choice | no | no | the SDK's: `archived`, `kept` or `deleted`; default `archived` where the deployment gives the instance an archive, else `kept`. Never deleted within the history SnapTrade reported, nor inside the hold |
+| `responses_window_days` | Raw responses: window | number, days | no | no | the SDK's: how long SnapTrade's responses to each read stay in storage for the Raw responses tab; default 30, 1 to 36500, never below the hold |
+| `responses_past_window` | Raw responses: past the window | choice | no | no | the SDK's: `archived`, `kept` or `deleted`, defaulting as above |
 | `plan_code_links` | Plan-code links | table: account, plan code, instrument | no | no | each plan's own fund code on an account, linked to the instrument record it is; at most 200 rows. Each row arrives with who changed it and when |
 | `counted_as_cash` | Cash links | table: account (external account, optional), symbol (text), currency (text, an ISO 4217 code), the order of Plan-code links' columns | no | no | positions a custodian holds as cash that SnapTrade does not mark a cash equivalent, such as Fidelity's FDIC-insured deposit as an IRA's core position (`FDIC99532`): each is sent as the cash of its currency, naming who listed it and when (above). The symbol as SnapTrade names it; a blank account is every account holding it, and a row naming the account comes first; at most 200 rows. A fund stays a fund. Where SnapTrade marks the position itself, its own flag decides and the row is not read |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
+| `raw_retention_days` | Keep raw responses for (before 0.13.0) | number, days, developer | no | no | 0.12.0's, carried into `responses_window_days` (below) |
+| `activity_retention_days` | Keep activity records for (before 0.13.0) | number, days, developer | no | no | 0.12.0's, carried into `activity_window_days` (below) |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
 A developer's setting is shown in the form only on a development deployment.
@@ -275,6 +288,28 @@ its label: Plan-code links and Cash links, their columns in one order
 (Account | Plan code / Symbol | Instrument / Currency; the product owner,
 2026-10-05). A row is kept by column name, so one saved before 0.11.1, when
 Cash links' account came last, reads the same.
+
+**The windows** (contract v16) are not this plugin's own: the SDK declares
+two settings for each kind of raw record a version declares
+(`src/snaptrade/declaration.py`: Reported activity and Raw responses), the
+same for every edge plugin, named from the kind, and the deployment refuses a
+window below its hold and `archived` where a deployment admin has allowed no
+archive. Every setting is set in the dashboard's Settings form; no page of
+the plugin sets one.
+
+**From 0.12.0.** 0.12.0 kept a read's responses for `raw_retention_days` and
+an activity's record for `activity_retention_days`, then deleted them. 0.13.0
+carries both into the windows: they stay declared, as developer settings with
+no default, so a value a deployment saved under either is still delivered,
+and it is the kind's window while the window setting holds its default. The
+SDK fills a declared default into what it delivers, so a window holding its
+default reads as one never set; set to anything else, the window counts and
+the old value does not. A deployment that saved neither, or saved the
+default, has nothing to carry: 30 days and 2555 days are the windows'
+defaults too. To take a window's default exactly where an old value is
+saved, clear the old setting (shown on a development deployment). What 0.12.0
+deleted past its retention is not brought back; from 0.13.0 nothing is
+deleted unless an admin chooses `deleted`.
 
 **From 0.1.0.** 0.1.0 said the key's kind with `snaptrade_personal_key`, on or
 off. While `snaptrade_key_type` is unset, a saved `snaptrade_personal_key`
@@ -426,16 +461,35 @@ answer for it. Nothing here sends a lot anywhere.
 each account Statements shows the person: linked to one of the deployment's
 accounts they may read, and no other (the same `caller.may_read`, cut by the
 plugin's links rather than by what the last read reached, so a read kept
-before a restart shows before the next one). For each account, the latest
-read: when it was read, and each call it made for the account, by name and
-request (`reading positions`, `GET /accounts/{accountId}/positions/all`),
-with SnapTrade's JSON body formatted, every number as SnapTrade wrote it, or
-why the call failed; and **Download JSON**, the read as it is kept. Below
-it, the older reads still kept, newest first and twenty at a time, each
-opened on the tab (`/raw?account=<id>&read=<read>`) or downloaded
-(`/raw/download?account=<id>&read=<read>`). An account the person may not
-read is answered 404, the same as no such account, on the tab and the
-download alike.
+before a restart shows before the next one). It fits one screen, at 1440×900
+and at 390×844 (kit 0.10.0): one account at a time, chosen above (the first
+by default), and three views:
+
+- **Read**: the account's latest read, or the one asked for
+  (`/raw?account=<id>&read=<read>`): when it was read, and each call it made
+  for the account on one line, by name and request (`reading positions`,
+  `GET /accounts/{accountId}/positions/all`) and how many entries SnapTrade
+  answered, or why the call failed; a click on the line opens SnapTrade's
+  JSON body, formatted, every number as SnapTrade wrote it. **Download JSON**
+  saves the read as it is kept (`/raw/download?account=<id>&read=<read>`).
+- **Kept reads** (`view=kept`): the account's reads in storage and restored
+  from the archive, newest first, as many a page as fit (the kit's
+  `om-pager`), each opened on the tab or downloaded.
+- **Archive** (`/raw/archive`): every unit this plugin moved past its window
+  for the accounts the person may read ("The archive", below) -- an account's
+  day of raw responses, or its month of reported activity -- each one line:
+  the account, the kind, when its records were received, how many, and where
+  it stands: in the archive, with **Restore** under Open; restored, readable
+  on Read and Kept reads until the date given; or deleted past its window.
+  Restore posts to the SDK's route on the plugin's host, `POST
+  /archive/restore`, with the kind and the unit, for the person; the
+  restored records are read here as any kept read is.
+
+An account the person may not read is answered 404, the same as no such
+account, on the tab, the archive and the download alike. A row's reference
+to a record that moved (`/raw?ref=<key>`) resolves to where it stands: "in
+the archive, and restorable", with Restore under Open; restored; or deleted
+past its window. Never to nothing.
 
 Raw responses are an account's data, so the tab and its download are never
 served at `admin`: Manage shows no account's data, and the tests hold every
@@ -651,7 +705,8 @@ them.
 own view: Connections and Account links as a deployment admin sees them under
 Manage, and Statements and Raw responses as a reader sees them under View who
 may read two of the three accounts (Raw responses with the synthetic read kept
-twice, an hour apart, in a temporary directory). They link the kit at `/.meridian/ui/0.8.0/`, so serve them
+twice, an hour apart, in a temporary directory; its kept reads forty times;
+and its archive under Open, thirty days and two months an account moved). They link the kit at `/.meridian/ui/0.10.0/`, so serve them
 beside the kit to see them styled; opened on their own they are the pages
 without the kit.
 
@@ -675,6 +730,8 @@ changes something to being one:
 | `read_account_activities` | `GET /history` | `write`, `read` | an account's activities over a range |
 | `read_proposed_lots` | `GET /history/lots` | `write`, `read` | lots proposed for positions with none |
 | `read_snaptrade_now` | `POST /read` | `admin`, `write` | read SnapTrade now |
+| `read_archived_units` | `GET /raw/archive` | `write`, `read` | the units moved past their window, each archived, restored or deleted |
+| `restore_unit` | `POST /archive/restore` | `write` | the SDK's, on every edge plugin's host: restore an archived unit, by its kind and unit |
 
 `link_account` replaces the tool the Account links form's route would give
 (`@pages.tool(replaces=...)`), since the map's form also posts several links
@@ -712,19 +769,18 @@ one appears in a body. The tests hold a hostile body to that, and every kept
 byte to having no credential in it.
 
 **Where, and for how long.** In the storage the deployment grants an edge
-plugin (decisions/028): the version declares it asks for it, with the
-longest it keeps a record (`src/snaptrade/declaration.py`: seven years, a
-reported activity's, since contract v14; 30 days before), and the launcher, the
+plugin (decisions/028): the version declares it asks for it, with its two
+kinds of raw record and the longest a window may be
+(`src/snaptrade/declaration.py`), and the launcher, the
 chart and the plugin harness mount a volume for this instance alone at the
 path `MERIDIAN_STORAGE_DIR` names, kept across restarts and new versions,
 never deleted by the deployment, and reached by no other plugin. The store
 (`src/snaptrade/raw.py`) keeps its records under `raw-responses/` there;
 where no storage is mounted (a test, a deployment from before it), in
-`/tmp/snaptrade/raw-responses`, which lasts as long as the pod. Records
-older than `raw_retention_days` (30 by default) are removed when the
-settings first arrive as the plugin starts, whenever the setting changes,
-and after each read. Each record is a gzipped JSON file, `<root>/a-<hash of
-the external account ID>/<read time>.json.gz`, written whole or not at all.
+`/tmp/snaptrade/raw-responses`, which lasts as long as the pod and from which
+nothing moves. Each record is a gzipped JSON file, `<root>/a-<hash of the
+external account ID>/<day>/<read time>.json.gz`, written whole or not at
+all; each day is a unit the archive moves.
 A store that cannot be written leaves the read as it was; the tab says the
 responses were not kept. At the default poll of five minutes that is 288
 records an account a day, a few kilobytes each compressed.
@@ -732,14 +788,48 @@ records an account a day, a few kilobytes each compressed.
 **A reported activity's record** (contract v14) is its own: SnapTrade's entry
 for the activity, as the read that first reported it received it, with that
 read's time and why it was made (the backfill to the account's
-`history_from`, or a read), under `<root>/a-<hash>/activities/<hash of the
-activity ID>.json.gz`, written once. It is kept from when it was received for
-`activity_retention_days` (seven years by default, up to 36,500 days, set in
-the dashboard's Settings form), not `raw_retention_days`, and never for less than the history
-SnapTrade reported: the most days any kept record's activity was traded
-before its record was received, which a shorter setting is kept to (the
-plan's question 5, and the product owner, 2026-10-05: an admin may keep them
-longer). A few hundred bytes an activity.
+`history_from`, or a read), under `<root>/a-<hash>/activities/<month it was
+received>/<hash of the activity ID>.json.gz`, written once: reported again,
+in storage, restored or moved, it is not written again. It stays in storage
+for `activity_window_days` from when it was received (seven years by
+default, up to 36,500 days, set in the dashboard's Settings form), and is
+never deleted within the history SnapTrade reported: the most days any kept
+record's activity was traded before its record was received (the plan's
+question 5, and the product owner, 2026-10-05). A few hundred bytes an
+activity.
+
+**The archive** (contract v16; meridian-design spec/an-edge-plugins-older-
+records-move-to-the-archive). A unit is an account's day of reads or its month
+of activity records, moved whole once its day or month has ended and its last
+record is past its kind's window, as the kind's past-the-window setting says
+(`src/snaptrade/archive.py`), when the settings arrive (at start and on every
+change) and after each read:
+
+- **archived**, through the SDK's `archive_unit`: written to the archive a
+  deployment admin allowed the instance (mounted at `MERIDIAN_ARCHIVE_DIR`,
+  or a cloud's bucket), checked to have landed, the move recorded through the
+  sidecar naming the window (`responses_window_days 30`), and only then
+  removed from storage. Where the deployment gives no archive, or has not
+  allowed one, the unit is kept and the move tried again on the next pass;
+- **kept**, left in storage;
+- **deleted**, through `delete_unit`, the deletion recorded first, so a
+  refusal keeps the unit: inside the deployment's hold the sidecar refuses it
+  (REFUSAL_REASON_WITHIN_HOLD), and the plugin says once that the unit is
+  kept inside the hold and tries again on each pass, recording nothing.
+
+Each unit is noted first in its account's ledger, `moved.json` beside its
+units, so the Archive view lists it and a row's key to a record in it is
+found again whatever the move came to; the SDK's index says where it stands.
+A restored unit is read from the SDK's restore area in storage for seven
+days, after which the SDK returns it, recorded. A unit the index says moved
+before is moved again only where it holds the very files the ledger noted
+(one recorded before a restart could remove it); otherwise it is kept, with
+a warning. A restart's pass finds archived units gone from storage and
+refused deletions refused again: nothing is recorded twice. Each pass ends
+by saying what storage holds of each kind on the heartbeat (`plugin.stored`),
+which the plugin's Summary shows beside what the archive holds. 0.12.0's
+flat records are settled into their units, keeping their times, on the first
+pass.
 
 **A raw-record reference on every row.** Contract v11 puts on every holding
 and statement the raw record it was converted from (`RawRecordRef`: this
@@ -765,9 +855,9 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.20.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.20.0`.
-0.20.0 is not on PyPI yet: until it is released, `make ci-local` builds it
+The SDK is pinned exactly, `open-meridian==0.21.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.21.0`.
+0.21.0 is not on PyPI yet: until it is released, `make ci-local` builds it
 from the sibling checkout, and CI, which has none, cannot install it.
 Where the sibling `meridian-python` checkout carries exactly that version,
 one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
@@ -821,7 +911,9 @@ image ran its `make e2e` unchanged on core 7b0b2a8's v15 runtime and
 harness first). 0.20.0's custody suite adds the case a re-resolution answers,
 which `plugin.re_resolve_activity` does (above, by hand), and
 `tests/test_contract.py` knows `receive(activity_re_resolved=)`, which
-custody does not hear.
+custody does not hear. Moving to 0.21.0 (contract v16) moved only the pins:
+the two kinds in the declaration, the windows carried over, the moves past
+them (`archive.py`) and the Raw responses tab's archive were done by hand.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -835,13 +927,13 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `7b0b2a8`, contract v15).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `25fbf37`, contract v16).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
 The target copies it out into `.e2e/`, has the harness write its plugins
 from a one-entry list (this plugin as instance `snaptrade`, with the roles
-`pyproject.toml` declares), and runs it as the compose project
+`pyproject.toml` declares, given the harness's archive), and runs it as the compose project
 `snaptrade-e2e`, with no published port, so it runs beside anything else.
 The harness draws the run's keys and passwords itself, and starts the plugin
 again when it stops with an error, as a deployment's pod would: started
@@ -904,7 +996,22 @@ this plugin's own page, it:
     statement `e2e/expected.ira-listed`: two rows, USD cash 12.99, its
     quantity and market value derived and supplied, and no SYNFD (the street
     keeps SYNFD's position as the earlier statement left it, which a reader
-    of the account's latest statement takes as absent).
+    of the account's latest statement takes as absent);
+14. keeps a read of Alpaca's as if 40 days old in the plugin's storage, allows
+    the plugin an archive on its Manage page, and sets `responses_past_window`
+    to `archived`: the plugin archives that day past its window of 30 days,
+    the conductor recording the move naming the window (`store moves`), the
+    unit in the archive and no longer in storage. The read's reference opens
+    on the Raw responses tab as "in the archive, and restorable"; with Open
+    granted, the Archive view's Restore posts to the SDK's `POST
+    /archive/restore`, the restore recorded for the person, the Archive view
+    lists it restored, and the read is read back on the tab;
+15. sets `responses_window_days` to 1 with `deleted` past it, then a hold of 30
+    days over custody, and keeps a read as if 5 days old: on the next read
+    the plugin's deletion is refused inside the hold, the unit kept in
+    storage, and no deletion recorded;
+16. makes the plugin's container again: its pass keeps the unit inside the
+    hold again, and `store moves` is unchanged, nothing recorded twice.
 
 `e2e/expected.street` is every account's rows, so a row for an unlinked
 account is a difference, and step 6 proves the plugin reported them. The
@@ -942,7 +1049,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.12.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.13.0 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

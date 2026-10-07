@@ -12,25 +12,42 @@ that the common model may need to grow. Each is counted as it is seen, and
 the count rides on the heartbeat, never leaving the deployment.
 
 And the storage it asks for, at the edge, for SnapTrade's raw responses
-(decisions/028): the longest it may keep one, a reported activity's record,
-which the `activity_retention_days` setting may make as long as the SDK's
-bound (raw.py; the product owner, 2026-10-05), so the deployment never keeps
-less than an admin chose. Each read's own record is kept for the retention
-setting, 30 days by default.
+(decisions/028), with the two kinds of raw record it keeps there (contract
+v16; meridian-design spec/an-edge-plugins-older-records-move-to-the-
+archive): a reported activity's record, seven years in storage by default
+(the custody guidance of 2026-10-05), and each read's raw responses, 30 days
+by default; both archivable, since a unit of either is files written once.
+The SDK declares each kind's two settings from these, its window and what is
+done past it (settings.py), and the plugin moves its records past their
+window itself (archive.py). The retention stays the longest a window may be,
+the SDK's bound, so the deployment never keeps the storage for less than an
+admin may choose.
 """
 
 from __future__ import annotations
 
-from meridian.declaration import Declaration, NotCarried, Storage
+from meridian.declaration import Declaration, NotCarried, RecordKind, Storage
 
 from .normalise import to_decimal
 from .raw import MOST_ACTIVITY_RETENTION_DAYS
-from .settings import DECLARED
+from .settings import (
+    ACTIVITY,
+    DECLARED,
+    DEFAULT_ACTIVITY_RETENTION_DAYS,
+    DEFAULT_RAW_RETENTION_DAYS,
+    RESPONSES,
+)
 from .venue import Snapshot
 
-#: How long a read's raw responses are kept, in days, by default: the
-#: plugin's own retention setting's default.
-RETENTION_DAYS = 30
+#: The kinds of raw record this version keeps, each with its default window
+#: and whether a unit of it can be archived (W4.1, contract v16).
+ACTIVITY_KIND = RecordKind(
+    ACTIVITY, "Reported activity", window_days=DEFAULT_ACTIVITY_RETENTION_DAYS, archivable=True
+)
+RESPONSES_KIND = RecordKind(
+    RESPONSES, "Raw responses", window_days=DEFAULT_RAW_RETENTION_DAYS, archivable=True
+)
+KINDS = (ACTIVITY_KIND, RESPONSES_KIND)
 
 POSITION = "snaptrade:position"
 LOT = "snaptrade:tax-lot"
@@ -50,7 +67,7 @@ NOT_CARRIED = (
 DECLARATION = Declaration(
     settings=DECLARED,
     not_carried=NOT_CARRIED,
-    storage=Storage(retention_days=MOST_ACTIVITY_RETENTION_DAYS),
+    storage=Storage(retention_days=MOST_ACTIVITY_RETENTION_DAYS, kinds=KINDS),
 )
 
 

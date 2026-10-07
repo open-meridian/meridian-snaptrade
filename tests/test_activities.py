@@ -33,7 +33,7 @@ from snaptrade.linking import Links
 from snaptrade.normalise import ExternalAccount, Holding, Identifier, Side
 from snaptrade.page import RAW, RAW_DOWNLOAD, hold, pages
 from snaptrade.raw import (
-    ACTIVITY_RETENTION_DAYS,
+    ACTIVITY_DIRECTORY,
     MOST_ACTIVITY_RETENTION_DAYS,
     RawStore,
     activity_key,
@@ -516,29 +516,31 @@ def test_each_activity_names_a_record_the_store_keeps_as_snaptrade_sent_it(
         assert kept.read_at == NOW
 
 
-def test_an_activity_record_is_kept_past_the_read_retention_and_written_once(
+def test_an_activity_record_is_written_once_naming_the_read_that_first_reported_it(
     tmp_path: Path,
 ) -> None:
     sidecar = Sidecar()
     asyncio.run(syncer_for(sidecar, tmp_path, NOW - timedelta(days=400)).run_once())
+    first = {f.name: f.stat().st_mtime for f in (tmp_path / "raw").rglob("*/*/*.json.gz")}
     later = syncer_for(sidecar, tmp_path)
     asyncio.run(later.run_once())
     store = later.raw
     assert store is not None
-    # The reads 400 days ago are pruned; the activities they reported are not,
-    # and still name the read that first reported them.
-    assert [r.read_at for r in store.reads(ALPACA)] == [NOW]
     key = sidecar.sent("RecordActivity")[0].activity.raw_record.key
     held = store.find(key)
     assert held is not None and held[0].read_at == NOW - timedelta(days=400)
-    # Past the activity retention, they go too.
-    store.prune(NOW + timedelta(days=ACTIVITY_RETENTION_DAYS - 399))
-    assert store.find(key) is None
+    # Reported again, each names the record already kept, left as it was; and
+    # in the month it was first received.
+    after = {f.name: f.stat().st_mtime for f in (tmp_path / "raw").rglob("*/*/*.json.gz")}
+    assert all(after[name] == moment for name, moment in first.items())
+    assert {f.parent.name for f in (tmp_path / "raw").rglob(f"{ACTIVITY_DIRECTORY}/*/*")} >= {
+        f"{NOW - timedelta(days=400):%Y-%m}"
+    }
 
 
 def test_the_declaration_asks_storage_for_the_longest_the_setting_allows() -> None:
-    """The deployment never keeps a record for less than an admin chose: the
-    storage asked for is the most `activity_retention_days` may say."""
+    """The deployment never keeps the storage for less than an admin may
+    choose: the storage asked for is the most a window may say."""
     assert DECLARATION.storage is not None
     assert DECLARATION.storage.retention_days == MOST_ACTIVITY_RETENTION_DAYS == 36500
 

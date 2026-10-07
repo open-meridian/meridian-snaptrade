@@ -1,15 +1,16 @@
-"""SnapTrade's raw responses (raw.py): each read's kept per account, with
-its time and each call by name, exactly as received and never a credential;
-pruned past their retention when the settings arrive and after each read;
-and the Raw responses tab, at write and read and never at admin, cut to the
-accounts each person may read, each read formatted and downloadable as
-JSON."""
+"""SnapTrade's raw responses (raw.py): each read's kept per account, in its
+day, with its time and each call by name, exactly as received and never a
+credential; and the Raw responses tab, at write and read and never at
+admin, cut to the accounts each person may read, on one screen: a read's
+calls one line each, its JSON a click away and downloadable, and the kept
+reads paged. What moves past the window is test_archive.py's."""
 
 from __future__ import annotations
 
 import asyncio
 import gzip
 import json
+import os
 import re
 from datetime import timedelta
 from decimal import Decimal
@@ -23,10 +24,9 @@ from meridian.v1 import sidecar_pb2
 
 from snaptrade import synthetic
 from snaptrade.linking import Links
-from snaptrade.page import RAW, RAW_DOWNLOAD, READ, STATEMENTS, hold, pages
+from snaptrade.page import KIT, RAW, RAW_DOWNLOAD, READ, STATEMENTS, hold, pages
 from snaptrade.raw import (
     ACTIVITY_DIRECTORY,
-    DEFAULT_RETENTION_DAYS,
     REDACTED,
     RawStore,
     dumps,
@@ -37,11 +37,9 @@ from snaptrade.settings import (
     COMMERCIAL,
     CONSUMER_KEY,
     KEY_TYPE,
-    RAW_RETENTION_DAYS,
     SYNTHETIC,
     USER_ID,
     USER_SECRET,
-    Config,
     config_from,
 )
 from snaptrade.sync import Syncer
@@ -75,8 +73,9 @@ GIVEN: dict[str, str | int | bool] = {
 }
 
 
-def store_at(root: Path, days: int = DEFAULT_RETENTION_DAYS) -> RawStore:
-    return RawStore(root / "raw", timedelta(days=days))
+def store_at(root: Path) -> RawStore:
+    """The stand-in store, from which nothing moves (test_archive.py moves)."""
+    return RawStore(root / "raw")
 
 
 def reading(
@@ -202,69 +201,55 @@ def test_each_read_adds_a_record_the_newest_first(tmp_path: Path) -> None:
     assert reads[0].key.endswith("-2")
 
 
-def test_a_record_is_written_whole(tmp_path: Path) -> None:
+def test_a_record_is_written_whole_in_its_unit(tmp_path: Path) -> None:
     store = store_at(tmp_path)
     reading(store)
     files = list(store.root.rglob("*"))
     assert not [f for f in files if f.name.endswith(".tmp")]
-    kept = [f for f in files if f.is_file() and f.parent.name != ACTIVITY_DIRECTORY]
+    kept = [f for f in files if f.is_file() and f.parent.parent.name != ACTIVITY_DIRECTORY]
     assert len(kept) == 4 and all(f.name.endswith(".json.gz") for f in kept)
-    # No path is made from an account's ID, nor from an activity's.
-    assert all(re.fullmatch(r"a-[0-9a-f]{32}", f.parent.name) for f in kept)
-    activities = [f for f in files if f.is_file() and f.parent.name == ACTIVITY_DIRECTORY]
+    # Each read in its day; no path is made from an account's ID, nor from an
+    # activity's, which is in the month it was received.
+    assert all(f.parent.name == "2026-09-28" for f in kept)
+    assert all(re.fullmatch(r"a-[0-9a-f]{32}", f.parent.parent.name) for f in kept)
+    activities = [
+        f for f in files if f.is_file() and f.parent.parent.name == ACTIVITY_DIRECTORY
+    ]
     assert activities and all(
         re.fullmatch(r"[0-9a-f]{32}\.json\.gz", f.name)
-        and re.fullmatch(r"a-[0-9a-f]{32}", f.parent.parent.name)
+        and f.parent.name == "2026-09"
+        and re.fullmatch(r"a-[0-9a-f]{32}", f.parent.parent.parent.name)
         for f in activities
     )
-    # What a write that stopped leaves is gone at the next prune.
+    # What a write that stopped leaves is gone once it is an hour old.
     stray = kept[0].parent / "half.tmp"
     stray.write_bytes(b"{")
-    store.prune(NOW)
+    os.utime(stray, (NOW.timestamp(), NOW.timestamp()))
+    store.settle(NOW)
+    assert stray.exists(), "a write under way is not cut short"
+    os.utime(stray, (NOW.timestamp() - 7200, NOW.timestamp() - 7200))
+    store.settle(NOW)
     assert not stray.exists()
 
 
-# ── Retention ───────────────────────────────────────────────────────────────
-
-
-def test_the_retention_is_a_setting_thirty_days_by_default_and_at_least_one() -> None:
-    assert config_from({}).raw_retention == timedelta(days=30)
-    assert config_from({RAW_RETENTION_DAYS: 7}).raw_retention == timedelta(days=7)
-    assert config_from({RAW_RETENTION_DAYS: 0}).raw_retention == timedelta(days=1)
-    assert Config().raw_retention == timedelta(days=30)
-
-
-def test_reads_past_the_retention_are_pruned_after_each_read(tmp_path: Path) -> None:
+def test_records_kept_flat_by_0_12_0_are_settled_into_their_units(tmp_path: Path) -> None:
+    """0.12.0 kept each read flat in its account's directory, and each
+    activity's record flat in its activities': each moves into its unit,
+    keeping its time, and reads back as before."""
     store = store_at(tmp_path)
-    reading(store, NOW - timedelta(days=31))
-    reading(store, NOW - timedelta(days=29))
-    assert len(store.reads(ALPACA)) == 2
-    reading(store, NOW)
-    assert [r.read_at for r in store.reads(ALPACA)] == [NOW, NOW - timedelta(days=29)]
-
-
-def test_reads_past_the_retention_are_pruned_on_start(tmp_path: Path) -> None:
-    reading(store_at(tmp_path), NOW - timedelta(days=40))
-    store = store_at(tmp_path)
-    syncer = Syncer(Sidecar().plugin(), now=clock(), raw=store)
-    # The settings' first delivery, as the plugin starts: before any read.
-    syncer.configure(config_from({SYNTHETIC: True}))
-    assert store.reads(ALPACA) == []
-    # A reported activity's record is kept as long as the history it
-    # reported, not the read retention (contract v14).
-    left = [f for f in store.root.rglob("*") if f.is_file()]
-    assert left and all(f.parent.name == ACTIVITY_DIRECTORY for f in left)
-
-
-def test_a_shorter_retention_prunes_at_once(tmp_path: Path) -> None:
-    store = store_at(tmp_path)
-    reading(store, NOW - timedelta(days=2))
-    syncer = Syncer(Sidecar().plugin(), now=clock(), raw=store)
-    syncer.configure(config_from({SYNTHETIC: True}))
-    assert len(store.reads(ALPACA)) == 1
-    syncer.configure(config_from({SYNTHETIC: True, RAW_RETENTION_DAYS: 1}))
-    assert store.retention == timedelta(days=1)
-    assert store.reads(ALPACA) == []
+    reading(store)
+    before = {r.key: store.record(ALPACA, r.key) for r in store.reads(ALPACA)}
+    for file in list(store.root.rglob("*.json.gz")):
+        os.replace(file, file.parent.parent / file.name)
+    for unit in sorted(store.root.rglob("2026-09*"), reverse=True):
+        unit.rmdir()
+    assert store.reads(ALPACA), "a flat read is read as before"
+    assert store.settle(NOW) > 4
+    assert not list(store.root.glob("a-*/*.json.gz"))
+    assert not list(store.root.glob(f"a-*/{ACTIVITY_DIRECTORY}/*.json.gz"))
+    assert {r.key: store.record(ALPACA, r.key) for r in store.reads(ALPACA)} == before
+    activities = list(store.root.glob(f"a-*/{ACTIVITY_DIRECTORY}/2026-09/*.json.gz"))
+    assert activities and all(f.stat().st_mtime == NOW.timestamp() for f in activities)
 
 
 # ── Never a credential ──────────────────────────────────────────────────────
@@ -439,46 +424,54 @@ def test_the_latest_read_is_shown_formatted_with_when_and_from_which_call(
         ("reading positions", "GET /accounts/{accountId}/positions/all"),
         ("reading balances", "GET /accounts/{accountId}/balances"),
     ):
-        assert f"<strong>{call}</strong> <code>{request}</code>" in shown
+        assert (
+            f'<td><strong>{call}</strong></td><td class="wide-only"><code>{request}</code></td>'
+            in shown
+        ), "one line a call"
     positions = calls_of(store, ALPACA)["reading positions"]["body"]
     formatted = dumps(positions, indent=2).replace('"', "&#34;")
-    assert f"<pre><code>{formatted}</code></pre>" in shown
+    # Its JSON, formatted, a click away: in the row's detail.
+    assert f'<div class="table-wrap"><pre><code>{formatted}</code></pre></div>' in shown
+    assert '<details class="row-detail" name="calls">' in shown
     assert "&#34;units&#34;: &#34;0.012345678&#34;" in shown
     # Synthetic data says so.
     assert "Synthetic mode: every figure here is invented" in body
 
 
-def test_older_reads_within_the_retention_are_listed_and_each_opened(
-    tmp_path: Path,
-) -> None:
+def test_the_kept_reads_are_listed_and_each_opened(tmp_path: Path) -> None:
     store = store_at(tmp_path)
     earlier = NOW - timedelta(days=3)
     reading(store, earlier)
     serving(store)
     client = reader(read={"ACC-1"})
-    shown = section_of(client.get(RAW, "read").text, ALPACA)
-    assert "Older reads kept: 1" in shown
+    assert '<span class="count">2</span>' in client.get(RAW, "read").text
+    listed = client.get(RAW, "read", account=ALPACA, view="kept").text
     [older] = [r for r in store.reads(ALPACA) if r.read_at == earlier]
-    assert f'href="/raw?account={ALPACA.replace(":", "%3A")}&amp;read={older.key}"' in shown
+    assert f'href="/raw?account={ALPACA.replace(":", "%3A")}&amp;read={older.key}"' in listed
+    assert "Reads 1–2 of 2" in listed and "In storage" in listed
     opened = section_of(client.get(RAW, "read", account=ALPACA, read=older.key).text, ALPACA)
-    assert "2026-09-25 15:00 UTC" in opened and "Older reads kept: 1" in opened
-    # A read no longer kept, or no read at all, is said so; no path is followed.
+    assert "2026-09-25 15:00 UTC" in opened
+    # A read not in storage, or no read at all, is said so; no path is followed.
     for gone in ("20200101T000000.000000Z", "../../etc/passwd", "x"):
         answer = client.get(RAW, "read", account=ALPACA, read=gone)
-        assert answer.status == 200 and "That read is no longer kept" in answer.text
+        assert answer.status == 200 and "That read is not in storage" in answer.text
         assert client.get(RAW_DOWNLOAD, "read", account=ALPACA, read=gone).status == 404
 
 
-def test_older_reads_are_paged(tmp_path: Path) -> None:
+def test_the_kept_reads_are_paged_as_the_kit_asks(tmp_path: Path) -> None:
     store = store_at(tmp_path)
-    for hours in range(25, 0, -1):
+    for hours in range(30, 0, -1):
         reading(store, NOW - timedelta(hours=hours))
     serving(store)
     client = reader(read={"ACC-1"})
-    first = client.get(RAW, "read", account=ALPACA).text
-    assert "1 to 20 of 25, newest first." in first and "older=20" in first
-    second = client.get(RAW, "read", account=ALPACA, older="20").text
-    assert "21 to 25 of 25, newest first." in second and "older=0" in second
+    first = client.get(RAW, "read", account=ALPACA, view="kept").text
+    assert '<om-pager total="31" offset="0" size="25">' in first
+    assert "Reads 1–25 of 31" in first and "offset=25&amp;size=25" in first
+    second = client.get(RAW, "read", account=ALPACA, view="kept", offset="25", size="25").text
+    assert "Reads 26–31 of 31" in second and "offset=0&amp;size=25" in second
+    # As many as fit, as the kit's pager asks for them.
+    fitted = client.get(RAW, "read", account=ALPACA, view="kept", offset="12", size="12").text
+    assert '<om-pager total="31" offset="12" size="12">' in fitted
 
 
 def test_a_read_downloads_as_its_json(tmp_path: Path) -> None:
@@ -559,5 +552,5 @@ def test_the_tab_is_built_on_the_kit_with_no_style_of_its_own(
     assert "<style" not in body and "style=" not in body
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(", body)
     assert set(re.findall(r"<script[^>]*>", body)) <= {
-        '<script src="/.meridian/ui/0.8.0/meridian.js">'
+        f'<script src="/.meridian/ui/{KIT}/meridian.js">'
     }

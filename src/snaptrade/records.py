@@ -14,6 +14,7 @@ records are history.py's.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 #: The longest ID or name a form here takes.
@@ -165,12 +166,13 @@ class LinkRead:
 class LinksRead:
     """The external accounts the last read reached, each linked or not; the
     plan-code links people made; and how long each reported activity's record
-    is kept: as set, as kept, and how far back the reported history reaches."""
+    stays in storage: its window, what is done past it, and how far back the
+    reported history reaches, within which none is deleted."""
 
     accounts: list[LinkRead] = field(default_factory=list)
     plan_codes: list[PlanCodeRead] = field(default_factory=list)
-    activity_retention_days: int = 0
-    kept_for_days: int = 0
+    activity_window_days: int = 0
+    activity_past_window: str = ""
     history_reach_days: int = 0
 
 
@@ -227,3 +229,57 @@ class StatementsRead:
     read_at: str
     mode: str
     statements: list[StatementRead] = field(default_factory=list)
+
+
+# ── Under Open and View: the archive (contract v16) ─────────────────────────
+
+#: The most units the archive answers at once.
+MOST_UNITS = 200
+
+
+@dataclass(frozen=True)
+class ArchiveAsked:
+    """Whose archived units, and which page of them."""
+
+    account: str = field(
+        default="",
+        metadata={
+            "max_length": MOST_ID,
+            "description": "an external account, as the Raw responses tab names it; every "
+            "account the person may read where empty",
+        },
+    )
+    offset: int = field(
+        default=0, metadata={"min": 0, "max": 100_000, "description": "the first unit"}
+    )
+    limit: int = field(
+        default=25,
+        metadata={"min": 1, "max": MOST_UNITS, "description": "how many units at most"},
+    )
+
+
+@dataclass(frozen=True)
+class ArchivedUnit:
+    """A unit of raw records this plugin moved past its window: an account's
+    day of raw responses, or its month of reported activity records; where it
+    stands, `archived` (restorable), `restored` (readable until
+    `readable_until`) or `deleted`."""
+
+    external_account_id: str
+    record_kind: str
+    unit: str
+    record_count: int
+    first_received: datetime
+    last_received: datetime
+    state: str
+    readable_until: datetime | None = None
+
+
+@dataclass(frozen=True)
+class ArchiveRead:
+    """A page of the units moved, the newest first, and how many in all."""
+
+    units: list[ArchivedUnit] = field(default_factory=list)
+    total: int = 0
+    offset: int = 0
+    said: str = ""

@@ -1,13 +1,26 @@
-{#- Raw responses, at write and read: SnapTrade's responses to each read, as
-    received, per account the person may read. The latest read (or the one
-    asked for), each call by name and request with its JSON formatted; then
-    the older reads kept, each opened here or saved as JSON. Under Open,
-    Refresh; under View, nothing to act on. Never at admin: an account's
-    data. -#}
+{#- Raw responses, at write and read, on one screen: one account the person
+    may read at a time, by three views. Its read (the latest, or the one
+    asked for), each call one line with SnapTrade's JSON a click away; its
+    kept reads, paged; and the archive, every unit this plugin moved past
+    its window for the accounts the person may read, paged, each archived
+    one restorable under Open through the SDK's route. Under Open, Refresh;
+    under View, nothing to act on. Never at admin: an account's data. -#}
 {% extends "meridian/base.html" %}
 {% import "_kit.html" as kit with context %}
 {% block status %}{{ kit.status_dot(dot) }}{% endblock %}
 {% block head_actions %}{% if level == "write" and not nothing %}{{ kit.refresh(back) }}{% endif %}{% endblock %}
+{% macro restore(unit) -%}
+{% if level == "write" %}<form method="post" action="{{ paths.restore }}" class="inline">{{ csrf_input }}<input type="hidden" name="record_kind" value="{{ unit.record_kind }}"><input type="hidden" name="unit" value="{{ unit.unit }}"><button class="small" aria-label="Restore {{ kinds[unit.record_kind] | lower }} received {{ unit.first_received.date() }}">Restore</button></form>
+{%- else %}<span class="hint">Restoring is under Open</span>{% endif %}
+{%- endmacro %}
+{% macro where(unit) -%}
+{% if unit.state == "archived" %}{{ restore(unit) }}
+{%- elif unit.state == "restored" %}<span class="badge good">Restored</span>{% if unit.readable_until %} <span class="hint wide-only">until {{ unit.readable_until.date() }}</span>{% endif %}
+{%- else %}<span class="badge">Deleted</span>{% endif %}
+{%- endmacro %}
+{% macro received(unit) -%}
+{%- if unit.first_received.date() == unit.last_received.date() %}{{ unit.first_received.date() }}{% else %}{{ unit.first_received.date() }} to {{ unit.last_received.date() }}{% endif -%}
+{%- endmacro %}
 {% block content %}
 {% if nothing %}
 <section class="panel padded narrow">
@@ -16,54 +29,79 @@
 </section>
 {% else %}
 {% if mode %}<div class="notice warn" role="status">{{ mode | trim }}</div>{% endif %}
-{{ kit.notices(notice) }}
+{% if notice %}<div class="notice {{ notice.tone }}" role="{{ 'alert' if notice.tone == 'bad' else 'status' }}">{{ notice.text }}{% if unit and unit.state == "archived" %} {{ restore(unit) }}{% endif %}</div>{% endif %}
 {% if failure %}<div class="notice bad" role="alert">On the last read, {{ failure }}.</div>{% endif %}
-<p class="hint">What SnapTrade answered each read, as received, for each account you may read.{% if kept %} Each read is kept for {{ retention_days }} days; a credential never is.{% endif %}{% if focused %} <a href="{{ paths.raw }}">Every account</a>{% endif %}</p>
-{% for account in accounts %}
-<section class="panel" data-account="{{ account.external_account_id }}">
-<div class="list-row"><div class="grow">
-<div class="row"><span class="title">{{ account.name }}</span></div>
-<div class="meta">{{ account.where }} · <code>{{ account.external_account_id }}</code></div>
-{% if account.record %}
-<div class="meta">Read {{ kit.when(account.record.read_at) }}{% if account.record.synthetic %} · synthetic, not SnapTrade{% endif %}</div>
+{% if accounts | length > 1 and view != "archive" %}
+<form method="get" action="{{ paths.raw }}" class="field-row">
+{% if view == "kept" %}<input type="hidden" name="view" value="kept">{% endif %}
+<label class="field"><span>Account</span><select name="account">
+{% for each in accounts %}<option value="{{ each.external_account_id }}"{% if each.external_account_id == account.external_account_id %} selected{% endif %}>{{ each.name }}</option>{% endfor %}
+</select></label><button>Show</button></form>
 {% endif %}
-</div>
-{% if account.record %}<a class="button" href="{{ account.record.download }}" download>Download JSON</a>{% endif %}
-</div>
-{% if account.gone %}
-<div class="notice warn" role="status">That read is no longer kept: it is older than {{ retention_days }} days, or was never read. <a href="{{ account.all }}">The latest</a></div>
+{% if accounts %}
+<nav class="tabs" aria-label="Raw responses">
+<a class="tab{% if view == 'read' %} on{% endif %}" href="{{ account.read_href }}"{% if view == 'read' %} aria-current="page"{% endif %}>Read</a>
+<a class="tab{% if view == 'kept' %} on{% endif %}" href="{{ account.kept_href }}"{% if view == 'kept' %} aria-current="page"{% endif %}>Kept reads{% if account.total %} <span class="count">{{ account.total }}</span>{% endif %}</a>
+<a class="tab{% if view == 'archive' %} on{% endif %}" href="{{ account.archive_href }}"{% if view == 'archive' %} aria-current="page"{% endif %}>Archive{% if data and data.total %} <span class="count">{{ data.total }}</span>{% endif %}</a>
+</nav>
 {% endif %}
-{% if account.record %}
-{% for call in account.record.calls %}
-<div class="panel-section" data-call="{{ call.call }}">
-<div class="row"><strong>{{ call.call }}</strong> <code>{{ call.request }}</code></div>
-{% if call.note %}<span class="hint">{{ call.note }}</span>{% endif %}
-{% if call.failed %}
-<div class="notice bad">{{ call.failed }}</div>
+{% if view == "archive" %}
+<section class="panel">
+{% if data.units %}
+<om-pager total="{{ data.total }}" offset="{{ data.offset }}" size="{{ data.units | length }}" size-param="limit">
+<table class="one-line">
+<thead><tr><th class="wide-only">Account</th><th>Kind</th><th>Received</th><th class="num wide-only">Records</th><th>Where</th><th class="more"><span class="visually-hidden">Details</span></th></tr></thead>
+<tbody>
+{% for unit in data.units %}
+<tr data-unit="{{ unit.unit }}" data-state="{{ unit.state }}"><td class="wide-only">{{ names.get(unit.external_account_id, unit.external_account_id) }}</td><td>{{ short[unit.record_kind] }}</td><td>{{ received(unit) }}</td><td class="num wide-only">{{ unit.record_count }}</td><td>{{ where(unit) }}</td><td class="more"><details class="row-detail" name="units"><summary aria-label="Details of {{ kinds[unit.record_kind] | lower }} received {{ received(unit) }}">…</summary><div class="row-detail-pop"><h3>{{ kinds[unit.record_kind] }}, {{ received(unit) }}</h3><dl><dt>Account</dt><dd>{{ names.get(unit.external_account_id, unit.external_account_id) }} <code>{{ unit.external_account_id }}</code></dd><dt>Records</dt><dd>{{ unit.record_count }}</dd><dt>First received</dt><dd>{{ kit.when(unit.first_received) }}</dd><dt>Last received</dt><dd>{{ kit.when(unit.last_received) }}</dd><dt>Unit</dt><dd><code>{{ unit.unit }}</code></dd><dt>Where</dt><dd>{% if unit.state == "archived" %}In the archive, restorable{% elif unit.state == "restored" %}Restored, readable on the Read and Kept reads tabs{% if unit.readable_until %} until {{ unit.readable_until.date() }}{% endif %}{% else %}Deleted past its window{% endif %}</dd></dl></div></details></td></tr>
+{% endfor %}
+</tbody>
+</table>
+<nav class="pager" aria-label="Pages">{% if later %}<a class="button" href="{{ later }}" rel="prev">← Newer</a>{% else %}<span></span>{% endif %}<span>Units {{ data.offset + 1 }}–{{ data.offset + data.units | length }} of {{ data.total }}</span>{% if earlier %}<a class="button" href="{{ earlier }}" rel="next">Older →</a>{% else %}<span></span>{% endif %}</nav>
+</om-pager>
 {% else %}
-<div class="table-wrap"><pre><code>{{ call.json }}</code></pre></div>
+<div class="empty-state"><strong>Nothing archived yet</strong><p>Raw responses stay in storage {{ windows.responses.days }} days and reported activity {{ windows.activity.days }}; past that they are {{ windows.responses.past }} and {{ windows.activity.past }}, as this plugin's settings say, archived only where this deployment's admin has allowed it an archive.</p></div>
 {% endif %}
-</div>
+</section>
+{% elif view == "kept" %}
+<section class="panel">
+{% if account.reads %}
+<om-pager total="{{ account.total }}" offset="{{ account.offset }}" size="{{ account.reads | length }}">
+<table class="one-line">
+<thead><tr><th>Read</th><th class="wide-only">Where</th><th class="num"><span class="visually-hidden">Download</span></th></tr></thead>
+<tbody>
+{% for read in account.reads %}
+<tr><td><a href="{{ read.href }}">{{ kit.when(read.read_at) }}</a>{% if read.restored %} <span class="badge good">Restored</span>{% endif %}</td><td class="wide-only">{% if read.restored %}Restored from the archive{% else %}In storage{% endif %}</td><td class="num"><a href="{{ read.download }}" download>JSON</a></td></tr>
 {% endfor %}
-{% elif not account.gone %}
-<div class="empty-state"><strong>No responses kept yet</strong><p>The next read of SnapTrade that reaches this account keeps them here.</p></div>
+</tbody>
+</table>
+<nav class="pager" aria-label="Pages">{% if account.later %}<a class="button" href="{{ account.later }}" rel="prev">← Newer</a>{% else %}<span></span>{% endif %}<span>Reads {{ account.offset + 1 }}–{{ account.offset + account.reads | length }} of {{ account.total }}</span>{% if account.earlier %}<a class="button" href="{{ account.earlier }}" rel="next">Older →</a>{% else %}<span></span>{% endif %}</nav>
+</om-pager>
+{% else %}
+<div class="empty-state"><strong>No reads kept</strong><p>Each read of SnapTrade that reaches this account is kept here {{ window.days }} days, then {{ window.past }}.</p></div>
 {% endif %}
-{% if account.older_total %}
-<details class="panel-section"{% if focused %} open{% endif %}>
-<summary>Older reads kept: {{ account.older_total }}</summary>
-<ul class="plain">
-{% for read in account.older %}
-<li><a href="{{ read.href }}">{{ kit.when(read.read_at) }}</a> · <a href="{{ read.download }}" download>JSON</a></li>
+</section>
+{% elif account %}
+<section class="panel" data-account="{{ account.external_account_id }}">
+<div class="list-row one-line"><div class="grow"><span class="title">{{ account.name }}</span> <span class="meta">{{ account.where }} · <code>{{ account.external_account_id }}</code>{% if account.record %} · read {{ kit.when(account.record.read_at) }}{% if account.record.restored %} · restored from the archive{% endif %}{% if account.record.synthetic %} · synthetic, not SnapTrade{% endif %}{% endif %}</span></div>
+{% if account.record %}<a class="button small" href="{{ account.record.download }}" download>Download JSON</a>{% endif %}</div>
+{% if account.record %}
+<table class="one-line">
+<thead><tr><th>Call</th><th class="wide-only">Request</th><th>Answer</th><th class="more"><span class="visually-hidden">SnapTrade's answer</span></th></tr></thead>
+<tbody>
+{% for call in account.record.calls %}
+<tr data-call="{{ call.call }}"><td><strong>{{ call.call }}</strong></td><td class="wide-only"><code>{{ call.request }}</code></td><td>{% if call.failed %}<span class="bad-ink">{{ call.failed }}</span>{% else %}{{ call.said }}{% if call.note %} <span class="hint">{{ call.note }}</span>{% endif %}{% endif %}</td><td class="more"><details class="row-detail" name="calls"><summary aria-label="SnapTrade's answer to {{ call.call }}">…</summary><div class="row-detail-pop"><h3>{{ call.call }}</h3><p><code>{{ call.request }}</code></p>{% if call.note %}<p class="hint">{{ call.note }}</p>{% endif %}{% if call.failed %}<div class="notice bad">{{ call.failed }}</div>{% else %}<div class="table-wrap"><pre><code>{{ call.json }}</code></pre></div>{% endif %}</div></details></td></tr>
 {% endfor %}
-</ul>
-<p class="hint">{{ account.older_from }} to {{ account.older_to }} of {{ account.older_total }}, newest first.
-{%- if account.later %} <a href="{{ account.later }}">Newer</a>{% endif %}
-{%- if account.earlier %} <a href="{{ account.earlier }}">Older</a>{% endif %}</p>
-</details>
+</tbody>
+</table>
+{% elif account.gone %}
+{% if not unit %}<div class="notice warn" role="status">That read is not in storage: past its window, or never read. <a href="{{ account.read_href }}">The latest</a></div>{% endif %}
+{% else %}
+<div class="empty-state"><strong>No responses kept yet</strong><p>The next read of SnapTrade that reaches this account keeps them here, {{ window.days }} days in storage, then {{ window.past }}; a credential never is.</p></div>
 {% endif %}
 </section>
 {% else %}
 <section class="panel"><div class="empty-state"><strong>No accounts yet</strong><p>None of the accounts you may read has come through SnapTrade here yet. An account appears once it is linked to yours.</p></div></section>
-{% endfor %}
+{% endif %}
 {% endif %}
 {% endblock %}

@@ -33,10 +33,23 @@ reads them back. Until every required field is given, the plugin calls
 nothing and its status dot names what is missing.
 
 The other settings have sensible defaults: how often to read (**Read
-every**, five minutes), when a sync counts as **Stale after** (24 hours), and
-how long raw responses (30 days) and activity records (seven years) are kept.
-An activity record is never kept for less than the history SnapTrade
-reported.
+every**, five minutes) and when a sync counts as **Stale after** (24 hours).
+
+**How long records stay, and what happens after.** Two kinds of record are
+kept: **Raw responses**, what SnapTrade answered each read, and **Reported
+activity**, each activity's own record. Each has a **window**, how long it
+stays in the plugin's storage (30 days and seven years by default), and a
+choice of what happens past it: **Archived** (moved to your deployment's
+archive, where you can restore it), **Kept** (left where it is) or
+**Deleted**. Archived is the default where your deployment's admin has
+allowed this plugin an archive; otherwise Kept. Nothing is deleted unless
+you choose it, never inside a hold your deployment's admin set, and an
+activity record never within the history SnapTrade reported. A window can't
+be set below the hold.
+
+**Coming from 0.12.0.** If you set **Keep raw responses for** or **Keep
+activity records for** before, those values carry over as the windows until
+you set a window yourself.
 
 ## 2. Connect a brokerage
 

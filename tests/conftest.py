@@ -15,12 +15,21 @@ delivers them as the SDK's `account_scope()` does: the first at once, and
 another on every change. A report is kept as the
 heartbeat the sidecar receives, built by `meridian.testing.heartbeat`, with
 the figures standing as the SDK's do.
+
+From contract v16 it moves the plugin's raw records as the SDK does: its
+`archive_unit`, `restore_unit`, `delete_unit`, `find_record` and `stored` are
+the SDK's own, run on its helpers (their copy, their check, their index), and
+only the move each reports is answered here, as the sidecar would answer it:
+kept with the person it was for, a deletion whose last record was received
+inside `hold_days` refused with REFUSAL_REASON_WITHIN_HOLD, and a restore for
+nobody refused. `deliver` hands it the settings as the SDK holds them, its
+declared defaults filled in.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -34,7 +43,16 @@ from meridian.statements import checked
 from meridian.testing import heartbeat
 from meridian.v1 import sidecar_pb2
 
+from snaptrade.declaration import DECLARATION
+from snaptrade.page import pages
+from snaptrade.settings import DECLARED, Config, config_from
+
+# The restore route the SDK declares on every edge plugin's host as it
+# connects (contract v16, the names' choice b), as __main__'s connect does.
+edge._restore_route(pages, ())
+
 NOW = datetime(2026, 9, 28, 15, 0, tzinfo=UTC)
+DAY_NS = 86_400 * 1_000_000_000
 # The instance the sidecar registered this plugin as.
 INSTANCE = "snaptrade"
 
@@ -85,8 +103,20 @@ class Sidecar(Operations):
         refuse: Callable[[str, Any], Exception | None] | None = None,
         already_recorded: bool = False,
         links: Iterable[meridian.LinkedExternalAccount] = (),
+        hold_days: int = 0,
     ) -> None:
         self.calls: list[tuple[str, Any]] = []
+        # The moves of raw records reported (contract v16), each with the
+        # header of the person it was for, "" for the plugin itself; and the
+        # hold over the instance, in days, as the deployment admin set it.
+        self.moves: list[tuple[sidecar_pb2.RecordMoveRequest, str]] = []
+        self.hold_days = hold_days
+        self.now_ns = int(NOW.timestamp()) * 1_000_000_000
+        self._storage = DECLARATION.storage
+        self._settings_now: dict[str, Any] | None = None
+        self._stored: tuple[sidecar_pb2.StoredSpan, ...] = ()
+        self._mover: Any = None
+        self._stub = SimpleNamespace(RecordMove=self._record_move)
         # By external account ID, as the deployment holds them.
         self.links = {link.external_account_id: link for link in links}
         self._watching: list[asyncio.Queue[meridian.AccountScope]] = []
@@ -243,6 +273,56 @@ class Sidecar(Operations):
     def note_not_carried(self, scheme: str, name: str) -> None:
         """As the SDK's: counted, by name only, for the heartbeat."""
         self.not_carried[(scheme, name)] = self.not_carried.get((scheme, name), 0) + 1
+
+    # ── The archive, as the SDK moves it (contract v16) ─────────────────
+
+    archive_unit = meridian.Plugin.archive_unit
+    restore_unit = meridian.Plugin.restore_unit
+    delete_unit = meridian.Plugin.delete_unit
+    find_record = meridian.Plugin.find_record
+    stored = meridian.Plugin.stored
+    _moves = meridian.Plugin._moves
+
+    def _check_open(self) -> None:
+        """Open, always."""
+
+    async def _for_person(self, operation: str, call: Any) -> Any:
+        return await call
+
+    async def _record_move(
+        self, move: sidecar_pb2.RecordMoveRequest, metadata: Any = ()
+    ) -> sidecar_pb2.RecordMoveReply:
+        """A move, as the sidecar answers it: refused inside the hold, or a
+        restore for nobody; else kept with its person."""
+        person = next((value for _, value in metadata), "")
+        if (
+            move.outcome == sidecar_pb2.MOVE_OUTCOME_DELETED
+            and self.hold_days
+            and move.last_received_ns > self.now_ns - self.hold_days * DAY_NS
+        ):
+            raise meridian.CommandRefused(
+                "RecordMove",
+                f"the unit's last record was received inside the hold of {self.hold_days} days",
+                sidecar_pb2.REFUSAL_REASON_WITHIN_HOLD,
+            )
+        if move.outcome == sidecar_pb2.MOVE_OUTCOME_RESTORED and not person:
+            raise meridian.NotGranted("RecordMove", "a restore is a person's")
+        self.moves.append((move, person))
+        return sidecar_pb2.RecordMoveReply()
+
+    def deliver(self, values: Mapping[str, Any], archive: bool = False) -> Config:
+        """The settings as the SDK delivers them, its declared defaults filled
+        in -- the window settings' too, `archived` past the window where the
+        instance has an archive -- held for a window's move, and as the
+        plugin's configuration."""
+        declared = (*DECLARED, *DECLARATION._window_settings(archive=archive))
+        now = {s.name: s.default for s in declared if s.default is not None} | dict(values)
+        self._settings_now = now
+        return config_from(now)
+
+    def outcomes(self) -> list[tuple[str, str, int, str]]:
+        """Each move reported: its kind, unit, outcome and rule."""
+        return [(m.record_kind, m.unit, m.outcome, m.rule) for m, _ in self.moves]
 
     def sent(self, name: str) -> list[Any]:
         return [params for called, params in self.calls if called == name]

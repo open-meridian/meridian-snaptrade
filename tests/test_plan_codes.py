@@ -1,13 +1,14 @@
-"""The plan-code link and the activity records' retention, both read from the
+"""The plan-code link and the activity records' window, both read from the
 plugin's settings (contract v14, W4.8, W6.11; the product owner's option A of
 2026-10-05: a plugin sets none of its settings).
 
 `plan_code_links` is a table setting -- an external account this plugin
 reported, the plan's code, an instrument record -- which an admin enters in
 the dashboard's Settings form; each row arrives with who changed it and when,
-and an activity under a linked code is that record, naming them. The
-retention is an ordinary setting, kept never shorter than the history
-SnapTrade reported, which the Account links tab says.
+and an activity under a linked code is that record, naming them. The window
+is the SDK's setting for the kind (contract v16), and a record is never
+deleted within the history SnapTrade reported, which the Account links tab
+says.
 """
 
 from __future__ import annotations
@@ -31,9 +32,11 @@ from snaptrade.page import ACCOUNTS, hold, pages
 from snaptrade.plan_codes import PlanCodeLink, changed_accounts, links_of
 from snaptrade.raw import RawStore, Taken
 from snaptrade.settings import (
-    ACTIVITY_RETENTION_DAYS,
+    ACTIVITY_PAST,
+    ACTIVITY_WINDOW,
     DECLARED,
     DEFAULT_ACTIVITY_RETENTION_DAYS,
+    DELETED,
     PLAN_CODE_LINKS,
     SYNTHETIC,
     config_from,
@@ -74,11 +77,11 @@ def test_the_rows_delivered_are_the_links_with_who_and_when() -> None:
     ), "a row missing a cell is no link, nothing guessed"
     assert link.person == "local|ada, 2026-10-05T12:00:00.000000Z"
     assert links_of("not rows") == ()
-    config = config_from({PLAN_CODE_LINKS: [ROW], ACTIVITY_RETENTION_DAYS: 3650})
+    config = config_from({PLAN_CODE_LINKS: [ROW], ACTIVITY_WINDOW: 3650})
     assert config.plan_codes == (link,)
-    assert config.activity_retention == timedelta(days=3650)
-    assert config_from({}).activity_retention == timedelta(days=DEFAULT_ACTIVITY_RETENTION_DAYS)
-    assert config_from({ACTIVITY_RETENTION_DAYS: 99_999}).activity_retention.days == 36500
+    assert config.windows.activity.length == timedelta(days=3650)
+    assert config_from({}).windows.activity.days == DEFAULT_ACTIVITY_RETENTION_DAYS
+    assert config_from({ACTIVITY_WINDOW: 99_999}).windows.activity.days == 36500
 
 
 def test_the_next_reads_activity_under_a_linked_code_is_that_record_naming_who(
@@ -287,20 +290,15 @@ def _activity_record(root: Path, traded: str, received: str) -> None:
     )
 
 
-def test_a_record_is_kept_never_shorter_than_the_history_reported(tmp_path: Path) -> None:
+def test_a_record_is_never_deleted_within_the_history_reported(tmp_path: Path) -> None:
     root = tmp_path / "raw"
     _activity_record(root, "2024-09-28T00:00:00.000Z", NOW.isoformat())
     store = RawStore(root)
     assert store.history_reach_days() == 731, "730 days and 15 hours, a part of a day as one"
-    store.activity_retention = timedelta(days=365)
+    store.activity_window = timedelta(days=365)
     assert store.kept_for() == timedelta(days=731), "held to the history reported"
-    store.activity_retention = timedelta(days=3650)
+    store.activity_window = timedelta(days=3650)
     assert store.kept_for() == timedelta(days=3650)
-    store.activity_retention = timedelta(days=365)
-    store.prune(NOW + timedelta(days=400))
-    assert store.activity_record(ALPACA, "A-2024-09-28T00:00:00.000Z") is not None
-    store.prune(NOW + timedelta(days=732))
-    assert store.activity_record(ALPACA, "A-2024-09-28T00:00:00.000Z") is None
     _activity_record(root, "2023-09-28T00:00:00.000Z", NOW.isoformat())
     assert RawStore(root).history_reach_days() == 1097
     files = list(root.rglob("*.json.gz"))
@@ -314,7 +312,14 @@ def test_the_account_links_tab_says_what_the_settings_hold_and_how_long_records_
     syncer = Syncer(sidecar.plugin(), now=clock(), raw=RawStore(tmp_path / "raw"))
     _activity_record(tmp_path / "raw", "2024-09-28T00:00:00.000Z", NOW.isoformat())
     syncer.configure(
-        config_from({SYNTHETIC: True, PLAN_CODE_LINKS: [ROW], ACTIVITY_RETENTION_DAYS: 365})
+        config_from(
+            {
+                SYNTHETIC: True,
+                PLAN_CODE_LINKS: [ROW],
+                ACTIVITY_WINDOW: 365,
+                ACTIVITY_PAST: DELETED,
+            }
+        )
     )
     asyncio.run(syncer.run_once())
     links = Links(sidecar.plugin(), settle_seconds=0)
@@ -323,9 +328,11 @@ def test_the_account_links_tab_says_what_the_settings_hold_and_how_long_records_
     page = PageClient(pages, sidecar.plugin()).get(ACCOUNTS, "admin")
     assert page.status == 200
     assert "1 plan-code link;" in page.text and "0 cash links;" in page.text
-    assert "kept 731 days, not the 365 set" in page.text
+    assert "in storage 365 days, then deleted, never within the 731 days" in page.text
     answered = PageClient(pages, sidecar.plugin()).call_tool(
         "read_account_links", level="admin"
     )
     assert answered.data["plan_codes"][0]["instrument_id"] == "INS-7"
-    assert answered.data["kept_for_days"] == 731
+    assert answered.data["activity_window_days"] == 365
+    assert answered.data["activity_past_window"] == "deleted"
+    assert answered.data["history_reach_days"] == 731

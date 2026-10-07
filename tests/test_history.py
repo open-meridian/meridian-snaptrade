@@ -30,6 +30,7 @@ from snaptrade.page import (
     LOTS,
     NO_PORTAL,
     RAW,
+    RAW_ARCHIVE,
     RAW_DOWNLOAD,
     READ,
     READING,
@@ -98,6 +99,9 @@ def test_every_route_is_typed_and_offered_as_a_tool_or_says_why_not() -> None:
         "read_account_activities": ("GET", HISTORY, True),
         "read_proposed_lots": ("GET", LOTS, True),
         "read_snaptrade_now": ("POST", READ, False),
+        "read_archived_units": ("GET", RAW_ARCHIVE, True),
+        # The SDK's, on every edge plugin's host (contract v16).
+        "restore_unit": ("POST", "/archive/restore", False),
     }
     # The routes kept from agents, each with why: none of them changes anything.
     kept = {(each.method, each.path): each.why for each in pages.not_offered}

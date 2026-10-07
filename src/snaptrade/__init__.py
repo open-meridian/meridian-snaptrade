@@ -5,5 +5,6 @@ brokerages through SnapTrade, recorded through the Python SDK (role `custody`).
 - normalise.py: SnapTrade's shapes in the platform's convention.
 - contract.py: what reaches the sidecar, and what waits for the contract.
 - sync.py: one read, carried through; page.py and templates/: its pages.
-- raw.py: SnapTrade's raw responses to each read, kept per account.
+- raw.py: SnapTrade's raw responses to each read, kept per account, in units;
+  archive.py: each kind moved past its window, archived, kept or deleted.
 """

@@ -57,8 +57,11 @@ recorded.
 
 What SnapTrade answered on each read, so you can see it on the Raw responses
 tab, in storage your deployment gives this plugin alone. Credentials are
-removed before anything is written. Each activity's own record is kept for
-seven years by default. None of it leaves your deployment.
+removed before anything is written. Each read's answers stay in storage 30
+days by default, and each activity's own record seven years; after that they
+move to your deployment's archive, where you can restore them, or stay, or
+are deleted, as the plugin's admin chooses. Every move is recorded. None of
+it leaves your deployment.
 
 ## Who uses it
 

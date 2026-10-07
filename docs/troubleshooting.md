@@ -105,6 +105,21 @@ Raw responses says the responses were not kept: the plugin's storage could
 not be written. What was recorded is unaffected; tell your deployment's
 admin.
 
+## A record is in the archive
+
+A link to a record says it is in the archive, and restorable: it moved past
+its window. **Do:** under **Open**, press **Restore** beside it (or on the
+Archive view); it is readable for seven days.
+
+## Old records are not moving
+
+Records past their window stay in storage when the deployment gives this
+plugin no archive, or its admin has not allowed one, or the choice past the
+window is Kept. **Do:** ask your deployment's admin to allow an archive on
+the plugin's Manage page, or choose Kept or Deleted on Settings. A deletion
+inside your deployment's hold is refused and the records stay: that is the
+hold working.
+
 ## A difference in your book
 
 Differences between your book and what this plugin records are shown and

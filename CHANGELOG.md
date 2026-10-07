@@ -3,6 +3,73 @@
 What each release of the SnapTrade plugin changed. Releases before 0.11.0
 are described in their commits (`git log`) and the README's "Depends on".
 
+## 0.13.0 (not released)
+
+Contract v16, on open-meridian 0.21.0 (meridian-design
+plans/an-edge-plugins-older-records-move-to-the-archive, row 6;
+tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-archive).
+
+- **Its two kinds of raw record are declared** (`declaration.py`): Reported
+  activity (`activity`, a window of 2555 days, seven years, the custody
+  guidance of 2026-10-05) and Raw responses (`responses`, 30 days), both
+  archivable. The storage asked for stays 36,500 days, the longest a window
+  may be.
+- **The windows are the SDK's settings**: `activity_window_days`,
+  `activity_past_window`, `responses_window_days` and
+  `responses_past_window`, declared by the SDK from the kinds, the same for
+  every edge plugin, set in the dashboard's Settings form. Past the window a
+  record is archived (the default where the instance has an archive), kept
+  (otherwise) or deleted.
+- **0.12.0's settings carry over without loss.** `raw_retention_days` and
+  `activity_retention_days` stay declared, as developer settings with no
+  default, so a value a deployment saved under either is still delivered;
+  it is `responses_window_days` or `activity_window_days` while that window
+  setting holds its default, and the plugin's log names the window it was
+  carried from on each move. The SDK fills a declared default into what it
+  delivers, so a window at its default reads as unset; set to anything else,
+  the window counts and the old value does not. A deployment that saved
+  neither, or saved the default, has nothing to carry: 30 and 2555 days are
+  the windows' defaults. To take a window's default exactly where an old
+  value is saved, clear the old setting (a developer setting, shown on a
+  development deployment). The deployment's hold applies to the window
+  settings, not the old ones; a deletion inside it is refused either way.
+  What 0.12.0 deleted past its retention is not brought back.
+- **Past the window, in units, through the SDK's helpers** (`archive.py`):
+  an account's day of reads and its month of activity records, moved whole
+  once the day or month has ended. Archived with `archive_unit` (written to
+  the archive, checked, recorded naming the window, then removed); kept; or
+  deleted with `delete_unit`, recorded first, so a deletion inside the
+  deployment's hold is refused (REFUSAL_REASON_WITHIN_HOLD) and the unit
+  kept, said once, tried again each pass and recorded never. A reported
+  activity is never deleted within the history SnapTrade reported. With no
+  archive allowed, a unit past its window is kept. A pass runs when the
+  settings arrive and after each read; a restart's records nothing twice.
+  Each unit is noted first in its account's ledger (`moved.json`), so it is
+  listed and a record in it is found again; the SDK's index says where it
+  stands.
+- **What storage holds goes on the heartbeat**: `plugin.stored`, one span
+  per kind, count and first and last received, after each pass.
+- **The layout is in units**: a read in its day, an activity's record in the
+  month it was received. 0.12.0's flat records are moved into their units on
+  the first pass, keeping their times; until then they read as before.
+- **The Raw responses tab fits one screen** (kit 0.10.0), one account at a
+  time: Read, each call one line with SnapTrade's JSON a click away; Kept
+  reads, paged by `om-pager`; and Archive (`/raw/archive`), every unit moved
+  for the accounts the person may read, archived, restored or deleted, with
+  Restore under Open through the SDK's `POST /archive/restore`. Restored
+  reads are read on the tab as any kept read. A row's reference to a record
+  that moved resolves to where it stands, with Restore beside it.
+- **Offered to agents**: `read_archived_units` (`GET /raw/archive`), and the
+  SDK's `restore_unit` on the plugin's host.
+- The Account links tab says the activity window and what is done past it.
+- `make e2e` on core 25fbf37's runtime and harness (contract v16), the plugin
+  given the harness's archive: a read 40 days old archived past its window,
+  recorded, its reference resolving to archived, restorable, restored on the
+  tab through the SDK's route for the person and read back; a read 5 days
+  old, past a window of a day with `deleted` chosen, kept inside a hold of
+  30 days with nothing recorded; and a new container's pass recording
+  nothing twice. `make preview` writes the tab's kept reads and archive too.
+
 ## 0.12.0 (not released)
 
 Contract v15, on open-meridian 0.20.0 (meridian-design

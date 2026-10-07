@@ -4,8 +4,10 @@ page shows of it.
 Nothing here survives the process: the next read rebuilds everything from
 SnapTrade, and what the pages show is the last read, kept in memory. The one
 thing kept beyond it is SnapTrade's raw responses to each read, per account,
-in the plugin's own storage for their retention (raw.py, decisions/028), for
-the Raw responses tab: never read back into what is recorded.
+in the plugin's own storage (raw.py, decisions/028), for the Raw responses
+tab: never read back into what is recorded. Past each kind's window they are
+archived, kept or deleted as the settings say (archive.py): a pass when the
+settings arrive and after each read (`tend`).
 
 Each linked account's activities go to the street as SnapTrade states them
 (contract v14, W2.10; activities.py): on its first read in this process, a
@@ -18,7 +20,7 @@ recorded under a code a person linked is re-resolved through the link
 (contract v15, W2.15), which the street answers already recorded where it
 holds it so: on the start's backfill, and on a backfill again of each account
 whose plan-code links a settings delivery adds or changes. Each activity's raw record is its
-own, kept as long as the history it reported (raw.py). An account nothing
+own, never deleted within the history it reported (raw.py). An account nothing
 links reports none until it is linked, and then its backfill.
 
 Each read ends in a report of the plugin's health and its figures, which core
@@ -39,6 +41,7 @@ import meridian
 from meridian.bounds import PLUGIN_FIGURE_WHY_LENGTH
 
 from .activities import Converted, PlanCodeLink, convert
+from .archive import Keeper, Tended
 from .contract import ActivityOutcome, Outcome, Recorder
 from .declaration import seen
 from .normalise import (
@@ -173,8 +176,10 @@ class Syncer:
         self._plan_codes = plan_codes or (lambda: self.config.plan_codes)
         # The external accounts whose backfill this process has reported.
         self._backfilled: set[str] = set()
-        # SnapTrade's raw responses, kept per account; None keeps none.
+        # SnapTrade's raw responses, kept per account; None keeps none. Each
+        # kind moved past its window by the keeper (archive.py).
         self.raw = raw
+        self._keeper = Keeper(plugin, raw, now) if raw is not None else None
         self._recorder = Recorder(plugin)
         self._now = now
         self._make_venue = make_venue or (lambda config: venue_for(config, now))
@@ -208,11 +213,23 @@ class Syncer:
         self.config = config
         self.venue = self._make_venue(config)
         if self.raw is not None:
-            # The first delivery comes as the plugin starts: what is past the
-            # retention, as the settings now say it, goes before any read.
-            self.raw.retention = config.raw_retention
-            self.raw.activity_retention = config.activity_retention
-            self.raw.prune(self._now())
+            self.raw.responses_window = config.windows.responses.length
+            self.raw.activity_window = config.windows.activity.length
+
+    async def tend(self) -> Tended:
+        """Each kind's units past its window archived, kept or deleted as
+        the settings say, and what storage holds on the heartbeat
+        (archive.py): when the settings arrive, the first as the plugin
+        starts, and after each read."""
+        if self._keeper is None:
+            return Tended()
+        try:
+            return await self._keeper.tend(self.config.windows)
+        except Exception as failed:
+            # Never the reading's end: what is past its window stays, and the
+            # next pass tries again.
+            log.warning("what is past its window was not tended: %s", failed)
+            return Tended()
 
     async def run_once(self) -> Status:
         config, venue = self.config, self.venue
@@ -236,6 +253,7 @@ class Syncer:
             if self.status.reading:
                 # It stopped before it came to anything: the read before it stands.
                 self.status = replace(self.status, reading=False)
+            await self.tend()
 
     async def _read(self, config: Config, venue: Venue, base: Status) -> Status:
         try:
@@ -426,12 +444,11 @@ class Syncer:
         self, config: Config, snapshot: Snapshot, connections: tuple[ConnectionView, ...]
     ) -> None:
         """SnapTrade's responses to this read, kept per account with every
-        credential redacted, then whatever is past the retention pruned."""
+        credential redacted; the read's end tends what is past its window."""
         if self.raw is None:
             return
         secrets = config.credentials.secrets() if config.credentials is not None else ()
         self.raw.keep(taken(snapshot, connections, config.synthetic), secrets)
-        self.raw.prune(self._now())
 
     def _note_not_carried(self, snapshot: Snapshot) -> None:
         """Count each name SnapTrade sent this read that the plugin declares

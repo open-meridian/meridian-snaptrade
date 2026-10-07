@@ -71,7 +71,7 @@ import asyncio
 import http.server
 from collections.abc import Awaitable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, TypeVar
@@ -79,13 +79,18 @@ from urllib.parse import parse_qs, urlencode
 
 import meridian
 from meridian.pages import CSRF_FIELD, REQUEST_SECONDS
+from meridian.v1 import sidecar_pb2
 
 from . import history, records
+from .declaration import ACTIVITY_KIND, RESPONSES_KIND
 from .linking import LINKS_AT_ONCE, Link, Links, LinkView, Offered, refusal
 from .normalise import REMEDY, AccountView, ConnectionView, Holding, Serving, SyncState
 from .plan_codes import PlanCodeLink
 from .raw import (
     CALLS,
+    RESTORE_PERIOD,
+    Moved,
+    RawStore,
     Record,
     activities_call,
     dumps,
@@ -100,7 +105,9 @@ from .venue import VenueError
 TITLE = "SnapTrade"
 # The kit's version these pages were built against. The dashboard serves the
 # deployment's newest 0.x for it; pinning one keeps the pages as they were built.
-KIT = "0.8.0"
+# 0.10.0: every page fits one screen (one-line rows, row-detail, om-pager),
+# which the Raw responses tab is built on.
+KIT = "0.10.0"
 
 # The largest body any request here may carry: the map's several-link form,
 # a pair of IDs for each link, a hundred bytes or so a pair, room for some
@@ -124,6 +131,11 @@ CONNECTIONS = "/admin/connections"
 ACCOUNTS = "/admin/accounts"
 # A kept read of SnapTrade's, as a JSON file to save.
 RAW_DOWNLOAD = f"{RAW}/download"
+# The units of raw records moved past their window (contract v16), and the
+# SDK's restore route on every edge plugin's host, which a form there posts
+# to with the kind and the unit.
+RAW_ARCHIVE = f"{RAW}/archive"
+RESTORE = "/archive/restore"
 # An account's history, and the lots proposed from it (history.py).
 HISTORY = "/history"
 LOTS = f"{HISTORY}/lots"
@@ -143,6 +155,8 @@ pages.environment.globals["paths"] = {
     "reconnect": RECONNECT,
     "link": LINK,
     "raw": RAW,
+    "raw_archive": RAW_ARCHIVE,
+    "restore": RESTORE,
     "history": HISTORY,
     "lots": LOTS,
 }
@@ -876,7 +890,7 @@ def _settings_said() -> dict[str, Any]:
     return {
         "plan_codes": len(held.syncer.config.plan_codes),
         "counted_as_cash": len(held.syncer.config.counted_as_cash),
-        **_retention_read(),
+        **_window_read(),
     }
 
 
@@ -901,17 +915,17 @@ def _links_read(status: Status) -> records.LinksRead:
             for view in connection.accounts
         ],
         plan_codes=_plan_code_reads(_now().syncer.config.plan_codes),
-        **_retention_read(),
+        **_window_read(),
     )
 
 
-def _retention_read() -> dict[str, int]:
+def _window_read() -> dict[str, Any]:
     held = _now()
     raw = held.syncer.raw
-    days = held.syncer.config.activity_retention.days
+    window = held.syncer.config.windows.activity
     return {
-        "activity_retention_days": days,
-        "kept_for_days": raw.kept_for().days if raw is not None else days,
+        "activity_window_days": window.days,
+        "activity_past_window": window.past,
         "history_reach_days": raw.history_reach_days() if raw is not None else 0,
     }
 
@@ -1979,16 +1993,33 @@ async def proposed_lots(request: meridian.Request) -> meridian.Response:
 
 # ── Raw responses, at write and read ────────────────────────────────────────
 #
-# SnapTrade's responses to each read, as received, per account (raw.py): the
-# latest read of each account the person may read, each call by name and
-# request with its JSON body formatted, then the older reads still kept, each
-# opened here and each downloadable as JSON. An account's data, so never at
-# admin: Manage shows no account's data. Cut to the person by the plugin's
-# links, as Statements is, and not by what the last read reached, so a read
-# kept before a restart is shown before the next read.
+# SnapTrade's responses to each read, as received, per account (raw.py), one
+# account at a time and on one screen: the read asked for or the latest, each
+# call one line with its JSON a click away; the account's kept reads, paged;
+# and the archive, every unit past its window this plugin moved for the
+# accounts the person may read, each restorable through the SDK's route
+# (`POST /archive/restore`, contract v16) under Open. An account's data, so
+# never at admin: Manage shows no account's data. Cut to the person by the
+# plugin's links, as Statements is, and not by what the last read reached,
+# so a read kept before a restart is shown before the next read.
 
-# The older reads listed at once for an account; `older` pages through them.
-OLDER_AT_ONCE = 20
+# The kept reads, and the archive's units, drawn a page at once at most; the
+# kit's om-pager shows as many as fit, and asks for the next page at that.
+AT_ONCE = 25
+MOST_OFFSET = 100_000
+# A kind of raw record as a person reads it, and as a line on a phone has
+# room for it.
+_KIND_LABEL = {
+    ACTIVITY_KIND.name: ACTIVITY_KIND.label,
+    RESPONSES_KIND.name: RESPONSES_KIND.label,
+}
+_KIND_SHORT = {ACTIVITY_KIND.name: "Activity", RESPONSES_KIND.name: "Responses"}
+_OUTCOME = {
+    sidecar_pb2.MOVE_OUTCOME_ARCHIVED: "archived",
+    sidecar_pb2.MOVE_OUTCOME_RESTORED: "restored",
+    sidecar_pb2.MOVE_OUTCOME_RETURNED: "archived",
+    sidecar_pb2.MOVE_OUTCOME_DELETED: "deleted",
+}
 
 
 @dataclass(frozen=True)
@@ -2035,12 +2066,20 @@ def _shown_call(call: Mapping[str, Any]) -> dict[str, str]:
     """One call of a kept read, as the tab shows it: by name and request, its
     body formatted (every number as SnapTrade wrote it), or why it failed."""
     failed = call.get("failed")
+    body = call.get("body")
+    listed = body.get("results") if isinstance(body, dict) else body
+    said = (
+        f"{len(listed)} {'entry' if len(listed) == 1 else 'entries'}"
+        if isinstance(listed, list)
+        else "Answered"
+    )
     return {
         "call": str(call.get("call", "")),
         "request": str(call.get("request", "")),
         "note": str(call.get("note", "")),
         "failed": str(failed) if failed else "",
-        "json": "" if failed else dumps(call.get("body"), indent=2),
+        "json": "" if failed else dumps(body, indent=2),
+        "said": "" if failed else said,
     }
 
 
@@ -2049,6 +2088,7 @@ def _shown_record(account: RawAccount, record: Record) -> dict[str, Any]:
         "key": record.key,
         "read_at": record.read_at,
         "synthetic": record.synthetic,
+        "restored": record.restored,
         "calls": [_shown_call(call) for call in record.calls],
         "download": _raw_href(
             RAW_DOWNLOAD, account=account.external_account_id, read=record.key
@@ -2056,13 +2096,70 @@ def _shown_record(account: RawAccount, record: Record) -> dict[str, Any]:
     }
 
 
-def _number(text: str) -> int:
-    return int(text) if text.isdigit() else 0
+def _number(text: str, most: int = MOST_OFFSET) -> int:
+    return min(int(text), most) if text.isdigit() else 0
+
+
+def _from_ns(at_ns: int) -> datetime:
+    return datetime.fromtimestamp(at_ns // 1_000_000_000, UTC)
+
+
+def _state(plugin: Any, unit: str) -> str:
+    """Where a moved unit stands, by the SDK's index: archived (restorable),
+    restored or deleted; "" where it never moved (a move refused, or not yet
+    made), and so is in storage still."""
+    found = plugin.find_record(unit)
+    return _OUTCOME.get(found.outcome, "") if found is not None else ""
+
+
+def _archived(
+    plugin: Any, store: RawStore, account: RawAccount, moved: Moved
+) -> records.ArchivedUnit | None:
+    """One unit this plugin moved, as the archive lists it; None where the
+    SDK's index says it never moved."""
+    state = _state(plugin, moved.unit)
+    if not state:
+        return None
+    restored = store.restored_at(moved.unit) if state == "restored" else None
+    return records.ArchivedUnit(
+        external_account_id=account.external_account_id,
+        record_kind=moved.kind,
+        unit=moved.unit,
+        record_count=moved.record_count,
+        first_received=_from_ns(moved.first_received_ns),
+        last_received=_from_ns(moved.last_received_ns),
+        state=state,
+        readable_until=restored + RESTORE_PERIOD if restored is not None else None,
+    )
+
+
+def _moved_note(
+    plugin: Any, store: RawStore, account: RawAccount, moved: Moved | None
+) -> tuple[Notice, records.ArchivedUnit | None] | None:
+    """What a reference to a record no longer in storage resolves to: the
+    unit it moved with, archived and restorable, or deleted past its window;
+    never nothing (requirement 6). None where it names no moved unit."""
+    if moved is None:
+        return None
+    unit = _archived(plugin, store, account, moved)
+    if unit is None:
+        return None
+    if unit.state == "deleted":
+        return Notice(
+            "That record was deleted past its window, as this plugin's settings say.", "warn"
+        ), unit
+    if unit.state == "restored":
+        return Notice("That record is restored from the archive, and readable here."), unit
+    return Notice(
+        "That record is in the archive, and restorable: restore its unit to read it here.",
+        "warn",
+    ), unit
 
 
 def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Response:
-    """Raw responses: for each account the person may read (or the one the
-    query names), the read asked for or the latest, then the older reads kept."""
+    """Raw responses: one account the person may read (the one the query
+    names, or the first), its read asked for or the latest, or its kept
+    reads (`view=kept`), paged."""
     caller = request.caller
     held = _now()
     store = held.syncer.raw
@@ -2084,61 +2181,80 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     if asked and asked not in {a.external_account_id for a in accounts}:
         # Not one of theirs, or no such account: the same answer for both.
         return _said("No such account.", 404)
-    chosen = [a for a in accounts if a.external_account_id == asked] if asked else accounts
-    key = (ref_read if ref else request.query.get("read", "").strip()) if asked else ""
-    older = _number(request.query.get("older", "")) if asked else 0
-    shown: list[dict[str, Any]] = []
-    for account in chosen:
-        reads = store.reads(account.external_account_id) if store is not None else []
+    account = next(
+        (a for a in accounts if a.external_account_id == asked),
+        accounts[0] if accounts else None,
+    )
+    view = "kept" if request.query.get("view") == "kept" and not ref else "read"
+    key = ref_read or request.query.get("read", "").strip()
+    offset = _number(request.query.get("offset", ""))
+    size = _number(request.query.get("size", ""), AT_ONCE) or AT_ONCE
+    shown: dict[str, Any] = {}
+    unit: records.ArchivedUnit | None = None
+    if account is not None:
+        external = account.external_account_id
+        reads = store.reads(external) if store is not None else []
+        here = {"account": external}
         record = None
         if store is not None and ref_activity:
-            record = store.activity_record(account.external_account_id, ref_activity)
+            record = store.activity_record(external, ref_activity)
         elif store is not None:
-            record = (
-                store.record(account.external_account_id, key)
-                if key
-                else store.latest(account.external_account_id)
+            record = store.record(external, key) if key else store.latest(external)
+        asked_for = bool(key or ref_activity)
+        if record is None and asked_for and store is not None:
+            moved = (
+                store.moved_activity(external, ref_activity)
+                if ref_activity
+                else store.moved_read(external, key)
             )
-        current = record.key if record is not None else ""
-        others = [r for r in reads if r.key != current]
-        page = others[older : older + OLDER_AT_ONCE]
-        here = {"account": account.external_account_id}
-        shown.append(
-            {
-                "external_account_id": account.external_account_id,
-                "name": account.name,
-                "where": account.where,
-                "record": _shown_record(account, record) if record is not None else None,
-                # A read asked for by key that is no longer kept.
-                "gone": bool(key or ref_activity) and record is None,
-                "older": [
-                    {
-                        "read_at": r.read_at,
-                        "href": _raw_href(RAW, **here, read=r.key),
-                        "download": _raw_href(RAW_DOWNLOAD, **here, read=r.key),
-                    }
-                    for r in page
-                ],
-                "older_total": len(others),
-                "older_from": older + 1 if page else 0,
-                "older_to": older + len(page),
-                "earlier": _raw_href(RAW, **here, older=older + OLDER_AT_ONCE)
-                if older + OLDER_AT_ONCE < len(others)
-                else "",
-                "later": _raw_href(RAW, **here, older=max(older - OLDER_AT_ONCE, 0))
-                if older > 0
-                else "",
-                "all": _raw_href(RAW, **here),
-            }
-        )
+            said = _moved_note(request.plugin, store, account, moved)
+            if said is not None:
+                notice, unit = notice or said[0], said[1]
+        page = reads[offset : offset + size]
+        shown = {
+            "external_account_id": external,
+            "name": account.name,
+            "where": account.where,
+            "record": _shown_record(account, record) if record is not None else None,
+            # A read asked for by key that is no longer in storage.
+            "gone": asked_for and record is None,
+            "reads": [
+                {
+                    "read_at": r.read_at,
+                    "restored": r.restored,
+                    "href": _raw_href(RAW, **here, read=r.key),
+                    "download": _raw_href(RAW_DOWNLOAD, **here, read=r.key),
+                }
+                for r in page
+            ],
+            "total": len(reads),
+            "offset": offset,
+            "size": size,
+            "earlier": _raw_href(RAW, **here, view="kept", offset=offset + size, size=size)
+            if offset + size < len(reads)
+            else "",
+            "later": _raw_href(
+                RAW, **here, view="kept", offset=max(offset - size, 0), size=size
+            )
+            if offset > 0
+            else "",
+            "read_href": _raw_href(RAW, **here),
+            "kept_href": _raw_href(RAW, **here, view="kept"),
+            "archive_href": _raw_href(RAW_ARCHIVE, **here),
+        }
     status = held.syncer.status
+    windows = held.syncer.config.windows
     return _html(
         pages.render(
             "raw.html",
             dot=_dot(status, setup=False),
             nothing=not caller.read,
-            accounts=shown,
-            focused=bool(asked),
+            accounts=accounts,
+            account=shown,
+            unit=unit,
+            data=None,
+            kinds=_KIND_LABEL,
+            view=view,
             back=RAW,
             notice=notice
             or (
@@ -2156,7 +2272,7 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
             ),
             kept=store is not None,
             failure=store.failure if store is not None else "",
-            retention_days=store.retention.days if store is not None else 0,
+            window=windows.responses,
             mode=_MODE[status.mode],
         )
     )
@@ -2170,11 +2286,97 @@ def _raw(request: meridian.Request, notice: Notice | None = None) -> meridian.Re
     why=(
         "SnapTrade's answers as received, any JSON it sent, which no typed record holds; "
         "an agent reads what they came to with read_statements, read_account_activities "
-        "and read_proposed_lots, each naming its raw record"
+        "and read_proposed_lots, each naming its raw record, and the archive with "
+        "read_archived_units"
     ),
 )
 async def raw_responses(request: meridian.Request) -> meridian.Response:
     return _raw(request)
+
+
+@pages.route(
+    RAW_ARCHIVE,
+    levels=["write", "read"],
+    params=records.ArchiveAsked,
+    answers=records.ArchiveRead,
+    name="read_archived_units",
+    description=(
+        "The units of SnapTrade's raw records this plugin moved past their window, for the "
+        "accounts the person may read -- an account's day of raw responses, or its month of "
+        "reported activity records -- each with how many records it holds, when they were "
+        "received, and where it stands: archived (restorable with restore_unit, naming its "
+        "record_kind and unit), restored (readable on the Raw responses tab until the date "
+        "given) or deleted. limit of them from offset, the newest first."
+    ),
+)
+async def raw_archive(request: meridian.Request) -> meridian.Response:
+    """The archive: every unit this plugin moved for the accounts the person
+    may read (or the one the query names), the newest first, each restorable
+    under Open through the SDK's route."""
+    caller = request.caller
+    asked = request.params or records.ArchiveAsked()
+    held = _now()
+    store = held.syncer.raw
+    accounts = raw_accounts(caller)
+    account = asked.account.strip()
+    if account and account not in {a.external_account_id for a in accounts}:
+        if request.tool_name:
+            pages.refuse("No such account.", "account", reason="not_found")
+        return _said("No such account.", 404)
+    chosen = [a for a in accounts if not account or a.external_account_id == account]
+    units = [
+        unit
+        for each in chosen
+        for moved in (store.moved(each.external_account_id) if store is not None else [])
+        if store is not None and (unit := _archived(request.plugin, store, each, moved))
+    ]
+    units.sort(key=lambda u: u.last_received, reverse=True)
+    page = units[asked.offset : asked.offset + asked.limit]
+    data = records.ArchiveRead(
+        units=page,
+        total=len(units),
+        offset=asked.offset,
+        said=f"{len(units)} {'unit' if len(units) == 1 else 'units'} moved past their window.",
+    )
+    names = {a.external_account_id: a.name for a in accounts}
+    here = {"account": account} if account else {}
+    first = account or (accounts[0].external_account_id if accounts else "")
+    status = held.syncer.status
+    windows = held.syncer.config.windows
+    return pages.answer(
+        "raw.html",
+        data,
+        dot=_dot(status, setup=False),
+        nothing=not caller.read,
+        accounts=accounts,
+        account={
+            "external_account_id": account,
+            "read_href": _raw_href(RAW, account=first) if first else RAW,
+            "kept_href": _raw_href(RAW, account=first, view="kept") if first else RAW,
+            "archive_href": _raw_href(RAW_ARCHIVE, **here) if here else RAW_ARCHIVE,
+        },
+        names=names,
+        kinds=_KIND_LABEL,
+        short=_KIND_SHORT,
+        view="archive",
+        back=RAW,
+        notice=None,
+        kept=store is not None,
+        failure=store.failure if store is not None else "",
+        window=windows.responses,
+        windows=windows,
+        earlier=_raw_href(
+            RAW_ARCHIVE, **here, offset=asked.offset + asked.limit, limit=asked.limit
+        )
+        if asked.offset + asked.limit < len(units)
+        else "",
+        later=_raw_href(
+            RAW_ARCHIVE, **here, offset=max(asked.offset - asked.limit, 0), limit=asked.limit
+        )
+        if asked.offset > 0
+        else "",
+        mode=_MODE[status.mode],
+    )
 
 
 def _filename(external_account_id: str, key: str) -> str:

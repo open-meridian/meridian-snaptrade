@@ -44,8 +44,9 @@ each is fit for your firm's purpose.
   your own environment.
 - Your SnapTrade key reaches the plugin as a setting and nowhere else: it is
   never logged, shown or kept in what the plugin stores.
-- SnapTrade's answers are kept, credentials removed, for as long as the
-  retention settings say; you choose those on Settings.
+- SnapTrade's answers are kept, credentials removed, in storage for as long
+  as each kind's window says, then archived, kept or deleted as you choose
+  on Settings, never inside your deployment's hold.
 
 ## Licence
 

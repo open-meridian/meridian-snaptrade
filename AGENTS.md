@@ -45,16 +45,36 @@ a deployment admin approves them.
   call kept as this account's own entry, never another account's. Never a
   credential, a header or a query string: `raw.redact` replaces a field
   named as a credential and any credential value before anything is written.
-  Kept for `raw_retention_days` (30 by default), pruned when the settings
-  arrive and after each read, in the storage the deployment grants this
-  instance (`raw.storage_root()`: `MERIDIAN_STORAGE_DIR`, or `/tmp` where
-  none is mounted), which the version's declaration asks for
-  (`declaration.py`, contract v11). Every row and statement references the
+  Kept in the storage the deployment grants this instance
+  (`raw.storage_root()`: `MERIDIAN_STORAGE_DIR`, or `/tmp` where none is
+  mounted, from which nothing moves), which the version's declaration asks
+  for (`declaration.py`, contract v11), in units: a read in its day, an
+  activity's record in the month it was received. Every row and statement references the
   raw record it was converted from (`plugin.raw_record(raw.record_key(...))`:
   the external account, the read and the call); never another instance's,
   and never a key the store does not keep. Nothing is read back from the
   store into what is recorded, and the Raw responses tab, an account's data,
   is never at `admin`.
+- **Past the window, the archive** (contract v16, SDK 0.21.0; meridian-design
+  spec/an-edge-plugins-older-records-move-to-the-archive). The declaration's
+  two kinds, `activity` (Reported activity, 2555 days) and `responses` (Raw
+  responses, 30 days), give the SDK's window settings, `<kind>_window_days`
+  and `<kind>_past_window`, which this plugin never declares itself and reads
+  through `settings.windows_from` (0.12.0's `raw_retention_days` and
+  `activity_retention_days` carried while a window holds its default).
+  `archive.py` moves a unit only once its day or month has ended and its last
+  record is past the window, only through the SDK's helpers (`archive_unit`,
+  `delete_unit`), each noted first in the account's ledger (`moved.json`):
+  archived only where the instance has an archive, deleted only where an
+  admin chose it, never inside the hold (the sidecar refuses: kept, said
+  once, nothing recorded) and never an activity within the history SnapTrade
+  reported. Never move a unit the SDK's index holds with other files; never
+  move records by hand; never remember a move in the process: the storage,
+  the ledger and the index are what a restart reads. Each pass ends with
+  `plugin.stored`. Restore is the SDK's `POST /archive/restore`, which the
+  Raw responses tab's Archive view posts to under Open; a restored record is
+  read from the SDK's restore area (`raw.RESTORE_AREA`), and a reference to
+  a moved record resolves to where it stands, never to nothing.
 - **The declaration** (`declaration.py`) names the secret settings, what
   SnapTrade sends and this plugin does not carry, by name only, with why,
   and the storage. A name newly left out is declared there, and counted as a
@@ -137,11 +157,12 @@ a deployment admin approves them.
   street keeps each once by its ID, so nothing is held to remember a
   backfill by, and a restart's is answered already recorded. Activity is
   evidence, never netted or merged, and nothing is derived from it. Each
-  activity's raw record is its own (`raw.activity_key`), written once, kept
-  for the `activity_retention_days` setting (seven years by default, at most
-  the 36,500 days the storage declaration asks for) and never for less than
-  the history SnapTrade reported (`RawStore.kept_for`, `history_reach_days`),
-  which the Account links tab says. The plan-code link is the table setting
+  activity's raw record is its own (`raw.activity_key`), written once (in
+  storage, restored or moved, never written again), in storage for the
+  `activity_window_days` setting (seven years by default, at most 36,500)
+  and never deleted within the history SnapTrade reported
+  (`RawStore.kept_for`, `history_reach_days`), which the Account links tab
+  says. The plan-code link is the table setting
   `plan_code_links` (`plan_codes.py`; contract v14): per row an external
   account, the plan's code and a deployment instrument record's ID, entered
   in the dashboard's Settings form; an activity under a linked code is that
@@ -250,7 +271,7 @@ plain HTML, as the templates write it, and from React, Vue or Svelte alike.
 **It is linked for you.** Each page's template, under `templates/`, extends
 the SDK's base template, `{% extends "meridian/base.html" %}`, which links the
 kit from the path the dashboard serves it at on this plugin's own host, at the
-version `page.py`'s `KIT` names (`/.meridian/ui/0.8.0/`), and draws the page's
+version `page.py`'s `KIT` names (`/.meridian/ui/0.10.0/`), and draws the page's
 heading and tab row (the kit drops both when the dashboard frames the page and
 draws its own). A template fills three blocks: `content`, the page itself;
 `head_actions`, buttons marked `data-om-action="<id>"`, which the dashboard

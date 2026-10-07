@@ -13,7 +13,9 @@ activities, a backfill back to its history's first date and then each read's
 reads that it needs; a restart reads again. What SnapTrade answered each read
 is kept per account, as received, for the Raw responses tab (raw.py), in the
 storage the deployment grants an edge plugin (decisions/028), which it
-declares it asks for (declaration.py). Which of its external
+declares it asks for with its two kinds of raw record (declaration.py), and
+past each kind's window archived, kept or deleted as the settings say
+(archive.py, contract v16). Which of its external
 accounts are linked, and to what, it reads beside its account scope, holding
 the first delivery before its pages are served and each one after
 (linking.py).
@@ -33,6 +35,7 @@ import signal
 from collections.abc import AsyncIterator
 
 import meridian
+from meridian import edge
 
 from .declaration import DECLARATION
 from .linking import Links
@@ -52,6 +55,8 @@ async def watch_settings(
         syncer.configure(config_from(delivered.values, delivered.missing_required))
         configured.set()
         wake.set()
+        # What is past its window, as the settings now say it (archive.py).
+        await syncer.tend()
 
 
 async def watch_links(scopes: AsyncIterator[meridian.AccountScope], links: Links) -> None:
@@ -115,7 +120,7 @@ async def run() -> None:
         # report (contract v14).
         syncer = Syncer(
             plugin,
-            raw=RawStore(storage_root()),
+            raw=RawStore(storage_root(), edge.storage_dir()),
             linked=lambda external_account_id: (
                 links.scope.link_of(external_account_id) is not None
             ),
