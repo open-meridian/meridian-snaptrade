@@ -20,20 +20,21 @@ tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-archive).
   every edge plugin, set in the dashboard's Settings form. Past the window a
   record is archived (the default where the instance has an archive), kept
   (otherwise) or deleted.
-- **0.12.0's settings carry over without loss.** `raw_retention_days` and
-  `activity_retention_days` stay declared, as developer settings with no
-  default, so a value a deployment saved under either is still delivered;
-  it is `responses_window_days` or `activity_window_days` while that window
-  setting holds its default, and the plugin's log names the window it was
-  carried from on each move. The SDK fills a declared default into what it
-  delivers, so a window at its default reads as unset; set to anything else,
-  the window counts and the old value does not. A deployment that saved
-  neither, or saved the default, has nothing to carry: 30 and 2555 days are
-  the windows' defaults. To take a window's default exactly where an old
-  value is saved, clear the old setting (a developer setting, shown on a
-  development deployment). The deployment's hold applies to the window
-  settings, not the old ones; a deletion inside it is refused either way.
-  What 0.12.0 deleted past its retention is not brought back.
+- **Upgrading from 0.12.0: set the two windows once.** 0.12.0's settings are
+  dropped, and their values are not carried over (the product owner,
+  2026-10-07). At upgrade, the deployment admin sets each window once in the
+  plugin's Settings form, to the value the old setting held:
+
+  | 0.12.0's setting | 0.13.0's setting | default |
+  |---|---|---|
+  | `raw_retention_days` (Keep raw responses for) | `responses_window_days` (Raw responses: window) | 30 days |
+  | `activity_retention_days` (Keep activity records for) | `activity_window_days` (Reported activity: window) | 2555 days |
+
+  Where the old setting was never saved, or held the default, there is
+  nothing to set. Until a window is set it is its default, and a record
+  past it is kept unless `<kind>_past_window` says archived or deleted. The
+  deployment's hold applies to the windows; what 0.12.0 deleted past its
+  retention is not brought back.
 - **Past the window, in units, through the SDK's helpers** (`archive.py`):
   an account's day of reads and its month of activity records, moved whole
   once the day or month has ended. Archived with `archive_unit` (written to
@@ -48,7 +49,11 @@ tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-archive).
   listed and a record in it is found again; the SDK's index says where it
   stands.
 - **What storage holds goes on the heartbeat**: `plugin.stored`, one span
-  per kind, count and first and last received, after each pass.
+  per kind, count and first and last received, after each pass; the SDK adds
+  the bytes each kind uses of the archive (`StoredSpan.bytes`), which the
+  plugin's Summary shows against the archive's bound. Where the archive is
+  bounded (`MERIDIAN_ARCHIVE_MOST_BYTES`) and a unit would take it past, the
+  SDK refuses it: the unit is kept, said once, and tried again each pass.
 - **The layout is in units**: a read in its day, an activity's record in the
   month it was received. 0.12.0's flat records are moved into their units on
   the first pass, keeping their times; until then they read as before.
@@ -56,13 +61,14 @@ tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-archive).
   time: Read, each call one line with SnapTrade's JSON a click away; Kept
   reads, paged by `om-pager`; and Archive (`/raw/archive`), every unit moved
   for the accounts the person may read, archived, restored or deleted, with
-  Restore under Open through the SDK's `POST /archive/restore`. Restored
+  Restore under Open through the SDK's `POST /archive/restore`; on it the
+  plugin's tab row marks Raw responses, the tab it is a view of. Restored
   reads are read on the tab as any kept read. A row's reference to a record
   that moved resolves to where it stands, with Restore beside it.
 - **Offered to agents**: `read_archived_units` (`GET /raw/archive`), and the
   SDK's `restore_unit` on the plugin's host.
 - The Account links tab says the activity window and what is done past it.
-- `make e2e` on core 25fbf37's runtime and harness (contract v16), the plugin
+- `make e2e` on core 3af1b0f's runtime and harness (contract v16, its revision of 2026-10-07), the plugin
   given the harness's archive: a read 40 days old archived past its window,
   recorded, its reference resolving to archived, restorable, restored on the
   tab through the SDK's route for the person and read back; a read 5 days

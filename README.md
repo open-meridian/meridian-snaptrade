@@ -14,11 +14,13 @@ It is built on the SDK it pins, `open-meridian==0.21.0`, which declares
 contract v16, an edge plugin's older records move to the archive
 (meridian-design tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-
 archive): its two kinds of raw record, reported activity and raw responses,
-are declared with their windows, which became the SDK's window settings with
-0.12.0's values carried over; past its window a day of raw responses or a
+are declared with their windows, which became the SDK's window settings
+(0.12.0's two settings dropped: the admin sets the windows once at upgrade,
+"From 0.12.0", below); past its window a day of raw responses or a
 month of activity records is archived, kept or deleted as an admin of the
 plugin chose, each move recorded first and a deletion inside the
-deployment's hold refused; what storage holds goes on the heartbeat; and the
+deployment's hold refused; what storage holds goes on the heartbeat, with
+the bytes each kind uses of the archive; and the
 Raw responses tab lists what moved and restores it ("The archive", below).
 Since contract v15, access per role (tasks/sdk-contract/access-is-granted-
 per-role): a plugin holding one role, as this one does, names none on its
@@ -278,8 +280,6 @@ without any of them.
 | `plan_code_links` | Plan-code links | table: account, plan code, instrument | no | no | each plan's own fund code on an account, linked to the instrument record it is; at most 200 rows. Each row arrives with who changed it and when |
 | `counted_as_cash` | Cash links | table: account (external account, optional), symbol (text), currency (text, an ISO 4217 code), the order of Plan-code links' columns | no | no | positions a custodian holds as cash that SnapTrade does not mark a cash equivalent, such as Fidelity's FDIC-insured deposit as an IRA's core position (`FDIC99532`): each is sent as the cash of its currency, naming who listed it and when (above). The symbol as SnapTrade names it; a blank account is every account holding it, and a row naming the account comes first; at most 200 rows. A fund stays a fund. Where SnapTrade marks the position itself, its own flag decides and the row is not read |
 | `synthetic` | Synthetic mode | on/off, developer | no | no | serve built-in responses instead of calling SnapTrade; default off |
-| `raw_retention_days` | Keep raw responses for (before 0.13.0) | number, days, developer | no | no | 0.12.0's, carried into `responses_window_days` (below) |
-| `activity_retention_days` | Keep activity records for (before 0.13.0) | number, days, developer | no | no | 0.12.0's, carried into `activity_window_days` (below) |
 | `snaptrade_personal_key` | Personal key (the old way) | on/off, developer | no | no | 0.1.0's way of saying the key's kind; read only while the key type is unset |
 
 A developer's setting is shown in the form only on a development deployment.
@@ -297,19 +297,21 @@ window below its hold and `archived` where a deployment admin has allowed no
 archive. Every setting is set in the dashboard's Settings form; no page of
 the plugin sets one.
 
-**From 0.12.0.** 0.12.0 kept a read's responses for `raw_retention_days` and
-an activity's record for `activity_retention_days`, then deleted them. 0.13.0
-carries both into the windows: they stay declared, as developer settings with
-no default, so a value a deployment saved under either is still delivered,
-and it is the kind's window while the window setting holds its default. The
-SDK fills a declared default into what it delivers, so a window holding its
-default reads as one never set; set to anything else, the window counts and
-the old value does not. A deployment that saved neither, or saved the
-default, has nothing to carry: 30 days and 2555 days are the windows'
-defaults too. To take a window's default exactly where an old value is
-saved, clear the old setting (shown on a development deployment). What 0.12.0
-deleted past its retention is not brought back; from 0.13.0 nothing is
-deleted unless an admin chooses `deleted`.
+**From 0.12.0: set the two windows once.** 0.12.0 kept a read's responses
+for `raw_retention_days` and an activity's record for
+`activity_retention_days`, then deleted them. 0.13.0 drops both settings and
+does not carry their values over (the product owner, 2026-10-07): at
+upgrade, the deployment admin sets the windows once in the plugin's Settings
+form, to what the old settings held.
+
+| 0.12.0's setting | 0.13.0's setting | default |
+|---|---|---|
+| `raw_retention_days` (Keep raw responses for) | `responses_window_days` (Raw responses: window) | 30 days |
+| `activity_retention_days` (Keep activity records for) | `activity_window_days` (Reported activity: window) | 2555 days |
+
+A deployment that never saved an old setting, or saved its default, has
+nothing to set. What 0.12.0 deleted past its retention is not brought back;
+from 0.13.0 nothing is deleted unless an admin chooses `deleted`.
 
 **From 0.1.0.** 0.1.0 said the key's kind with `snaptrade_personal_key`, on or
 off. While `snaptrade_key_type` is unset, a saved `snaptrade_personal_key`
@@ -912,7 +914,7 @@ harness first). 0.20.0's custody suite adds the case a re-resolution answers,
 which `plugin.re_resolve_activity` does (above, by hand), and
 `tests/test_contract.py` knows `receive(activity_re_resolved=)`, which
 custody does not hear. Moving to 0.21.0 (contract v16) moved only the pins:
-the two kinds in the declaration, the windows carried over, the moves past
+the two kinds in the declaration, the windows (0.12.0's settings dropped), the moves past
 them (`archive.py`) and the Raw responses tab's archive were done by hand.
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
@@ -927,7 +929,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `25fbf37`, contract v16).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `3af1b0f`, contract v16).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).

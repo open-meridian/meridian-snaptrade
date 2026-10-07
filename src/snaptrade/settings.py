@@ -35,12 +35,12 @@ SDK's (`<kind>_window_days`, `<kind>_past_window`), reserved: this module
 declares neither, and reads them as delivered (`windows_from`).
 
 0.12.0's two settings, `raw_retention_days` and `activity_retention_days`,
-became those windows in 0.13.0, their values carried over: both are still
-declared, as developer settings with no default, so a value a deployment
-saved under one is delivered, and is the kind's window while the window
-setting holds its default. The SDK fills a declared default into the values,
-so the window setting's default is read as unset; an admin who sets the
-window to anything else has set it, and the old value no longer counts.
+became those windows in 0.13.0 and are no longer declared, so a value saved
+under one is not delivered: at upgrade the deployment admin sets the windows
+once in Settings, `responses_window_days` for the first and
+`activity_window_days` for the second, as the CHANGELOG and README say
+(option A, ruled 2026-10-07; carrying a value across at launch is queued as
+meridian-design's design/a-setting-replaces-an-old-one).
 """
 
 from __future__ import annotations
@@ -62,9 +62,6 @@ USER_ID = "snaptrade_user_id"
 USER_SECRET = "snaptrade_user_secret"
 POLL_SECONDS = "poll_seconds"
 STALE_AFTER_HOURS = "stale_after_hours"
-# 0.12.0's retention settings, which became the windows below in 0.13.0.
-RAW_RETENTION_DAYS = "raw_retention_days"
-ACTIVITY_RETENTION_DAYS = "activity_retention_days"
 PLAN_CODE_LINKS = "plan_code_links"
 COUNTED_AS_CASH = "counted_as_cash"
 SYNTHETIC = "synthetic"
@@ -240,28 +237,6 @@ DECLARED: tuple[meridian.Setting, ...] = (
         ),
     ),
     meridian.Setting(
-        RAW_RETENTION_DAYS,
-        int,
-        label="Keep raw responses for (before 0.13.0)",
-        unit="days",
-        developer=True,
-        description=(
-            "Replaced by Raw responses: window, and read only while that holds its default. "
-            "Kept so a value saved before 0.13.0 still counts."
-        ),
-    ),
-    meridian.Setting(
-        ACTIVITY_RETENTION_DAYS,
-        int,
-        label="Keep activity records for (before 0.13.0)",
-        unit="days",
-        developer=True,
-        description=(
-            "Replaced by Reported activity: window, and read only while that holds its "
-            "default. Kept so a value saved before 0.13.0 still counts."
-        ),
-    ),
-    meridian.Setting(
         PERSONAL_KEY,
         bool,
         label="Personal key (the old way)",
@@ -296,12 +271,10 @@ class Credentials:
 @dataclass(frozen=True)
 class Window:
     """One kind's window, and what is done with a record past it, as the
-    settings say; `carried` names 0.12.0's setting it was carried from, where
-    it was."""
+    settings say."""
 
     days: int
     past: str
-    carried: str = ""
 
     @property
     def length(self) -> timedelta:
@@ -434,39 +407,25 @@ def config_from(values: Values, unset: Collection[str] = ()) -> Config:
     )
 
 
-def _window(values: Values, window: str, past: str, old: str, default: int) -> Window:
-    """A kind's window as delivered, or 0.12.0's setting's value where one is
-    saved and the window holds its default; within the SDK's bound."""
-    days, carried = _number(values, window), ""
-    saved = _number(values, old)
-    if (days is None or days == default) and saved is not None and saved != default:
-        days, carried = saved, old
+def _window(values: Values, window: str, past: str, default: int) -> Window:
+    """A kind's window as delivered, within the SDK's bound."""
+    days = _number(values, window)
     if days is None:
         days = default
     days = min(max(days, LEAST_RAW_RETENTION_DAYS), MOST_ACTIVITY_RETENTION_DAYS)
     chosen = values.get(past)
-    return Window(days, chosen if chosen in PAST_WINDOW else KEPT, carried)
+    return Window(days, chosen if chosen in PAST_WINDOW else KEPT)
 
 
 def windows_from(values: Values) -> Windows:
     """Each kind's window and what is done past it, from the settings the SDK
-    declares for it (W6.11), 0.12.0's carried over (the module's note). Past
-    the window is `kept` where the settings say nothing: the SDK's default is
-    filled in by it, `archived` only where the instance has an archive."""
+    declares for it (W6.11). Past the window is `kept` where the settings say
+    nothing: the SDK's default is filled in by it, `archived` only where the
+    instance has an archive."""
     return Windows(
-        responses=_window(
-            values,
-            RESPONSES_WINDOW,
-            RESPONSES_PAST,
-            RAW_RETENTION_DAYS,
-            DEFAULT_RAW_RETENTION_DAYS,
-        ),
+        responses=_window(values, RESPONSES_WINDOW, RESPONSES_PAST, DEFAULT_RAW_RETENTION_DAYS),
         activity=_window(
-            values,
-            ACTIVITY_WINDOW,
-            ACTIVITY_PAST,
-            ACTIVITY_RETENTION_DAYS,
-            DEFAULT_ACTIVITY_RETENTION_DAYS,
+            values, ACTIVITY_WINDOW, ACTIVITY_PAST, DEFAULT_ACTIVITY_RETENTION_DAYS
         ),
     )
 

@@ -1,7 +1,8 @@
 """An edge plugin's older records move to the archive (contract v16;
 meridian-design spec/an-edge-plugins-older-records-move-to-the-archive):
-SnapTrade's two kinds declared, its 0.12.0 retention settings carried into
-their windows, each unit past its window archived, kept or deleted as the
+SnapTrade's two kinds declared, its 0.12.0 retention settings no longer
+declared (the admin sets the windows once at upgrade, option A of
+2026-10-07), each unit past its window archived, kept or deleted as the
 settings say -- recorded first, refused inside the hold, never twice after a
 restart -- what storage holds on the heartbeat, and the Raw responses tab's
 archive, restored through the SDK's route.
@@ -30,12 +31,10 @@ from snaptrade.page import RAW, RAW_ARCHIVE, RESTORE, hold, pages
 from snaptrade.raw import ACTIVITY_DIRECTORY, LEDGER, RESTORE_AREA, RawStore, storage_root
 from snaptrade.settings import (
     ACTIVITY_PAST,
-    ACTIVITY_RETENTION_DAYS,
     ACTIVITY_WINDOW,
     DECLARED,
     DELETED,
     KEPT,
-    RAW_RETENTION_DAYS,
     RESPONSES_PAST,
     RESPONSES_WINDOW,
     SYNTHETIC,
@@ -151,23 +150,18 @@ def test_each_window_is_read_from_the_sdks_settings() -> None:
     assert odd.windows.activity.days == 36500
 
 
-def test_0_12_0s_retention_settings_are_carried_into_the_windows() -> None:
-    """A value a deployment saved under 0.12.0's setting is the window while
-    the window setting holds its default; setting the window takes over."""
+def test_0_12_0s_retention_settings_are_dropped_the_windows_alone_count() -> None:
+    """Option A (the product owner, 2026-10-07): 0.12.0's two settings are no
+    longer declared, so the sidecar would not deliver a value saved under
+    one, and one that arrived anyway counts for nothing; the windows are
+    what the admin sets once at upgrade."""
+    assert not {s.name for s in DECLARED} & {"raw_retention_days", "activity_retention_days"}
     sidecar = Sidecar()
-    carried = sidecar.deliver({RAW_RETENTION_DAYS: 90, ACTIVITY_RETENTION_DAYS: 3650}).windows
-    assert carried.responses == Window(90, KEPT, RAW_RETENTION_DAYS)
-    assert carried.activity == Window(3650, KEPT, ACTIVITY_RETENTION_DAYS)
-    set_ = sidecar.deliver({RAW_RETENTION_DAYS: 90, RESPONSES_WINDOW: 14}).windows
-    assert set_.responses == Window(14, KEPT)
-    # A saved value equal to the default carries nothing; none saved, none.
-    assert sidecar.deliver({RAW_RETENTION_DAYS: 30}).windows.responses == Window(30, KEPT)
-    # Both still declared, so a saved value is delivered: developer settings,
-    # with no default, so unset stays unset.
-    old = {
-        s.name: s for s in DECLARED if s.name in (RAW_RETENTION_DAYS, ACTIVITY_RETENTION_DAYS)
-    }
-    assert all(s.developer and s.default is None and not s.required for s in old.values())
+    old = sidecar.deliver({"raw_retention_days": 90, "activity_retention_days": 3650}).windows
+    assert old.responses == Window(30, KEPT)
+    assert old.activity == Window(2555, KEPT)
+    set_ = sidecar.deliver({RESPONSES_WINDOW: 90, ACTIVITY_WINDOW: 3650}).windows
+    assert (set_.responses, set_.activity) == (Window(90, KEPT), Window(3650, KEPT))
 
 
 # ── Past the window ─────────────────────────────────────────────────────────
@@ -309,6 +303,50 @@ def test_what_storage_holds_of_each_kind_goes_on_the_heartbeat(
     assert [s.record_kind for s in beat.stored] == ["activity", "responses"]
 
 
+def test_the_heartbeat_reports_the_bytes_each_kind_uses_of_the_archive(
+    storage: Path, archive: Path
+) -> None:
+    """StoredSpan.bytes (named 2026-10-07): the reads archived past their
+    window are what the responses use of the archive, every account's day,
+    as the SDK's index sums them; activity, none archived, none. The
+    Summary draws them against the archive's bound."""
+    sidecar = Sidecar()
+    read_at(sidecar, storage, OLD, archive=True)
+    store = read_at(sidecar, storage, NOW, archive=True).raw
+    assert store is not None
+    on_archive = sum(f.stat().st_size for f in archive.rglob("*.json.gz"))
+    assert on_archive > 0
+    beat = {s.record_kind: s for s in sidecar.plugin()._stored_with_bytes()}
+    assert beat["responses"].bytes == on_archive
+    assert beat["responses"].record_count == ACCOUNTS, "storage's count stands"
+    assert beat["activity"].bytes == 0
+    # What the plugin set is its own, the bytes the SDK's alone.
+    assert all(s.bytes == 0 for s in sidecar.plugin().stored)
+
+
+def test_an_archive_past_its_bound_keeps_the_unit_and_says_so_once(
+    storage: Path,
+    archive: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MERIDIAN_ARCHIVE_MOST_BYTES (W8.3): a unit that would take the archive
+    past its bound is refused by the SDK before anything moves; the pass
+    keeps it, says why once, and records nothing."""
+    monkeypatch.setenv("MERIDIAN_ARCHIVE_MOST_BYTES", "1")
+    sidecar = Sidecar()
+    read_at(sidecar, storage, OLD, archive=True)
+    caplog.set_level(logging.WARNING, "snaptrade")
+    store = read_at(sidecar, storage, NOW, archive=True).raw
+    assert store is not None
+    assert sidecar.moves == [] and list(archive.rglob("*.json.gz")) == []
+    assert [r.read_at for r in store.reads(ALPACA)] == [NOW, OLD]
+    said = [r.message for r in caplog.records if "MERIDIAN_ARCHIVE_MOST_BYTES" in r.message]
+    assert len(said) == ACCOUNTS and all("not archived, and kept" in m for m in said)
+    again = syncer_at(sidecar, storage, NOW, archive=True)
+    assert asyncio.run(again.tend()).failed == ACCOUNTS and sidecar.moves == []
+
+
 def test_a_reported_activitys_unit_is_archived_whole_and_never_written_twice(
     storage: Path, archive: Path
 ) -> None:
@@ -411,6 +449,10 @@ def test_the_archive_lists_each_unit_moved_and_offers_a_restore_under_open(
     assert f'data-unit="{unit}" data-state="archived"' in under_view
     assert "Responses</td><td>2026-08-19</td>" in under_view
     assert "Restoring is under Open" in under_view and RESTORE not in under_view
+    # A view of Raw responses: its tab is the one marked, and the page titled
+    # as it, though the archive is a route of its own.
+    assert '<a class="tab on" href="/raw" aria-current="page">Raw responses</a>' in under_view
+    assert "<title>Raw responses · SnapTrade</title>" in under_view
     under_open = client.get(RAW_ARCHIVE, "write").text
     assert f'<form method="post" action="{RESTORE}" class="inline">' in under_open
     assert '<input type="hidden" name="record_kind" value="responses">' in under_open

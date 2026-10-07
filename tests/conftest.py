@@ -18,7 +18,9 @@ the figures standing as the SDK's do.
 
 From contract v16 it moves the plugin's raw records as the SDK does: its
 `archive_unit`, `restore_unit`, `delete_unit`, `find_record` and `stored` are
-the SDK's own, run on its helpers (their copy, their check, their index), and
+the SDK's own, run on its helpers (their copy, their check, their index), as
+is what the heartbeat carries of `stored`, the bytes each kind uses of the
+archive filled in from that index; and
 only the move each reports is answered here, as the sidecar would answer it:
 kept with the person it was for, a deletion whose last record was received
 inside `hold_days` refused with REFUSAL_REASON_WITHIN_HOLD, and a restore for
@@ -282,6 +284,9 @@ class Sidecar(Operations):
     find_record = meridian.Plugin.find_record
     stored = meridian.Plugin.stored
     _moves = meridian.Plugin._moves
+    # What the heartbeat carries: `stored`, each kind with the bytes the
+    # SDK's index says it uses of the archive (StoredSpan.bytes).
+    _stored_with_bytes = meridian.Plugin._stored_with_bytes
 
     def _check_open(self) -> None:
         """Open, always."""

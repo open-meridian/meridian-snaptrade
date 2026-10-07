@@ -228,5 +228,4 @@ class Keeper:
 
 
 def _named(window: Window) -> str:
-    carried = f", carried from {window.carried}" if window.carried else ""
-    return f"its window of {window.days} days{carried}"
+    return f"its window of {window.days} days"

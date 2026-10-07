@@ -60,8 +60,10 @@ a deployment admin approves them.
   two kinds, `activity` (Reported activity, 2555 days) and `responses` (Raw
   responses, 30 days), give the SDK's window settings, `<kind>_window_days`
   and `<kind>_past_window`, which this plugin never declares itself and reads
-  through `settings.windows_from` (0.12.0's `raw_retention_days` and
-  `activity_retention_days` carried while a window holds its default).
+  through `settings.windows_from`. 0.12.0's `raw_retention_days` and
+  `activity_retention_days` are dropped, never declared again or read: the
+  admin sets the windows once at upgrade (the ruling of 2026-10-07; the
+  CHANGELOG names the mapping).
   `archive.py` moves a unit only once its day or month has ended and its last
   record is past the window, only through the SDK's helpers (`archive_unit`,
   `delete_unit`), each noted first in the account's ledger (`moved.json`):

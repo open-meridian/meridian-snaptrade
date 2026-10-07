@@ -109,7 +109,7 @@ def storage_root(granted: Path | None = None) -> Path:
 DEFAULT_RETENTION_DAYS = 30
 LEAST_RETENTION_DAYS = 1
 #: How long a reported activity's record is kept from when it was received,
-#: unless the `activity_retention_days` setting says longer: seven years, past
+#: unless `activity_window_days` says otherwise: seven years, past
 #: the two SnapTrade holds of an account's history at Fidelity, so each
 #: activity the street holds can have its record read back.
 ACTIVITY_RETENTION_DAYS = 2555
