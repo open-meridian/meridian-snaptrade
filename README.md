@@ -5,13 +5,19 @@ accounts through [SnapTrade](https://snaptrade.com): their positions, their
 cash in each currency, and how fresh SnapTrade's data about them is. It records
 them in a deployment's street store as the custodian's view, following
 workflow W2 (holdings ingestion), and each account's activity as the
-custodian states it. It holds the `custody` role. This is release 0.13.0
+custodian states it. It holds the `custody` role. This is release 0.13.1
 (CHANGELOG.md says what each release changed). How to set it up and use it,
 for its admin and its readers, is in [docs/](docs/README.md). How a plugin
 like it is built is documented at [open-meridian.dev](https://open-meridian.dev).
 
-It is built on the SDK it pins, `open-meridian==0.21.0`, which declares
-contract v16, an edge plugin's older records move to the archive
+It is built on the SDK it pins, `open-meridian==0.22.0`, which declares
+contract v18, the lake prices the book (meridian-design
+plans/the-lake-prices-the-book): nothing this plugin calls changed shape. A
+Money names its cash instrument now, and this plugin still names a currency
+by its ISO 4217 code (`Money(amount, "USD")`, the Cash links' currency
+column's code alike), which core resolves, dated, to the currency's cash
+instrument; its dates were valid ISO text already. Since contract v16, an
+edge plugin's older records move to the archive
 (meridian-design tasks/sdk-contract/an-edge-plugins-older-records-move-to-the-
 archive): its two kinds of raw record, reported activity and raw responses,
 are declared with their windows, which became the SDK's window settings
@@ -857,9 +863,9 @@ else from Open Meridian, plus SnapTrade's official Python SDK
 (`snaptrade-python-sdk`, pinned exactly), which only `src/snaptrade/venue.py`
 imports.
 
-The SDK is pinned exactly, `open-meridian==0.21.0`, and the `Dockerfile` and
-`Makefile` build on the base image of the same version, `plugin-python:0.21.0`.
-0.21.0 is not on PyPI yet: until it is released, `make ci-local` builds it
+The SDK is pinned exactly, `open-meridian==0.22.0`, and the `Dockerfile` and
+`Makefile` build on the base image of the same version, `plugin-python:0.22.0`.
+0.22.0 is not on PyPI yet: until it is released, `make ci-local` builds it
 from the sibling checkout, and CI, which has none, cannot install it.
 Where the sibling `meridian-python` checkout carries exactly that version,
 one not yet published, the `Makefile` builds from it (`SDK_REPO`): the tests'
@@ -916,6 +922,15 @@ which `plugin.re_resolve_activity` does (above, by hand), and
 custody does not hear. Moving to 0.21.0 (contract v16) moved only the pins:
 the two kinds in the declaration, the windows (0.12.0's settings dropped), the moves past
 them (`archive.py`) and the Raw responses tab's archive were done by hand.
+Moving to 0.22.0 (contract v18) moved only the pins (0.13.0's image ran its
+`make e2e` unchanged on core b1b8420's v18 runtime and harness first): a
+Money this plugin sends names its currency by its ISO 4217 code, which core
+resolves to the cash instrument, as `Money(amount, code)` keeps its shape;
+every date it sends is a date's ISO text, which 0.22.0 still takes; and
+`tests/test_contract.py` knows what v18 adds that custody does not call (the
+lake's operations, `resolve_venue`, `report_missing_venue`, and
+`receive(prices_recorded=, bars_recorded=, observations_wanted=,
+want_withdrawn=, subjects=)`).
 To move to a new SDK release, change all three together and run
 `make ci-local`; `tests/test_contract.py` fails on any operation or parameter
 the new SDK has that this plugin does not know, naming it.
@@ -929,7 +944,7 @@ with it (`HARNESS_IMAGE`), which it runs on; below.
 `make e2e` runs the plugin as it runs in a deployment: its own image, beside
 a sidecar, with a broker, the street store and a dashboard, all from the
 released `meridian-runtime` image the `Makefile` pins
-(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `3af1b0f`, contract v16).
+(`RUNTIME_IMAGE`, `<commit>@sha256:<digest>`; now core's `b1b8420`, contract v18).
 That deployment is core's **plugin harness**, published beside the runtime
 as its own image of files, `meridian-harness`, at the same commit's tag
 (`HARNESS_IMAGE`, pinned by digest too; `/harness`, with its own README).
@@ -1051,7 +1066,7 @@ deliberate commit, with the SDK's when a contract version changes:
 
 Everything runs in containers. Put it in a deployment, once a session is open
 with `meridian connect`, with `meridian plugin upload` and
-`meridian plugin launch snaptrade 0.13.0 --instance snaptrade`; or develop it
+`meridian plugin launch snaptrade 0.13.1 --instance snaptrade`; or develop it
 live with `meridian plugin dev --instance snaptrade` and `synthetic` on.
 
 A release is the `version` in `pyproject.toml`, raised, with a commit saying

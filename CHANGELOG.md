@@ -3,6 +3,34 @@
 What each release of the SnapTrade plugin changed. Releases before 0.11.0
 are described in their commits (`git log`) and the README's "Depends on".
 
+## 0.13.1 (not released)
+
+Contract v18, on open-meridian 0.22.0 (meridian-design
+plans/the-lake-prices-the-book, row 5a). Only the pins move, so a patch
+release: nothing the plugin calls changed shape, and it does nothing it did
+not.
+
+- **0.13.0's image ran unchanged on contract v18 first**: its `make e2e` on
+  core b1b8420's runtime and harness, every step as before.
+- **The pins**: `open-meridian==0.22.0`, the `Dockerfile`'s base
+  `plugin-python:0.22.0`, and `make e2e` on core b1b8420's runtime and
+  harness, by tag and digest.
+- **A Money names its cash instrument** from contract v18. The plugin still
+  names each currency by its ISO 4217 code, `Money(amount, "USD")`, the
+  Cash links' currency column's code alike, and core resolves it, dated, to
+  the currency's cash instrument; a code that is no ISO 4217 code's shape
+  (a token's) was never sent, and still is not. **A date is a date** from
+  v18: every date the plugin sends was a date's ISO text already, which
+  0.22.0 still takes.
+- `tests/test_contract.py` knows what v18 adds that custody neither calls
+  nor hears: the lake's operations (`record_prices`, `record_bars`,
+  `decline_want`, `list_prices`, `list_bars`, `list_datasets`),
+  `resolve_venue`, `report_missing_venue`, and `receive(prices_recorded=,
+  bars_recorded=, observations_wanted=, want_withdrawn=, subjects=)`.
+
+0.22.0 is not on PyPI yet: `make` builds it from the sibling meridian-python
+checkout, and CI, which has none, cannot install it until it is released.
+
 ## 0.13.0 (not released)
 
 Contract v16, on open-meridian 0.21.0 (meridian-design

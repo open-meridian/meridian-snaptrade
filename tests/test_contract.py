@@ -638,6 +638,13 @@ KNOWN_PARAMETERS = {
         # Known, and not heard (v15): a re-resolution is delivered to
         # operations; custody sends it, and the street answers its own.
         "activity_re_resolved",
+        # Known, and not heard (v18): the lake's prices and bars go to the
+        # reading roles, and the wants to a dgm; custody is neither.
+        "prices_recorded",
+        "bars_recorded",
+        "observations_wanted",
+        "want_withdrawn",
+        "subjects",
     },
     # Known, and not used (v8): the book of record is an operations plugin's
     # to write and five other roles' to read (operations, portfolio,
@@ -726,6 +733,39 @@ KNOWN_PARAMETERS = {
     # Known, and not used (v8): an instrument's record by its ID is for the
     # roles that read the book; this plugin resolves the venue's identifiers.
     "resolve_instrument": {"as_of_ns", "instrument_id"},
+    # Known, and not used (v18): the lake is a dgm's to write and the reading
+    # roles' to read, and venues are resolved by whoever records a price on
+    # one; custody records the street, whose instruments name no venue.
+    "record_prices": {"acting_for", "prices", "want_id"},
+    "record_bars": {"acting_for", "bars", "want_id"},
+    "decline_want": {"acting_for", "reason", "subjects", "want_id"},
+    "list_prices": {
+        "as_of_ns",
+        "at_ns",
+        "business_date",
+        "cursor",
+        "kinds",
+        "page_size",
+        "sources",
+        "subjects",
+        "valid_from_ns",
+        "valid_until_ns",
+    },
+    "list_bars": {
+        "as_of_ns",
+        "at_ns",
+        "business_date",
+        "cursor",
+        "interval_ns",
+        "page_size",
+        "sources",
+        "subjects",
+        "valid_from_ns",
+        "valid_until_ns",
+    },
+    "list_datasets": set(),
+    "resolve_venue": {"as_of_ns", "identifiers"},
+    "report_missing_venue": {"as_of_ns", "identifiers", "observed_at_ns", "reason", "source"},
 }
 
 
